@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lead Generator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        h1 { font-size: 24px; margin-bottom: 4px; }
+        .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
+
+        .card { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { font-size: 16px; margin-bottom: 12px; color: #111; }
+
+        .form-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+        .form-group { flex: 1; min-width: 200px; }
+        label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: #555; }
+        select, input[type="number"], input[type="text"] {
+            width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px;
+            font-size: 14px; background: #fff;
+        }
+        select:focus, input:focus { outline: none; border-color: #4A90D9; }
+        textarea {
+            width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px;
+            font-size: 13px; font-family: inherit; resize: vertical; min-height: 60px;
+        }
+
+        .chip-container { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .chip {
+            background: #e8f0fe; color: #1a56db; padding: 4px 10px; border-radius: 16px;
+            font-size: 12px; cursor: pointer; border: 1px solid #c6d9f7; transition: 0.15s;
+        }
+        .chip:hover { background: #1a56db; color: #fff; }
+        .chip.active { background: #1a56db; color: #fff; }
+
+        .btn {
+            padding: 10px 20px; border: none; border-radius: 6px; font-size: 14px;
+            font-weight: 600; cursor: pointer; transition: 0.15s;
+        }
+        .btn-primary { background: #1a56db; color: #fff; }
+        .btn-primary:hover { background: #1445b5; }
+        .btn-primary:disabled { background: #999; cursor: not-allowed; }
+        .btn-success { background: #16a34a; color: #fff; }
+        .btn-success:hover { background: #15803d; }
+        .btn-outline { background: #fff; color: #333; border: 1px solid #ddd; }
+        .btn-outline:hover { background: #f5f5f5; }
+        .btn-danger { background: #dc2626; color: #fff; }
+        .btn-danger:hover { background: #b91c1c; }
+
+        .btn-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+        .progress-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin: 10px 0; }
+        .progress-fill { height: 100%; background: #1a56db; transition: width 0.3s; border-radius: 3px; }
+
+        .status { font-size: 13px; color: #666; margin-top: 6px; }
+        .status.connected { color: #16a34a; }
+        .status.error { color: #dc2626; }
+
+        #results-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+        #results-table th { background: #f9fafb; text-align: left; padding: 8px; border-bottom: 2px solid #e5e7eb; font-weight: 600; }
+        #results-table td { padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }
+        #results-table tr:hover td { background: #f9fafb; }
+        .table-wrap { max-height: 400px; overflow-y: auto; }
+
+        .google-btn { display: inline-flex; align-items: center; gap: 8px; }
+        .hidden { display: none; }
+
+        .custom-types { margin-top: 8px; }
+        .custom-types textarea { min-height: 80px; }
+        .help-text { font-size: 11px; color: #999; margin-top: 2px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Lead Generator</h1>
+        <p class="subtitle">Find businesses without websites via Google Places API</p>
+
+        <!-- Search Config -->
+        <div class="card">
+            <h2>Search Configuration</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Country</label>
+                    <select id="country" onchange="onCountryChange()">
+                        {% for c in countries %}
+                        <option value="{{ c }}">{{ c }}</option>
+                        {% endfor %}
+                        <option value="Custom">Custom</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Niche</label>
+                    <select id="niche" onchange="onNicheChange()">
+                        {% for n in niches %}
+                        <option value="{{ n }}">{{ n }}</option>
+                        {% endfor %}
+                        <option value="Custom">Custom</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Custom cities input -->
+            <div id="custom-cities-wrap" class="hidden">
+                <label>Custom Cities (one per line)</label>
+                <textarea id="custom-cities" placeholder="e.g. Dubai, UAE&#10;Abu Dhabi, UAE&#10;Sharjah, UAE"></textarea>
+                <p class="help-text">Format: City, Region/Country</p>
+            </div>
+
+            <!-- City chips -->
+            <div id="cities-section">
+                <label>Cities <span id="city-count" style="font-weight:normal; color:#999;"></span></label>
+                <div style="margin-bottom:6px;">
+                    <button class="btn btn-outline" onclick="toggleAllCities(true)" style="padding:4px 10px; font-size:12px;">Select All</button>
+                    <button class="btn btn-outline" onclick="toggleAllCities(false)" style="padding:4px 10px; font-size:12px;">Deselect All</button>
+                </div>
+                <div id="city-chips" class="chip-container"></div>
+            </div>
+
+            <!-- Business type chips -->
+            <div style="margin-top: 14px;">
+                <label>Business Types</label>
+                <div id="type-chips" class="chip-container"></div>
+            </div>
+
+            <!-- Custom business types -->
+            <div id="custom-types-wrap" class="hidden custom-types">
+                <label>Custom Business Types (one per line)</label>
+                <textarea id="custom-types" placeholder="e.g. coffee shop&#10;tea house&#10;juice bar"></textarea>
+            </div>
+
+            <!-- Filters -->
+            <div class="form-row" style="margin-top: 14px;">
+                <div class="form-group">
+                    <label>Min Reviews</label>
+                    <input type="number" id="min-reviews" value="50" min="0" step="10">
+                </div>
+                <div class="form-group">
+                    <label>Min Rating</label>
+                    <input type="number" id="min-rating" value="4.0" min="0" max="5" step="0.1">
+                </div>
+                <div class="form-group">
+                    <label>Target Leads</label>
+                    <input type="number" id="target-leads" value="100" min="1" max="500">
+                </div>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="card">
+            <div class="btn-row">
+                <button id="search-btn" class="btn btn-primary" onclick="startSearch()">Start Search</button>
+                <button id="stop-btn" class="btn btn-danger hidden" onclick="stopSearch()">Stop</button>
+
+                {% if has_oauth_config %}
+                    {% if google_connected %}
+                        <span class="status connected">Google Sheets connected</span>
+                        <a href="/auth/disconnect" class="btn btn-outline" style="font-size:12px;">Disconnect</a>
+                    {% else %}
+                        <a href="/auth/google" class="btn btn-outline google-btn">Connect Google Sheets</a>
+                    {% endif %}
+                {% else %}
+                    <span class="status" style="font-size:12px;">Add GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET to .env for Sheets export</span>
+                {% endif %}
+            </div>
+
+            <div id="progress-section" class="hidden">
+                <div class="progress-bar"><div id="progress-fill" class="progress-fill" style="width: 0%"></div></div>
+                <p id="progress-text" class="status"></p>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div id="results-card" class="card hidden">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <h2>Results (<span id="result-count">0</span> leads)</h2>
+                <div class="btn-row">
+                    <button class="btn btn-outline" onclick="downloadCSV()" style="font-size:13px;">Download CSV</button>
+                    {% if google_connected %}
+                    <button id="export-btn" class="btn btn-success" onclick="exportToSheets()" style="font-size:13px;">Export to Google Sheets</button>
+                    {% endif %}
+                </div>
+            </div>
+            <div id="sheet-link" class="hidden" style="margin-bottom:10px;">
+                <a id="sheet-url" href="#" target="_blank" class="status connected" style="font-size:14px; font-weight:600;"></a>
+            </div>
+            <div class="table-wrap">
+                <table id="results-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Business</th>
+                            <th>City</th>
+                            <th>Phone</th>
+                            <th>Rating</th>
+                            <th>Reviews</th>
+                            <th>Type</th>
+                            <th>Map</th>
+                        </tr>
+                    </thead>
+                    <tbody id="results-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allLeads = [];
+        let selectedCities = new Set();
+        let selectedTypes = new Set();
+        let currentCities = [];
+        let currentTypes = [];
+        let eventSource = null;
+
+        // Init
+        onCountryChange();
+        onNicheChange();
+
+        function onCountryChange() {
+            const country = document.getElementById('country').value;
+            const customWrap = document.getElementById('custom-cities-wrap');
+            const citiesSection = document.getElementById('cities-section');
+
+            if (country === 'Custom') {
+                customWrap.classList.remove('hidden');
+                citiesSection.classList.add('hidden');
+                return;
+            }
+
+            customWrap.classList.add('hidden');
+            citiesSection.classList.remove('hidden');
+
+            fetch(`/api/cities/${country}`)
+                .then(r => r.json())
+                .then(cities => {
+                    currentCities = cities;
+                    selectedCities = new Set(cities);
+                    renderCityChips();
+                });
+        }
+
+        function onNicheChange() {
+            const niche = document.getElementById('niche').value;
+            const customWrap = document.getElementById('custom-types-wrap');
+
+            if (niche === 'Custom') {
+                customWrap.classList.remove('hidden');
+                document.getElementById('type-chips').innerHTML = '';
+                return;
+            }
+
+            customWrap.classList.add('hidden');
+
+            fetch(`/api/niche-types/${niche}`)
+                .then(r => r.json())
+                .then(types => {
+                    currentTypes = types;
+                    selectedTypes = new Set(types);
+                    renderTypeChips();
+                });
+        }
+
+        function renderCityChips() {
+            const container = document.getElementById('city-chips');
+            container.innerHTML = '';
+            currentCities.forEach(city => {
+                const chip = document.createElement('span');
+                chip.className = 'chip' + (selectedCities.has(city) ? ' active' : '');
+                chip.textContent = city;
+                chip.onclick = () => {
+                    if (selectedCities.has(city)) selectedCities.delete(city);
+                    else selectedCities.add(city);
+                    chip.classList.toggle('active');
+                    updateCityCount();
+                };
+                container.appendChild(chip);
+            });
+            updateCityCount();
+        }
+
+        function renderTypeChips() {
+            const container = document.getElementById('type-chips');
+            container.innerHTML = '';
+            currentTypes.forEach(t => {
+                const chip = document.createElement('span');
+                chip.className = 'chip' + (selectedTypes.has(t) ? ' active' : '');
+                chip.textContent = t;
+                chip.onclick = () => {
+                    if (selectedTypes.has(t)) selectedTypes.delete(t);
+                    else selectedTypes.add(t);
+                    chip.classList.toggle('active');
+                };
+                container.appendChild(chip);
+            });
+        }
+
+        function toggleAllCities(select) {
+            if (select) selectedCities = new Set(currentCities);
+            else selectedCities.clear();
+            renderCityChips();
+        }
+
+        function updateCityCount() {
+            document.getElementById('city-count').textContent = `(${selectedCities.size} selected)`;
+        }
+
+        function getSelectedCities() {
+            const country = document.getElementById('country').value;
+            if (country === 'Custom') {
+                return document.getElementById('custom-cities').value
+                    .split('\n').map(s => s.trim()).filter(Boolean);
+            }
+            return Array.from(selectedCities);
+        }
+
+        function getSelectedTypes() {
+            const niche = document.getElementById('niche').value;
+            if (niche === 'Custom') {
+                return document.getElementById('custom-types').value
+                    .split('\n').map(s => s.trim()).filter(Boolean);
+            }
+            return Array.from(selectedTypes);
+        }
+
+        function startSearch() {
+            const cities = getSelectedCities();
+            const types = getSelectedTypes();
+
+            if (!cities.length) return alert('Select at least one city');
+            if (!types.length) return alert('Select at least one business type');
+
+            allLeads = [];
+            document.getElementById('results-body').innerHTML = '';
+            document.getElementById('result-count').textContent = '0';
+            document.getElementById('results-card').classList.remove('hidden');
+            document.getElementById('progress-section').classList.remove('hidden');
+            document.getElementById('search-btn').disabled = true;
+            document.getElementById('stop-btn').classList.remove('hidden');
+            document.getElementById('sheet-link').classList.add('hidden');
+
+            const body = {
+                country: document.getElementById('country').value,
+                cities: cities,
+                business_types: types,
+                min_reviews: document.getElementById('min-reviews').value,
+                min_rating: document.getElementById('min-rating').value,
+                target_leads: document.getElementById('target-leads').value,
+            };
+
+            fetch('/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            }).then(response => {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                function read() {
+                    reader.read().then(({done, value}) => {
+                        if (done) {
+                            searchDone();
+                            return;
+                        }
+                        buffer += decoder.decode(value, {stream: true});
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+
+                        lines.forEach(line => {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    handleEvent(data);
+                                } catch(e) {}
+                            }
+                        });
+                        read();
+                    });
+                }
+                read();
+            });
+        }
+
+        function handleEvent(data) {
+            if (data.type === 'lead') {
+                allLeads.push(data.lead);
+                addLeadRow(data.lead, allLeads.length);
+                document.getElementById('result-count').textContent = allLeads.length;
+
+                const p = data.progress;
+                const pct = (p.leads_found / p.total_target * 100).toFixed(0);
+                document.getElementById('progress-fill').style.width = pct + '%';
+                document.getElementById('progress-text').textContent =
+                    `${p.leads_found}/${p.total_target} leads | Searching: ${p.current_type} in ${p.current_city} | ${p.api_calls} API calls`;
+            } else if (data.type === 'done') {
+                searchDone();
+            }
+        }
+
+        function addLeadRow(lead, idx) {
+            const tbody = document.getElementById('results-body');
+            const tr = document.createElement('tr');
+            const mapLink = lead['Google Maps URL']
+                ? `<a href="${lead['Google Maps URL']}" target="_blank" style="color:#1a56db;">View</a>` : '';
+            tr.innerHTML = `
+                <td>${idx}</td>
+                <td><strong>${lead['Business Name']}</strong><br><span style="color:#999;font-size:11px;">${lead['Address']}</span></td>
+                <td>${lead['City'] || ''}</td>
+                <td>${lead['Phone']}</td>
+                <td>${lead['Rating']}</td>
+                <td>${lead['Reviews']}</td>
+                <td>${lead['Business Type']}</td>
+                <td>${mapLink}</td>
+            `;
+            tbody.appendChild(tr);
+        }
+
+        function searchDone() {
+            document.getElementById('search-btn').disabled = false;
+            document.getElementById('stop-btn').classList.add('hidden');
+            document.getElementById('progress-text').textContent =
+                `Done! Found ${allLeads.length} leads.`;
+            document.getElementById('progress-fill').style.width = '100%';
+        }
+
+        function stopSearch() {
+            // Close connection — server-side generator will stop
+            if (eventSource) eventSource.close();
+            searchDone();
+        }
+
+        function downloadCSV() {
+            if (!allLeads.length) return;
+            const headers = ['Business Name', 'City', 'Address', 'Phone', 'Rating', 'Reviews', 'Business Type', 'Google Maps URL'];
+            let csv = headers.join(',') + '\n';
+            allLeads.forEach(lead => {
+                csv += headers.map(h => {
+                    let val = (lead[h] || '').toString();
+                    if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+                        val = '"' + val.replace(/"/g, '""') + '"';
+                    }
+                    return val;
+                }).join(',') + '\n';
+            });
+            const blob = new Blob([csv], {type: 'text/csv'});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `leads_${new Date().toISOString().slice(0,10)}.csv`;
+            a.click();
+        }
+
+        function exportToSheets() {
+            if (!allLeads.length) return alert('No leads to export');
+            const btn = document.getElementById('export-btn');
+            btn.disabled = true;
+            btn.textContent = 'Exporting...';
+
+            fetch('/export-sheets', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    leads: allLeads,
+                    niche: document.getElementById('niche').value,
+                }),
+            })
+            .then(r => r.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.textContent = 'Export to Google Sheets';
+                if (data.error) {
+                    alert('Export error: ' + data.error);
+                } else {
+                    document.getElementById('sheet-link').classList.remove('hidden');
+                    const a = document.getElementById('sheet-url');
+                    a.href = data.url;
+                    a.textContent = 'Open Google Sheet';
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.textContent = 'Export to Google Sheets';
+                alert('Export failed: ' + err);
+            });
+        }
+    </script>
+</body>
+</html>
