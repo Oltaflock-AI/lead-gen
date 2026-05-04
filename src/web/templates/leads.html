@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Leads — lead-gen{% endblock %}
+{% block breadcrumb %}Workspace / Leads{% endblock %}
+{% block heading %}Leads{% endblock %}
+{% block subheading %}All CSVs in <code>data/imports/</code> + <code>data/outputs/</code>.{% endblock %}
+
+{% block content %}
+<section class="n-card overflow-hidden">
+  <table class="n-table">
+    <thead>
+      <tr>
+        <th>CSV</th>
+        <th>Source</th>
+        <th class="text-right">Rows</th>
+        <th class="text-right">Avg score</th>
+        <th class="text-right">Qualified</th>
+        <th class="text-right">w/ email</th>
+        <th class="text-right">w/ phone</th>
+        <th class="text-right"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in csvs %}
+      <tr>
+        <td><a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">{{ c.name }}</a></td>
+        <td><span class="chip {% if c.dir == 'outputs' %}chip-blue{% else %}chip-gray{% endif %}">{{ c.dir }}</span></td>
+        <td class="text-right">{{ c.rows }}</td>
+        <td class="text-right">{{ c.avg_score }}</td>
+        <td class="text-right">{{ c.qualified }}</td>
+        <td class="text-right">{{ c.with_email }}</td>
+        <td class="text-right">{{ c.with_phone }}</td>
+        <td class="text-right text-xs">
+          <a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">view</a>
+          <span style="color: var(--text-mute);">·</span>
+          <a href="/outreach?csv={{ c.name }}" style="color: var(--accent);" class="hover:underline">outreach</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="text-center" style="padding: 32px; color: var(--text-mute);">No CSVs found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block title %}Outreach — lead-gen{% endblock %}
+{% block breadcrumb %}Workspace / Outreach{% endblock %}
+{% block heading %}Outreach{% endblock %}
+{% block subheading %}Personalize and send cold emails. {% if not claude_enabled %}<span style="color: var(--amber);">ANTHROPIC_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
+
+{% block content %}
+{% if not google_connected and not resend_enabled %}
+<div class="n-card p-4 mb-5" style="background: rgba(203,145,47,0.1); border-color: rgba(203,145,47,0.3); color: #8a6020;">
+  <div class="text-sm">No send channel connected. Either <a href="/auth/google" class="underline font-medium">connect Google</a> for Gmail, or set <code>RESEND_API_KEY</code> + <code>RESEND_FROM</code> in <code>.env</code>.</div>
+</div>
+{% endif %}
+
+<div class="n-card p-4 mb-5">
+  <form method="get" action="/outreach" class="flex items-center gap-3 text-sm">
+    <label for="csv-select" style="color: var(--text-soft);">CSV:</label>
+    <select id="csv-select" name="csv" aria-label="Pick CSV" class="n-select" style="max-width: 24rem;">
+      <option value="">— select —</option>
+      {% for c in all_csvs %}
+        <option value="{{ c.name }}" {% if c.name == selected %}selected{% endif %}>{{ c.name }} ({{ c.rows }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">Load</button>
+  </form>
+</div>
+
+{% if selected %}
+<div class="mb-5 n-card p-4 flex items-center justify-between" style="background: var(--bg-soft);">
+  <div class="text-sm">
+    {% if sheet %}
+      <span style="color: var(--text);">Connected Sheet for <code>{{ selected }}</code></span>
+      <a href="{{ sheet.sheet_url }}" target="_blank" rel="noopener" style="color: var(--accent);" class="hover:underline ml-1">open ↗</a>
+      <span class="text-xs ml-2" style="color: var(--text-mute);">last synced {{ sheet.updated_at[:16].replace('T', ' ') }}</span>
+    {% else %}
+      <span style="color: var(--text-soft);">No Sheet connected to <code>{{ selected }}</code> yet.</span>
+    {% endif %}
+  </div>
+  <div class="flex items-center gap-2">
+    <button type="button" onclick="syncSheet('{{ selected }}')" class="btn {% if sheet %}btn-sm{% else %}btn-primary btn-sm{% endif %}">{{ 'Sync to Sheet' if sheet else 'Create + sync Sheet' }}</button>
+    <span id="sheet-status" class="text-xs" style="color: var(--text-mute);"></span>
+  </div>
+</div>
+{% endif %}
+
+{% if rows %}
+<section class="n-card overflow-hidden mb-5">
+  <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
+    <div class="text-sm font-semibold" style="color: var(--text);">{{ rows|length }} leads with email</div>
+    <div class="flex items-center gap-2">
+      <label class="text-xs flex items-center gap-1.5" style="color: var(--text-soft);">
+        <input type="checkbox" id="select-all" onchange="toggleAll(this)"> select all
+      </label>
+      <button type="button" onclick="generateDrafts()" class="btn btn-primary btn-sm">Generate drafts</button>
+    </div>
+  </div>
+  <div class="max-h-96 overflow-auto">
+    <table class="n-table">
+      <thead class="sticky top-0">
+        <tr>
+          <th aria-label="select"></th>
+          <th class="text-right">Score</th>
+          <th>Business</th>
+          <th>Email</th>
+          <th>City</th>
+          <th class="text-right">Rating</th>
+          <th class="text-right">Reviews</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        {% set n = r._normalized %}
+        <tr>
+          <td>
+            <input type="checkbox" class="lead-cb" aria-label="Select lead"
+              data-business="{{ n.business_name }}"
+              data-email="{{ n.email }}"
+              data-city="{{ n.city }}"
+              data-type="{{ n.business_type }}"
+              data-address="{{ n.address }}"
+              data-rating="{{ n.rating }}"
+              data-reviews="{{ n.review_count }}"
+              data-website="{{ n.website }}">
+          </td>
+          <td class="text-right">
+            <span class="chip {% if r._score >= 75 %}chip-green{% elif r._score >= 60 %}chip-amber{% else %}chip-gray{% endif %}">{{ r._score }}</span>
+          </td>
+          <td>{{ n.business_name }}</td>
+          <td style="color: var(--text-soft);">{{ n.email }}{% if r._contacted %} <span class="chip chip-blue ml-1">contacted</span>{% endif %}</td>
+          <td style="color: var(--text-soft);">{{ n.city }}</td>
+          <td class="text-right">{{ n.rating or '—' }}</td>
+          <td class="text-right">{{ n.review_count or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="drafts-section" class="hidden n-card overflow-hidden mb-5">
+  <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
+    <div class="text-sm font-semibold" style="color: var(--text);">Drafts</div>
+    <div class="flex items-center gap-2">
+      <label class="text-xs flex items-center gap-1.5" style="color: var(--text-soft);">
+        via
+        <select id="provider-select" aria-label="Email provider" class="n-select" style="width: 7rem;">
+          {% if google_connected %}<option value="gmail">Gmail</option>{% endif %}
+          {% if resend_enabled %}<option value="resend">Resend</option>{% endif %}
+        </select>
+      </label>
+      <button type="button" onclick="sendAll()" id="send-btn" class="btn btn-primary btn-sm" style="background: var(--green); border-color: var(--green);">Send all</button>
+    </div>
+  </div>
+  <div id="drafts-list"></div>
+  <div id="send-status" class="px-5 py-3 text-xs" style="color: var(--text-mute);"></div>
+</section>
+{% elif selected %}
+<div class="n-card p-4 mb-5" style="background: rgba(203,145,47,0.1); border-color: rgba(203,145,47,0.3); color: #8a6020;">
+  <div class="text-sm">No leads with an email in this CSV. Run <code>Enrich</code> first.</div>
+</div>
+{% endif %}
+
+<section class="n-card overflow-hidden">
+  <div class="px-5 py-4 text-sm font-semibold" style="border-bottom: 1px solid var(--border); color: var(--text);">Outreach log (last 50)</div>
+  <table class="n-table">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>To</th>
+        <th>Business</th>
+        <th>Subject</th>
+        <th>Status</th>
+        <th aria-label="actions"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in log %}
+      <tr>
+        <td class="text-xs" style="color: var(--text-mute);">{{ r.sent_at[:16].replace('T', ' ') }}</td>
+        <td>{{ r.lead_email }}</td>
+        <td>{{ r.business_name or '—' }}</td>
+        <td class="truncate" style="max-width: 18rem;">{{ r.subject }}</td>
+        <td>
+          <span class="chip {% if r.status == 'sent' %}chip-blue{% elif r.status == 'replied' %}chip-green{% else %}chip-red{% endif %}">{{ r.status }}</span>
+        </td>
+        <td class="text-right">
+          {% if r.status == 'sent' %}
+          <button type="button" onclick="markReplied({{ r.id }})" style="color: var(--accent);" class="hover:underline text-xs">mark replied</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="text-center" style="padding: 32px; color: var(--text-mute);">No outreach yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CSV_PATH = "{{ selected }}";
+
+function toggleAll(cb) {
+  document.querySelectorAll('.lead-cb').forEach(x => x.checked = cb.checked);
+}
+
+function selectedLeads() {
+  return Array.from(document.querySelectorAll('.lead-cb:checked')).map(cb => ({
+    business_name: cb.dataset.business,
+    email: cb.dataset.email,
+    city: cb.dataset.city,
+    business_type: cb.dataset.type,
+    address: cb.dataset.address,
+    rating: parseFloat(cb.dataset.rating) || 0,
+    review_count: parseInt(cb.dataset.reviews) || 0,
+    website: cb.dataset.website,
+  }));
+}
+
+async function generateDrafts() {
+  const leads = selectedLeads();
+  if (!leads.length) { alert('Select at least one lead.'); return; }
+  document.getElementById('drafts-section').classList.remove('hidden');
+  document.getElementById('drafts-list').innerHTML = '<div class="px-5 py-3 text-sm" style="color: var(--text-soft);">Generating…</div>';
+  const r = await fetch('/api/outreach/preview', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({leads}),
+  });
+  const data = await r.json();
+  renderDrafts(data.drafts || [], data.personalized_engine);
+}
+
+function renderDrafts(drafts, engine) {
+  const list = document.getElementById('drafts-list');
+  list.innerHTML = '';
+  drafts.forEach((d) => {
+    const div = document.createElement('div');
+    div.className = 'px-5 py-4';
+    div.style.borderTop = '1px solid var(--border)';
+    div.dataset.email = d.lead.email;
+    div.dataset.business = d.lead.business_name;
+    div.innerHTML = `
+      <div class="text-xs mb-2" style="color: var(--text-mute);">→ ${escapeHtml(d.lead.business_name)} &lt;${escapeHtml(d.lead.email)}&gt; · engine: ${engine}${d.error ? ' · <span style="color: var(--red);">'+escapeHtml(d.error)+'</span>' : ''}</div>
+      <input class="draft-subject n-input mb-2" value="${escapeHtml(d.subject)}">
+      <textarea class="draft-body n-textarea" rows="6">${escapeHtml(d.body)}</textarea>
+    `;
+    list.appendChild(div);
+  });
+}
+
+async function sendAll() {
+  const items = Array.from(document.querySelectorAll('#drafts-list > div')).map(div => ({
+    to: div.dataset.email,
+    business_name: div.dataset.business,
+    subject: div.querySelector('.draft-subject').value,
+    body: div.querySelector('.draft-body').value,
+  }));
+  if (!items.length) return;
+  const provider = document.getElementById('provider-select').value;
+  const endpoint = provider === 'resend' ? '/api/outreach/send-resend' : '/api/outreach/send';
+  const status = document.getElementById('send-status');
+  status.textContent = `Sending ${items.length} via ${provider}…`;
+  document.getElementById('send-btn').disabled = true;
+  try {
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sends: items, csv_path: CSV_PATH}),
+    });
+    const data = await r.json();
+    if (data.error) {
+      status.innerHTML = `<span style="color: var(--red);">${escapeHtml(data.error)}</span>`;
+    } else {
+      const ok = (data.results || []).filter(x => x.ok).length;
+      const fail = (data.results || []).filter(x => !x.ok).length;
+      status.innerHTML = `Sent ${ok}, failed ${fail}. <a href="/outreach?csv=${encodeURIComponent(CSV_PATH)}" style="color: var(--accent);" class="underline">Reload</a>`;
+    }
+  } catch (e) { status.textContent = e.message; }
+  document.getElementById('send-btn').disabled = false;
+}
+
+async function markReplied(id) {
+  await fetch('/api/outreach/mark-replied/' + id, {method: 'POST'});
+  location.reload();
+}
+
+async function syncSheet(name) {
+  const status = document.getElementById('sheet-status');
+  if (!status) return;
+  status.textContent = 'Syncing…';
+  try {
+    const r = await fetch('/api/sheets/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    });
+    const data = await r.json();
+    if (data.url) {
+      const verb = data.synced ? 'Synced' : 'Created';
+      status.innerHTML = `${verb}. <a href="${data.url}" target="_blank" rel="noopener" style="color: var(--accent);" class="underline">Open ↗</a>`;
+      setTimeout(() => location.reload(), 1200);
+    } else {
+      status.textContent = data.error || 'Failed';
+    }
+  } catch (e) { status.textContent = e.message; }
+}
+</script>
+{% endblock %}

@@ -13,14 +13,15 @@ lead-gen/
 ├── src/
 │   ├── scrapers/         # one file per niche × region (production)
 │   ├── processors/       # post-processing on existing CSVs (enrich_leads.py)
+│   ├── web/              # Flask dashboard — canonical UI for every script
 │   └── utils/            # shared helpers — only when ≥2 callers exist
 ├── data/
 │   ├── outputs/          # CSVs produced by code in this repo (one per scraper basename)
 │   ├── imports/          # external CSVs (Apollo/RocketReach dumps, manual exports) — inputs only
-│   └── cache/            # API response cache (gitignored)
-├── tests/
-│   └── web_app/          # Flask UI for ad-hoc runs (app.py, scraper.py, sheets.py)
-├── .env                  # GOOGLE_PLACES_API_KEY (gitignored)
+│   ├── cache/            # API response cache (gitignored)
+│   └── outreach.db       # sqlite — outreach log + settings + Gmail token (gitignored)
+├── .env                  # secrets (gitignored) — see .env.example
+├── .env.example          # template for required + optional env vars
 ├── AGENTS.md             # file/naming/path rules + enrichment policy — read before adding files
 ├── README.md             # this file
 └── requirements.txt
@@ -50,7 +51,7 @@ These feed into `enrich_leads.py`, which writes the enriched version to `data/ou
 
 Source of truth for what each script actually does = the module docstring + the `CITIES` / `BUSINESS_TYPES` / threshold constants at the top of the file. **Open the file before deciding it doesn't fit.**
 
-There is also a Flask UI under `tests/web_app/` (`app.py`, `scraper.py`, `sheets.py`, `templates/`) that wraps the same Places search behind an SSE-streamed web form with Google Sheets export. Use it for one-off interactive searches; the CLI scrapers above are the canonical batch pipeline.
+There is also a Flask **dashboard** under `src/web/` that wraps every script above behind a single UI: run any scraper, run enrichment, view per-CSV lead-quality scores + projected pipeline revenue, generate Claude-personalized cold emails, send via Gmail OAuth, export to Google Sheets, and create Asana tasks for low-score leads. Run with `python -m src.web.app` → http://localhost:5001. The CLI scrapers above remain the canonical batch pipeline; the dashboard is the day-to-day interface.
 
 ---
 
@@ -129,12 +130,33 @@ python3 src/processors/enrich_leads.py data/outputs/seasonal_us.csv --keep-with-
 
 Drops leads with no phone, no Places match, permanently closed status, or (by default) any website. Adds `rating`, `review_count`, `full_address`, `google_maps_url`, `email`. Re-indexes `row_num`.
 
-## Web UI (ad-hoc / Sheets export)
+## Dashboard (canonical UI for everything)
 
 ```bash
-cd tests/web_app
-python app.py    # http://localhost:5001
+python -m src.web.app    # http://localhost:5001
 ```
+
+Pages:
+
+| Path | What it does |
+|---|---|
+| `/` | Total leads, quality scores, projected pipeline revenue, recent outreach |
+| `/scrape` | Run any canonical scraper or do an interactive country×niche search (toggle no-website filter) |
+| `/leads` | Every CSV in `data/imports/` + `data/outputs/` with avg score + qualified count |
+| `/leads/<file>` | Per-row quality score; buttons for Enrich, Export to Sheets, Compose outreach, Bulk Asana tasks |
+| `/outreach` | Pick leads with email → Claude personalized drafts → edit → send via Gmail → log |
+| `/settings` | Edit close rate / avg deal value / sender name / signature; see env-var status |
+
+Setup:
+
+1. `pip install -r requirements.txt`
+2. Copy `.env.example` → `.env`, fill in:
+   - `GOOGLE_PLACES_API_KEY` — required for scrapers + enrichment
+   - `FLASK_SECRET_KEY` — any random string
+   - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth (web app, redirect `http://localhost:5001/auth/callback`); enable Sheets API + Gmail API in Google Cloud
+   - `ANTHROPIC_API_KEY` — optional; without it cold emails fall back to a static template
+   - `ASANA_PAT` — optional; PAT from `app.asana.com/0/my-apps` to enable task creation
+3. `python -m src.web.app`
 
 ---
 

@@ -2,11 +2,13 @@
 .env
 .env.local
 *.env
+!.env.example
 
 # Data
 data/outputs/*.csv
 data/imports/*.csv
 data/cache/
+data/*.db
 
 # Python
 __pycache__/
@@ -48,3 +50,10 @@ logs/
 # Temporary
 *.tmp
 .cache/
+
+# Local agent / tooling state (Claude Code, MCP, vector stores)
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+ruvector.db

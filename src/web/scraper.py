@@ -1,13 +1,13 @@
-import requests
-import time
 import os
+import time
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
-# Pre-built city lists per country
 COUNTRY_CITIES = {
     "US": [
         "New York, NY", "Los Angeles, CA", "Chicago, IL", "Houston, TX",
@@ -23,31 +23,6 @@ COUNTRY_CITIES = {
         "Miami, FL", "Tampa, FL", "Orlando, FL", "Cleveland, OH",
         "Pittsburgh, PA", "Cincinnati, OH", "St. Louis, MO", "Minneapolis, MN",
         "Detroit, MI", "New Orleans, LA", "Salt Lake City, UT", "Honolulu, HI",
-        "Boise, ID", "Richmond, VA", "Birmingham, AL", "Anchorage, AK",
-        "Newark, NJ", "Buffalo, NY", "Rochester, NY", "Hartford, CT",
-        "Providence, RI", "Des Moines, IA", "Little Rock, AR", "Jackson, MS",
-        "Charleston, SC", "Savannah, GA", "Bakersfield, CA", "Riverside, CA",
-        "Corpus Christi, TX", "Lexington, KY", "Norfolk, VA", "Madison, WI",
-        "Baton Rouge, LA", "Durham, NC", "Greensboro, NC", "Scottsdale, AZ",
-        "Laredo, TX", "Lubbock, TX", "Amarillo, TX", "Waco, TX",
-        "Springfield, MO", "Wichita, KS", "Tulsa, OK", "Knoxville, TN",
-        "Chattanooga, TN", "Shreveport, LA", "Mobile, AL", "Montgomery, AL",
-        "Huntsville, AL", "Fayetteville, NC", "Wilmington, NC", "Asheville, NC",
-        "Columbia, SC", "Greenville, SC", "Augusta, GA", "Macon, GA",
-        "Tallahassee, FL", "Pensacola, FL", "Fort Myers, FL", "Sarasota, FL",
-        "West Palm Beach, FL", "Reno, NV", "Spokane, WA", "Tacoma, WA",
-        "Eugene, OR", "Salem, OR", "Modesto, CA", "Oakland, CA",
-        "Long Beach, CA", "Irvine, CA", "Anaheim, CA",
-        "Akron, OH", "Toledo, OH", "Dayton, OH", "Fort Wayne, IN",
-        "Grand Rapids, MI", "Lansing, MI", "Ann Arbor, MI",
-        "Green Bay, WI", "Rockford, IL", "Naperville, IL", "Aurora, IL",
-        "Springfield, IL", "St. Paul, MN", "Rochester, MN",
-        "Sioux Falls, SD", "Fargo, ND", "Billings, MT",
-        "Syracuse, NY", "Albany, NY", "Bridgeport, CT", "New Haven, CT",
-        "Portland, ME", "Manchester, NH", "Burlington, VT",
-        "Worcester, MA", "Springfield, MA", "Virginia Beach, VA",
-        "Chesapeake, VA", "Arlington, VA", "Roanoke, VA",
-        "Charleston, WV", "Provo, UT", "Santa Fe, NM", "Las Cruces, NM",
     ],
     "India": [
         "Mumbai, Maharashtra", "Delhi, India", "Bangalore, Karnataka",
@@ -64,55 +39,76 @@ COUNTRY_CITIES = {
         "London, UK", "Birmingham, UK", "Manchester, UK", "Glasgow, UK",
         "Liverpool, UK", "Leeds, UK", "Sheffield, UK", "Edinburgh, UK",
         "Bristol, UK", "Cardiff, UK", "Leicester, UK", "Nottingham, UK",
-        "Newcastle, UK", "Southampton, UK", "Brighton, UK", "Plymouth, UK",
-        "Oxford, UK", "Cambridge, UK", "York, UK", "Bath, UK",
-        "Aberdeen, UK", "Dundee, UK", "Belfast, UK", "Swansea, UK",
-        "Coventry, UK",
+        "Newcastle, UK", "Southampton, UK", "Brighton, UK",
     ],
     "Canada": [
         "Toronto, ON", "Vancouver, BC", "Montreal, QC", "Calgary, AB",
         "Edmonton, AB", "Ottawa, ON", "Winnipeg, MB", "Quebec City, QC",
         "Hamilton, ON", "Kitchener, ON", "Halifax, NS", "Victoria, BC",
-        "London, ON", "Oshawa, ON", "Windsor, ON", "Saskatoon, SK",
-        "Regina, SK", "St. John's, NL", "Kelowna, BC", "Barrie, ON",
-        "Sherbrooke, QC", "Guelph, ON", "Abbotsford, BC", "Kingston, ON",
-        "Moncton, NB",
     ],
     "Australia": [
         "Sydney, NSW", "Melbourne, VIC", "Brisbane, QLD", "Perth, WA",
         "Adelaide, SA", "Gold Coast, QLD", "Canberra, ACT", "Newcastle, NSW",
-        "Hobart, TAS", "Darwin, NT", "Wollongong, NSW", "Geelong, VIC",
-        "Townsville, QLD", "Cairns, QLD", "Toowoomba, QLD",
-        "Ballarat, VIC", "Bendigo, VIC", "Launceston, TAS",
-        "Mackay, QLD", "Rockhampton, QLD",
+        "Hobart, TAS", "Darwin, NT",
+    ],
+    "New Zealand": [
+        "Auckland", "Wellington", "Christchurch", "Hamilton", "Tauranga",
+        "Dunedin", "Palmerston North", "Napier", "Hastings", "Nelson",
+        "Rotorua", "Queenstown", "Invercargill", "New Plymouth", "Whangarei",
+    ],
+    "Germany": [
+        "Berlin", "Hamburg", "Munich", "Cologne", "Frankfurt",
+        "Stuttgart", "Düsseldorf", "Leipzig", "Dortmund", "Essen",
+        "Bremen", "Dresden", "Hannover", "Nuremberg", "Bonn",
+    ],
+    "France": [
+        "Paris", "Marseille", "Lyon", "Toulouse", "Nice",
+        "Nantes", "Strasbourg", "Montpellier", "Bordeaux", "Lille",
+        "Rennes", "Reims", "Toulon", "Saint-Étienne", "Grenoble",
+    ],
+    "Spain": [
+        "Madrid", "Barcelona", "Valencia", "Seville", "Zaragoza",
+        "Málaga", "Murcia", "Palma", "Las Palmas", "Bilbao",
+        "Alicante", "Córdoba", "Valladolid", "Vigo", "Granada",
+    ],
+    "Italy": [
+        "Rome", "Milan", "Naples", "Turin", "Palermo",
+        "Genoa", "Bologna", "Florence", "Bari", "Catania",
+        "Venice", "Verona", "Messina", "Padua", "Trieste",
+    ],
+    "Netherlands": [
+        "Amsterdam", "Rotterdam", "The Hague", "Utrecht", "Eindhoven",
+        "Groningen", "Tilburg", "Almere", "Breda", "Nijmegen",
+    ],
+    "Ireland": [
+        "Dublin", "Cork", "Galway", "Limerick", "Waterford",
+        "Drogheda", "Dundalk", "Bray", "Kilkenny", "Sligo",
+    ],
+    "Sweden": [
+        "Stockholm", "Gothenburg", "Malmö", "Uppsala", "Västerås",
+        "Örebro", "Linköping", "Helsingborg", "Jönköping", "Norrköping",
     ],
 }
 
-# Region codes for Google Places API
 COUNTRY_REGION_CODES = {
-    "US": "US",
-    "India": "IN",
-    "UK": "GB",
-    "Canada": "CA",
-    "Australia": "AU",
+    "US": "US", "India": "IN", "UK": "GB", "Canada": "CA", "Australia": "AU",
+    "New Zealand": "NZ", "Germany": "DE", "France": "FR", "Spain": "ES",
+    "Italy": "IT", "Netherlands": "NL", "Ireland": "IE", "Sweden": "SE",
 }
 
-# Pre-built niche query templates
 NICHE_PRESETS = {
     "Law Firms": [
         "law firm", "attorney", "immigration lawyer", "criminal defense lawyer",
         "personal injury lawyer", "family law attorney", "divorce lawyer",
-        "traffic ticket lawyer", "bankruptcy attorney", "real estate lawyer",
+        "bankruptcy attorney", "real estate lawyer",
     ],
     "Real Estate": [
         "real estate agent", "realtor", "property management company",
-        "real estate broker", "commercial real estate agent",
-        "property dealer", "real estate consultant",
+        "real estate broker", "property dealer",
     ],
     "Restaurants & Food": [
         "restaurant", "cafe", "bakery", "pizza place", "burger restaurant",
-        "sushi restaurant", "indian restaurant", "mexican restaurant",
-        "italian restaurant", "food truck", "catering service",
+        "sushi restaurant", "indian restaurant", "italian restaurant", "catering service",
     ],
     "Home Services": [
         "plumber", "electrician", "HVAC service", "roofing contractor",
@@ -121,28 +117,19 @@ NICHE_PRESETS = {
     ],
     "Health & Wellness": [
         "dentist", "chiropractor", "physical therapist", "dermatologist",
-        "optometrist", "veterinarian", "gym", "yoga studio",
-        "massage therapist", "nutritionist",
+        "veterinarian", "gym", "yoga studio", "massage therapist",
     ],
     "Auto Services": [
         "auto repair shop", "car wash", "auto detailing", "tire shop",
-        "auto body shop", "oil change service", "car dealer",
-        "motorcycle repair", "towing service", "auto glass repair",
+        "auto body shop", "oil change service", "towing service",
     ],
     "Beauty & Personal Care": [
         "hair salon", "barber shop", "nail salon", "spa",
-        "beauty salon", "tattoo shop", "waxing salon",
-        "lash extensions", "makeup artist", "skincare clinic",
-    ],
-    "Education & Tutoring": [
-        "tutoring center", "driving school", "music school",
-        "dance studio", "martial arts school", "preschool",
-        "language school", "art class", "coding bootcamp",
+        "beauty salon", "tattoo shop", "skincare clinic",
     ],
     "Professional Services": [
         "accountant", "financial advisor", "insurance agent",
-        "marketing agency", "web design agency", "photographer",
-        "videographer", "printing shop", "notary public",
+        "marketing agency", "web design agency", "photographer", "notary public",
     ],
 }
 
@@ -170,35 +157,27 @@ def search_places(query, api_key, region_code="US", page_token=None):
         except requests.exceptions.HTTPError:
             return {}
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            wait = 10 * (attempt + 1)
-            time.sleep(wait)
+            time.sleep(10 * (attempt + 1))
     return {}
 
 
-def filter_place(place, min_reviews, min_rating, seen_ids):
+def filter_place(place, min_reviews, min_rating, seen_ids, require_no_website=True):
     pid = place.get("id")
     if not pid or pid in seen_ids:
         return None
-
-    website = place.get("websiteUri", "")
-    if website:
+    if require_no_website and place.get("websiteUri", ""):
         return None
-
     status = place.get("businessStatus", "N/A")
     if status not in ("OPERATIONAL", "N/A"):
         return None
-
     rating = place.get("rating", 0)
     if rating < min_rating:
         return None
-
     reviews = place.get("userRatingCount", 0)
     if reviews < min_reviews:
         return None
-
-    name = place.get("displayName", {}).get("text", "N/A")
     return {
-        "Business Name": name,
+        "Business Name": place.get("displayName", {}).get("text", "N/A"),
         "Address": place.get("formattedAddress", "N/A"),
         "Phone": place.get("nationalPhoneNumber", "N/A"),
         "Rating": rating,
@@ -209,32 +188,26 @@ def filter_place(place, min_reviews, min_rating, seen_ids):
 
 
 def run_search(cities, business_types, api_key, region_code="US",
-               min_reviews=50, min_rating=4.0, target_leads=100):
-    """Generator that yields (lead_dict, progress_dict) tuples.
-
-    progress_dict has: leads_found, total_target, current_city, current_type, api_calls
-    """
+               min_reviews=50, min_rating=4.0, target_leads=100,
+               require_no_website=True):
     seen_ids = set()
     leads_found = 0
     api_calls = 0
 
-    for ci, city in enumerate(cities):
+    for city in cities:
         if leads_found >= target_leads:
             break
-
         for biz_type in business_types:
             if leads_found >= target_leads:
                 break
-
             query = f"{biz_type} in {city}"
             data = search_places(query, api_key, region_code)
             api_calls += 1
 
-            places = data.get("places", [])
-            for place in places:
+            for place in data.get("places", []):
                 if leads_found >= target_leads:
                     break
-                lead = filter_place(place, min_reviews, min_rating, seen_ids)
+                lead = filter_place(place, min_reviews, min_rating, seen_ids, require_no_website)
                 if lead:
                     seen_ids.add(place["id"])
                     lead["Business Type"] = biz_type
@@ -248,19 +221,16 @@ def run_search(cities, business_types, api_key, region_code="US",
                         "api_calls": api_calls,
                     }
 
-            # Follow pagination
             next_token = data.get("nextPageToken")
             while next_token and leads_found < target_leads:
                 time.sleep(0.1)
                 data = search_places(query, api_key, region_code, page_token=next_token)
                 api_calls += 1
-                places = data.get("places", [])
                 next_token = data.get("nextPageToken")
-
-                for place in places:
+                for place in data.get("places", []):
                     if leads_found >= target_leads:
                         break
-                    lead = filter_place(place, min_reviews, min_rating, seen_ids)
+                    lead = filter_place(place, min_reviews, min_rating, seen_ids, require_no_website)
                     if lead:
                         seen_ids.add(place["id"])
                         lead["Business Type"] = biz_type
@@ -273,5 +243,4 @@ def run_search(cities, business_types, api_key, region_code="US",
                             "current_type": biz_type,
                             "api_calls": api_calls,
                         }
-
             time.sleep(0.1)

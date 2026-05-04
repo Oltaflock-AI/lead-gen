@@ -6,13 +6,14 @@ Rules for any agent (human or AI) editing this repo. Read before adding or movin
 
 - `src/scrapers/` — scraper scripts. One file per niche/region pair. Production canon.
 - `src/processors/` — post-processing scripts (create when needed; do not preempt).
+- `src/web/` — Flask dashboard. Canonical UI: wraps every scraper + enricher, owns Google OAuth (Sheets + Gmail send), Claude personalization, Asana task creation, and the SQLite outreach log. Run with `python -m src.web.app`.
 - `src/utils/` — shared helpers (create only when ≥2 callers exist).
 - `data/outputs/` — CSVs produced by scrapers/processors in this repo. Flat. No date or geography subfolders.
 - `data/imports/` — externally-sourced CSVs (Apollo/RocketReach dumps, manual exports, third-party leads). Inputs to processors, not produced by code in this repo.
 - `data/cache/` — API response cache, if needed. Gitignored.
+- `data/outreach.db` — SQLite owned by `src/web/` (outreach log + settings + Gmail token). Gitignored. Created on first dashboard launch.
 - `tests/` — test and dev scaffolding. Not production code.
-  - `tests/web_app/` — Flask UI for ad-hoc testing of scrapers (`app.py`, `scraper.py`, `sheets.py`, `templates/`).
-- `.env` — secrets. Project root only. Gitignored.
+- `.env` — secrets. Project root only. Gitignored. See `.env.example` for the full list.
 - `.claude/`, `.gitignore`, `README.md`, `AGENTS.md`, `requirements.txt` — repo metadata.
 
 ## Naming

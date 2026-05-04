@@ -1,0 +1,233 @@
+/* Notion-inspired design tokens.
+   Used alongside Tailwind CDN — these vars are referenced via inline
+   styles in base.html and via @apply-style classes below. */
+
+:root {
+  --bg:        #ffffff;
+  --bg-soft:   #fbfbfa;
+  --bg-alt:    #f7f6f3;
+  --text:      #37352f;
+  --text-soft: #6f6e69;
+  --text-mute: #9b9a97;
+  --border:    rgba(55, 53, 47, 0.09);
+  --border-2:  rgba(55, 53, 47, 0.16);
+  --hover:     rgba(55, 53, 47, 0.04);
+  --selected:  rgba(55, 53, 47, 0.08);
+  --accent:    #2383e2;
+  --green:     #448361;
+  --red:       #e03e3e;
+  --amber:     #cb912f;
+  --purple:    #9065b0;
+}
+
+html, body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               'Helvetica Neue', Arial, sans-serif;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+code, pre {
+  font-family: 'SF Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular,
+               Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  background: var(--bg-alt);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #6940a5;
+}
+
+pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* The Notion-style sidebar nav links. */
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  margin: 1px 0;
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--text-soft);
+  text-decoration: none;
+  transition: background 80ms ease;
+  line-height: 1.4;
+}
+.nav-link:hover { background: var(--hover); color: var(--text); }
+.nav-link.active { background: var(--selected); color: var(--text); font-weight: 500; }
+
+/* Notion-style cards. */
+.n-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  transition: border-color 120ms ease;
+}
+.n-card:hover { border-color: var(--border-2); }
+
+.n-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 16px;
+}
+.n-tile-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.n-tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 6px;
+  letter-spacing: -0.01em;
+}
+.n-tile-sub {
+  font-size: 12px;
+  color: var(--text-mute);
+  margin-top: 4px;
+}
+
+/* Notion-style buttons. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+.btn:hover { background: var(--hover); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary {
+  background: var(--text);
+  color: #fff;
+  border-color: var(--text);
+}
+.btn-primary:hover { background: #2a2925; border-color: #2a2925; }
+.btn-ghost { border-color: transparent; color: var(--text-soft); }
+.btn-ghost:hover { background: var(--hover); color: var(--text); }
+.btn-sm { padding: 3px 8px; font-size: 12px; border-radius: 4px; }
+
+/* Notion-style inputs. */
+.n-input,
+.n-select,
+.n-textarea {
+  width: 100%;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text);
+  transition: border-color 80ms ease, background 80ms ease;
+}
+.n-input:focus,
+.n-select:focus,
+.n-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.n-textarea { resize: vertical; min-height: 80px; }
+
+.n-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-soft);
+  margin-bottom: 4px;
+}
+
+/* Tables. */
+.n-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+.n-table thead { background: var(--bg-alt); }
+.n-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 12px;
+}
+.n-table td {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text);
+}
+.n-table tbody tr:hover { background: var(--hover); }
+
+/* Chips / badges. */
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.chip-green  { background: rgba(68, 131, 97, 0.15);  color: #2c5e44; }
+.chip-amber  { background: rgba(203, 145, 47, 0.15); color: #8a6020; }
+.chip-red    { background: rgba(224, 62, 62, 0.12);  color: #a52a2a; }
+.chip-blue   { background: rgba(35, 131, 226, 0.12); color: #1664b8; }
+.chip-purple { background: rgba(144, 101, 176, 0.15); color: #6940a5; }
+.chip-gray   { background: var(--bg-alt); color: var(--text-soft); }
+
+/* Subtle horizontal rule. */
+.n-divider { height: 1px; background: var(--border); margin: 24px 0; }
+
+/* Section header. */
+.n-section-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+/* Live log (terminal). */
+.n-log {
+  background: #1e1e1e;
+  color: #b5cea8;
+  font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  padding: 12px 16px;
+  border-radius: 4px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+/* Modal backdrop. */
+.n-modal-backdrop {
+  background: rgba(15, 15, 15, 0.6);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+.n-modal {
+  background: var(--bg);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(15, 15, 15, 0.2),
+              0 2px 4px rgba(15, 15, 15, 0.08);
+}
