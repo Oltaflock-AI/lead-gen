@@ -6,7 +6,19 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "data" / "outreach.db"
 
-SETTINGS_KEYS = ("close_rate", "avg_deal_value", "email_signature", "sender_name")
+SETTINGS_KEYS = (
+    "close_rate", "avg_deal_value",
+    "sender_name", "sender_title", "company_name",
+    "website_url", "booking_url",
+)
+
+INITIAL_SETTINGS = {
+    "sender_name":  "Khush Mutha",
+    "sender_title": "Founder",
+    "company_name": "Alter Flog AI",
+    "website_url":  "",
+    "booking_url":  "",
+}
 
 
 def _conn():
@@ -18,6 +30,12 @@ def _conn():
 
 def init_db():
     with _conn() as c:
+        # Idempotent migrations for legacy installs that pre-date columns added later.
+        try:
+            c.execute("ALTER TABLE csv_sheets ADD COLUMN tab_title TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         c.executescript("""
             CREATE TABLE IF NOT EXISTS settings (
               key   TEXT PRIMARY KEY,
@@ -41,8 +59,9 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS csv_sheets (
               csv_name    TEXT PRIMARY KEY,
-              sheet_id    TEXT NOT NULL,
-              sheet_url   TEXT NOT NULL,
+              sheet_id    TEXT NOT NULL,         -- master spreadsheet id
+              sheet_url   TEXT NOT NULL,         -- deep link to the tab
+              tab_title   TEXT,                  -- tab name inside the master
               updated_at  TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS ai_forecast (
@@ -59,11 +78,13 @@ def init_db():
               created_at    TEXT NOT NULL
             );
         """)
-        # Clear any legacy seeded placeholder values so the dashboard
-        # shows blank fields until the user fills them in.
+        # Clear any legacy seeded placeholder values.
         c.execute("DELETE FROM settings WHERE value IN ('0.02', '500', 'Khush', 'Best,\nKhush')")
+        # Drop the obsolete free-form signature key (replaced by structured fields).
+        c.execute("DELETE FROM settings WHERE key = 'email_signature'")
         for k in SETTINGS_KEYS:
-            c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, '')", (k,))
+            default = INITIAL_SETTINGS.get(k, "")
+            c.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, default))
 
 
 def get_setting(key, default=None):
@@ -132,23 +153,24 @@ def list_outreach(limit=100):
 def get_sheet_for_csv(csv_name):
     with _conn() as c:
         row = c.execute(
-            "SELECT sheet_id, sheet_url, updated_at FROM csv_sheets WHERE csv_name = ?",
+            "SELECT sheet_id, sheet_url, tab_title, updated_at FROM csv_sheets WHERE csv_name = ?",
             (csv_name,),
         ).fetchone()
         return dict(row) if row else None
 
 
-def set_sheet_for_csv(csv_name, sheet_id, sheet_url):
+def set_sheet_for_csv(csv_name, sheet_id, sheet_url, tab_title=None):
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
-            "INSERT INTO csv_sheets (csv_name, sheet_id, sheet_url, updated_at) "
-            "VALUES (?, ?, ?, ?) "
+            "INSERT INTO csv_sheets (csv_name, sheet_id, sheet_url, tab_title, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(csv_name) DO UPDATE SET "
             "  sheet_id = excluded.sheet_id, "
             "  sheet_url = excluded.sheet_url, "
+            "  tab_title = excluded.tab_title, "
             "  updated_at = excluded.updated_at",
-            (csv_name, sheet_id, sheet_url, now),
+            (csv_name, sheet_id, sheet_url, tab_title, now),
         )
 
 

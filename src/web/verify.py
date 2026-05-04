@@ -29,9 +29,12 @@ def verify_lead_email(business_name, current_email="", region="", country=""):
     return {"email": current_email or "", "verified": False, "source": "none"}
 
 
-def update_csv_email(csv_path, business_name, new_email):
-    """Find the row whose business_name matches and write `new_email` into the
-    first email-like column. Returns True if updated, False if no row matched.
+def update_csv_email(csv_path, business_name, new_email, verified=None):
+    """Write `new_email` (and optional `email_verified` status) into the row
+    matching `business_name`. Returns True if updated.
+
+    `verified` is one of: True (MX-confirmed), False (found but no MX), None
+    (no email found). Persisted as 'yes' / 'found' / 'no' in `email_verified`.
     """
     csv_path = Path(csv_path)
     if not csv_path.exists():
@@ -59,10 +62,23 @@ def update_csv_email(csv_path, business_name, new_email):
         email_col = "email"
         fieldnames.insert(fieldnames.index(name_col) + 1, email_col)
 
+    if "email_verified" not in fieldnames:
+        fieldnames.append("email_verified")
+
+    if verified is True:
+        verified_str = "yes"
+    elif verified is False and new_email:
+        verified_str = "found"
+    elif new_email:
+        verified_str = "found"
+    else:
+        verified_str = "no"
+
     updated = False
     for r in rows:
         if (r.get(name_col) or "").strip() == (business_name or "").strip():
             r[email_col] = new_email
+            r["email_verified"] = verified_str
             updated = True
 
     if not updated:

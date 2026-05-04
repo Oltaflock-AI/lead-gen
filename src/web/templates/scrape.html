@@ -63,6 +63,17 @@
         <div id="business_types_grid" class="mt-1 p-2 max-h-44 overflow-auto grid grid-cols-2 gap-1 text-xs" style="background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px;"></div>
       </div>
 
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="n-label" for="state">State / region <span style="color: var(--red);">*</span></label>
+          <select name="state" id="state" required class="n-select"></select>
+        </div>
+        <div>
+          <label class="n-label" for="city">City <span style="color: var(--text-mute);">(optional)</span></label>
+          <input name="city" id="city" type="text" placeholder="leave blank to search whole state" class="n-input">
+        </div>
+      </div>
+
       <div class="grid grid-cols-3 gap-3">
         <div>
           <label class="n-label" for="min_reviews">Min reviews</label>
@@ -92,9 +103,11 @@
       <button type="submit" class="btn btn-primary w-full justify-center" style="padding: 8px 14px;">Run search</button>
     </form>
 
-    <div id="export-row" class="hidden px-5 pb-5 flex gap-2">
-      <button type="button" onclick="exportInteractive()" class="btn btn-sm">Export to Google Sheets</button>
-      <span id="export-status" class="text-xs self-center" style="color: var(--text-mute);"></span>
+    <div class="px-5 pb-5">
+      <div class="text-xs" style="color: var(--text-mute);">
+        Every interactive scrape auto-saves to <code>data/outputs/interactive_&lt;niche&gt;_&lt;country&gt;.csv</code>
+        and (when Google is connected) appends a new tab to your master sheet.
+      </div>
     </div>
   </section>
 </div>
@@ -106,6 +119,8 @@
   </div>
   <pre id="log" class="n-log h-72 m-5 mt-3 rounded"></pre>
 </section>
+
+<div id="save-banner" class="mt-4 n-card p-4 hidden text-sm" style="background: var(--bg-soft);"></div>
 
 <section class="mt-4 n-card overflow-hidden hidden" id="results-section">
   <div class="px-5 py-4" style="border-bottom: 1px solid var(--border);">
@@ -148,6 +163,15 @@ function toggleAllTypes(on) {
 document.getElementById('niche').addEventListener('change', refreshNicheTypes);
 refreshNicheTypes();
 
+async function refreshStates() {
+  const country = document.getElementById('country').value;
+  const states = await fetch(`/api/states/${encodeURIComponent(country)}`).then(r => r.json());
+  const sel = document.getElementById('state');
+  sel.innerHTML = states.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+}
+document.getElementById('country').addEventListener('change', refreshStates);
+refreshStates();
+
 const interactiveLeads = [];
 let lastNiche = '';
 
@@ -159,8 +183,14 @@ document.getElementById('interactive-form').addEventListener('submit', async (e)
   const country = fd.get('country');
   const businessTypes = Array.from(document.querySelectorAll('.bt-cb:checked')).map(cb => cb.value);
   if (!businessTypes.length) { alert('Pick at least one business type.'); return; }
+  const state = (fd.get('state') || '').trim();
+  const cityVal = (fd.get('city') || '').trim();
+  if (!state) { alert('State is required.'); return; }
   const body = {
     country,
+    niche,
+    state,
+    city: cityVal,
     business_types: businessTypes,
     min_reviews: fd.get('min_reviews'),
     min_rating: fd.get('min_rating'),
@@ -171,20 +201,45 @@ document.getElementById('interactive-form').addEventListener('submit', async (e)
   interactiveLeads.length = 0;
   document.getElementById('results-body').innerHTML = '';
   document.getElementById('results-section').classList.remove('hidden');
-  document.getElementById('export-row').classList.add('hidden');
+  document.getElementById('save-banner').classList.add('hidden');
   clearLog();
   appendLog(`▶ Interactive search: ${niche} in ${country} (${businessTypes.length} types)${body.verify_emails ? ', verifying emails' : ''}`);
 
-  await streamSSE('/api/scrape/interactive', body, (ev) => {
+  await startJob('/api/scrape/interactive', body, (ev) => {
     if (ev.type === 'lead') {
       interactiveLeads.push(ev.lead);
       addResultRow(ev.lead);
-      const emailNote = ev.lead['Email'] ? ` • email: ${ev.lead['Email Verified']}` : '';
-      setProgress(`${ev.progress.leads_found}/${ev.progress.total_target} • ${ev.progress.current_city} / ${ev.progress.current_type} • ${ev.progress.api_calls} API calls${emailNote}`);
+      const p = ev.progress;
+      const lead = ev.lead;
+      const emailNote = lead['Email']
+        ? ` · email ${lead['Email Verified']}: ${lead['Email']}`
+        : (body.verify_emails ? ' · no email found' : '');
+      appendLog(`  [${p.leads_found}/${p.total_target}] ✓ ${lead['Business Name']} — ${lead['Rating']}★ (${lead['Reviews']} reviews) · ${lead['City']} · ${lead['Business Type']}${emailNote}`);
+      setProgress(`${p.leads_found}/${p.total_target} · ${p.current_city} / ${p.current_type} · ${p.api_calls} API calls`);
     } else if (ev.type === 'done') {
       appendLog(`✔ Done — ${ev.total} leads found.`);
+      if (ev.csv_basename) appendLog(`  saved → data/outputs/${ev.csv_basename}`);
+      if (ev.sheet && ev.sheet.tab_url) {
+        appendLog(`  synced → master Sheet tab "${ev.sheet.tab_title}"`);
+      } else if (ev.sheet && ev.sheet.error) {
+        appendLog(`  ⚠ sheet sync failed: ${ev.sheet.error}`);
+      } else if (!ev.sheet) {
+        appendLog(`  (Google not connected — local CSV only)`);
+      }
       document.getElementById('results-count').textContent = `${ev.total} leads`;
-      if (ev.total > 0) document.getElementById('export-row').classList.remove('hidden');
+      const banner = document.getElementById('save-banner');
+      if (ev.csv_basename) {
+        let html = `<div>Saved <code>${escapeHtml(ev.csv_basename)}</code> locally.</div>`;
+        if (ev.sheet && ev.sheet.tab_url) {
+          html += `<div class="mt-1">Synced to master Sheet → <a href="${escapeHtml(ev.sheet.tab_url)}" target="_blank" rel="noopener" style="color: var(--accent);" class="underline">open this scrape's tab ↗</a> · <a href="${escapeHtml(ev.sheet.master_url)}" target="_blank" rel="noopener" style="color: var(--accent);" class="underline">master ↗</a></div>`;
+        } else if (ev.sheet && ev.sheet.error) {
+          html += `<div class="mt-1" style="color: var(--amber);">Sheet sync failed: ${escapeHtml(ev.sheet.error)}</div>`;
+        } else {
+          html += `<div class="mt-1" style="color: var(--text-mute);">Connect Google in the sidebar to auto-sync to the master sheet next time.</div>`;
+        }
+        banner.innerHTML = html;
+        banner.classList.remove('hidden');
+      }
     }
   });
 });
@@ -211,34 +266,11 @@ async function runCanonical(key) {
   clearLog();
   appendLog(`▶ Running canonical scraper: ${key}`);
   document.getElementById('results-section').classList.add('hidden');
-  await streamSSE(`/api/scrape/canonical/${encodeURIComponent(key)}`, {}, (ev) => {
+  await startJob(`/api/scrape/canonical/${encodeURIComponent(key)}`, {}, (ev) => {
     if (ev.type === 'log') appendLog(ev.line);
     else if (ev.type === 'done') appendLog('✔ Done.');
   });
 }
 
-async function exportInteractive() {
-  const status = document.getElementById('export-status');
-  status.textContent = 'Exporting…';
-  try {
-    const r = await fetch('/api/sheets/export', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        title: `Leads — ${lastNiche} — ${new Date().toISOString().slice(0,16).replace('T',' ')}`,
-        leads: interactiveLeads,
-        fieldnames: ['Business Name', 'City', 'Address', 'Phone', 'Email', 'Email Verified', 'Rating', 'Reviews', 'Business Type', 'Google Maps URL'],
-      }),
-    });
-    const data = await r.json();
-    if (data.url) {
-      status.innerHTML = `<a href="${data.url}" target="_blank" rel="noopener" style="color: var(--accent);" class="hover:underline">Open Sheet ↗</a>`;
-    } else {
-      status.textContent = data.error || 'Export failed';
-    }
-  } catch (e) {
-    status.textContent = e.message;
-  }
-}
 </script>
 {% endblock %}

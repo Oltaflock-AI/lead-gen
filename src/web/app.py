@@ -18,14 +18,16 @@ from google_auth_oauthlib.flow import Flow
 from . import ai_metrics
 from . import asana as asana_api
 from . import db
+from . import jobs
 from . import metrics
 from .enrich_runner import run_enrich_stream
-from .gmail import send_email
+from .gmail import check_replies as gmail_check_replies
 from . import resend_send
+from .email_compose import compose as compose_email
 from .personalize import draft_email
-from .scraper import COUNTRY_CITIES, COUNTRY_REGION_CODES, NICHE_PRESETS, run_search
+from .scraper import COUNTRY_CITIES, COUNTRY_REGION_CODES, COUNTRY_STATES, NICHE_PRESETS, run_search
 from .scraper_runner import list_scrapers, run_scraper_stream
-from .sheets import SCOPES, create_sheet_and_write, update_sheet_values
+from .sheets import SCOPES, add_tab, ensure_master_spreadsheet, update_tab
 from .verify import verify_lead_email, update_csv_email
 from .fitcheck import compute_fit, update_csv_fit
 
@@ -76,12 +78,71 @@ def _google_creds():
     return db.load_token()
 
 
+def _slug(s):
+    """Lowercase, alphanumeric + underscore only."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_") or "untitled"
+
+
+INTERACTIVE_FIELDNAMES = [
+    "Business Name", "City", "Address", "Phone", "Email", "Email Verified",
+    "Rating", "Reviews", "Business Type", "Google Maps URL",
+]
+
+
+def _save_interactive_csv(leads, niche, country):
+    """Append leads to data/outputs/interactive_<niche>_<country>.csv.
+    Creates the file with a header row if it doesn't exist yet.
+    Returns the absolute path written.
+    """
+    if not leads:
+        return None
+    basename = f"interactive_{_slug(niche)}_{_slug(country)}.csv"
+    path = PROJECT_ROOT / "data" / "outputs" / basename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=INTERACTIVE_FIELDNAMES, extrasaction="ignore")
+        if new_file:
+            writer.writeheader()
+        for l in leads:
+            writer.writerow({k: l.get(k, "") for k in INTERACTIVE_FIELDNAMES})
+    return str(path)
+
+
+def _push_to_master_sheet(creds, niche, country, leads):
+    """Add the leads as a new tab in the master sheet. Creates the master if
+    needed. Returns dict {url, tab_title, master_url, spreadsheet_id} or
+    {error: ...}.
+    """
+    if not leads:
+        return {"error": "no leads"}
+    try:
+        existing = db.get_setting("master_spreadsheet_id", "") or None
+        spreadsheet_id, master_url = ensure_master_spreadsheet(creds, existing_id=existing)
+        if spreadsheet_id != existing:
+            db.set_setting("master_spreadsheet_id", spreadsheet_id)
+            db.set_setting("master_spreadsheet_url", master_url)
+        tab_base = f"{niche} — {country} — {datetime.now().strftime('%m/%d %H:%M')}"
+        info = add_tab(creds, spreadsheet_id, tab_base, leads, INTERACTIVE_FIELDNAMES)
+        return {
+            "spreadsheet_id": spreadsheet_id,
+            "master_url": master_url,
+            "tab_url": info["url"],
+            "tab_title": info["tab_title"],
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 def _safe_csv_path(name):
     """Resolve a CSV name to a path inside data/imports or data/outputs."""
-    name = Path(name).name  # strip dir traversal
+    name = Path(name or "").name  # strip dir traversal
+    if not name:
+        return None
     for d in (PROJECT_ROOT / "data" / "outputs", PROJECT_ROOT / "data" / "imports"):
         p = d / name
-        if p.exists():
+        if p.is_file():
             return p
     return None
 
@@ -191,7 +252,7 @@ def outreach_page():
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     if request.method == "POST":
-        for key in ("close_rate", "avg_deal_value", "email_signature", "sender_name"):
+        for key in db.SETTINGS_KEYS:
             if key in request.form:
                 db.set_setting(key, request.form[key])
         return redirect(url_for("settings_page"))
@@ -210,12 +271,51 @@ def settings_page():
     )
 
 
+# ─────────────────────────── api: jobs ───────────────────────────
+
+
+@app.route("/api/jobs/active")
+def api_jobs_active():
+    return jsonify({"jobs": jobs.list_active()})
+
+
+@app.route("/api/jobs/recent")
+def api_jobs_recent():
+    return jsonify({"jobs": jobs.list_recent(limit=20)})
+
+
+@app.route("/api/jobs/<jid>/events")
+def api_jobs_events(jid):
+    """Poll-friendly endpoint: returns events from `cursor` onward as JSON.
+
+    Replaces the streaming SSE variant which suffered from Werkzeug
+    chunk-buffering when the browser used fetch+ReadableStream.
+    """
+    cursor = int(request.args.get("cursor", 0))
+    j = jobs.get(jid)
+    if j is None:
+        return jsonify({"status": "missing", "events": [], "cursor": cursor}), 404
+    new_events = j["events"][cursor:]
+    return jsonify({
+        "status": j["status"],
+        "events": new_events,
+        "cursor": cursor + len(new_events),
+        "result": j.get("result") if j["status"] != "running" else None,
+        "error": j.get("error"),
+    })
+
+
 # ─────────────────────────── api: scrapers ───────────────────────────
 
 
 @app.route("/api/cities/<country>")
 def api_cities(country):
     return jsonify(COUNTRY_CITIES.get(country, []))
+
+
+@app.route("/api/states/<country>")
+def api_states(country):
+    return jsonify(COUNTRY_STATES.get(country, []))
 
 
 @app.route("/api/niche-types/<niche>")
@@ -225,16 +325,17 @@ def api_niche_types(niche):
 
 @app.route("/api/scrape/canonical/<key>", methods=["POST"])
 def api_scrape_canonical(key):
-    def stream():
-        for line in run_scraper_stream(key):
-            yield _sse({"type": "log", "line": line})
-        yield _sse({"type": "done"})
+    label = f"Canonical scraper · {key}"
+    jid = jobs.create_job("canonical_scrape", label)
 
-    return Response(
-        stream_with_context(stream()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    def worker():
+        for line in run_scraper_stream(key):
+            jobs.append(jid, {"type": "log", "line": line})
+        jobs.append(jid, {"type": "done"})
+        jobs.finish(jid, result={"key": key})
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
 
 
 @app.route("/api/scrape/interactive", methods=["POST"])
@@ -244,20 +345,42 @@ def api_scrape_interactive():
 
     data = request.json or {}
     country = data.get("country", "US")
-    cities = data.get("cities") or COUNTRY_CITIES.get(country, [])
+    state = (data.get("state") or "").strip()
+    city = (data.get("city") or "").strip()
+    cities = data.get("cities")
     business_types = data.get("business_types", [])
     min_reviews = int(data.get("min_reviews", 50))
     min_rating = float(data.get("min_rating", 4.0))
     target_leads = int(data.get("target_leads", 100))
     require_no_website = bool(data.get("require_no_website", False))
     verify_emails = bool(data.get("verify_emails", False))
+    niche = (data.get("niche") or "scrape").strip()
     region_code = COUNTRY_REGION_CODES.get(country, "US")
 
+    if not state:
+        return jsonify({"error": "State / region is required"}), 400
     if not business_types:
         return jsonify({"error": "No business types selected"}), 400
 
-    def stream():
+    # Build the city-list to query. Explicit user input overrides everything.
+    if not cities:
+        if city:
+            cities = [f"{city}, {state}"]
+        else:
+            cities = [state]
+
+    # When verifying emails, we need to OVER-scrape because many leads will not
+    # have a discoverable email. Search a larger pool, but stop appending once
+    # we've collected `target_leads` rows that actually carry an email.
+    internal_target = target_leads * 6 if verify_emails else target_leads
+    internal_target = min(internal_target, 1000)
+
+    label = f"Scrape · {niche} · {city or state}"
+    jid = jobs.create_job("interactive_scrape", label)
+
+    def worker():
         leads = []
+        skipped_no_email = 0
         for lead, progress in run_search(
             cities=cities,
             business_types=business_types,
@@ -265,7 +388,7 @@ def api_scrape_interactive():
             region_code=region_code,
             min_reviews=min_reviews,
             min_rating=min_rating,
-            target_leads=target_leads,
+            target_leads=internal_target,
             require_no_website=require_no_website,
         ):
             if verify_emails:
@@ -275,17 +398,48 @@ def api_scrape_interactive():
                     region=lead.get("City", ""),
                     country=country,
                 )
-                lead["Email"] = v.get("email", "")
-                lead["Email Verified"] = "yes" if v.get("verified") else ("found" if v.get("email") else "no")
-            leads.append(lead)
-            yield _sse({"type": "lead", "lead": lead, "progress": progress})
-        yield _sse({"type": "done", "total": len(leads), "leads": leads})
+                if not v.get("email"):
+                    # Drop leads with no email when the user asked for emails-only.
+                    skipped_no_email += 1
+                    jobs.append(jid, {
+                        "type": "log",
+                        "line": f"  ↷ skip {lead.get('Business Name', '')} — no email found",
+                    })
+                    if len(leads) >= target_leads:
+                        break
+                    continue
+                lead["Email"] = v["email"]
+                lead["Email Verified"] = "yes" if v.get("verified") else "found"
 
-    return Response(
-        stream_with_context(stream()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+            leads.append(lead)
+            # Override the progress numerator to count only kept leads, so the
+            # UI shows progress toward the user's actual target.
+            shown_progress = dict(progress)
+            shown_progress["leads_found"] = len(leads)
+            shown_progress["total_target"] = target_leads
+            shown_progress["skipped_no_email"] = skipped_no_email
+            jobs.append(jid, {"type": "lead", "lead": lead, "progress": shown_progress})
+
+            if len(leads) >= target_leads:
+                break
+
+        csv_path = _save_interactive_csv(leads, niche, country)
+        sheet_info = None
+        creds = _google_creds()
+        if leads and creds:
+            sheet_info = _push_to_master_sheet(creds, niche, country, leads)
+        result = {
+            "total": len(leads),
+            "leads": leads,
+            "csv_path": csv_path,
+            "csv_basename": Path(csv_path).name if csv_path else None,
+            "sheet": sheet_info,
+        }
+        jobs.append(jid, {"type": "done", **{k: v for k, v in result.items() if k != "leads"}})
+        jobs.finish(jid, result=result)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
 
 
 # ─────────────────────────── api: enrich ───────────────────────────
@@ -302,16 +456,17 @@ def api_enrich():
     if not path:
         return jsonify({"error": f"CSV not found: {name}"}), 404
 
-    def stream():
-        for line in run_enrich_stream(path, keep_with_website=keep_with_website, skip_email=skip_email):
-            yield _sse({"type": "log", "line": line})
-        yield _sse({"type": "done"})
+    label = f"Enrich · {name}"
+    jid = jobs.create_job("enrich", label)
 
-    return Response(
-        stream_with_context(stream()),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    def worker():
+        for line in run_enrich_stream(path, keep_with_website=keep_with_website, skip_email=skip_email):
+            jobs.append(jid, {"type": "log", "line": line})
+        jobs.append(jid, {"type": "done"})
+        jobs.finish(jid, result={"csv": name})
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
 
 
 # ─────────────────────────── api: outreach ───────────────────────────
@@ -331,47 +486,29 @@ def api_outreach_preview():
     return jsonify({"drafts": drafts, "personalized_engine": "claude" if ANTHROPIC_API_KEY else "template"})
 
 
-@app.route("/api/outreach/send", methods=["POST"])
-def api_outreach_send():
+@app.route("/api/outreach/check-replies", methods=["POST"])
+def api_outreach_check_replies():
     creds = _google_creds()
     if not creds:
-        return jsonify({"error": "Google not connected — visit /auth/google first"}), 401
-
-    data = request.json or {}
-    sends = data.get("sends", [])
-    csv_path = data.get("csv_path", "")
-    signature = db.get_setting("email_signature", "")
-
-    results = []
-    for s in sends:
-        to_addr = s.get("to") or s.get("email")
-        subject = s.get("subject", "")
-        body = s.get("body", "")
-        business_name = s.get("business_name", "")
-        if not (to_addr and subject and body):
-            results.append({"to": to_addr, "ok": False, "error": "missing fields"})
-            continue
-        try:
-            mid = send_email(creds, to_addr, subject, body, signature)
-            db.log_outreach(to_addr, business_name, csv_path, subject, body,
-                            gmail_message_id=mid, status="sent")
-            results.append({"to": to_addr, "ok": True, "message_id": mid})
-        except Exception as e:
-            db.log_outreach(to_addr, business_name, csv_path, subject, body,
-                            gmail_message_id=None, status="failed")
-            results.append({"to": to_addr, "ok": False, "error": str(e)})
-    return jsonify({"results": results})
+        return jsonify({"error": "Google not connected. /auth/google first."}), 401
+    days = int((request.json or {}).get("days", 30))
+    try:
+        result = gmail_check_replies(creds, days=days)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
-@app.route("/api/outreach/send-resend", methods=["POST"])
-def api_outreach_send_resend():
+@app.route("/api/outreach/send", methods=["POST"])
+def api_outreach_send():
+    """All sending goes through Resend. Gmail is read-only (reply detection)."""
     if not resend_send.is_configured():
         return jsonify({"error": "Resend not configured. Set RESEND_API_KEY and RESEND_FROM in .env"}), 400
 
     data = request.json or {}
     sends = data.get("sends", [])
     csv_path = data.get("csv_path", "")
-    signature = db.get_setting("email_signature", "")
+    settings = db.get_settings()
 
     results = []
     for s in sends:
@@ -382,8 +519,9 @@ def api_outreach_send_resend():
         if not (to_addr and subject and body):
             results.append({"to": to_addr, "ok": False, "error": "missing fields"})
             continue
+        text_body, html_body = compose_email(body, settings)
         try:
-            mid = resend_send.send_email(to_addr, subject, body, signature)
+            mid = resend_send.send_email(to_addr, subject, text_body, html_body)
             db.log_outreach(to_addr, business_name, csv_path, subject, body,
                             gmail_message_id=f"resend:{mid}", status="sent")
             results.append({"to": to_addr, "ok": True, "message_id": mid})
@@ -407,17 +545,26 @@ def api_mark_replied(log_id):
 
 @app.route("/api/sheets/export", methods=["POST"])
 def api_sheets_export():
+    """Sync a CSV to a tab inside the single master spreadsheet.
+
+    First call: ensures the master exists, adds a tab named after the CSV,
+    persists the mapping in db.csv_sheets.
+    Subsequent calls: clear and rewrite the existing tab in place. Never
+    creates a new spreadsheet.
+    """
     creds = _google_creds()
     if not creds:
         return jsonify({"error": "Google not connected"}), 401
 
     data = request.json or {}
     name = data.get("name", "")
-    leads = data.get("leads")  # optional override (interactive search)
+    leads = data.get("leads")
     fieldnames = data.get("fieldnames")
-    force_new = bool(data.get("force_new", False))
 
-    if not leads and name:
+    if not name:
+        return jsonify({"error": "csv name required"}), 400
+
+    if not leads:
         path = _safe_csv_path(name)
         if not path:
             return jsonify({"error": f"CSV not found: {name}"}), 404
@@ -429,21 +576,36 @@ def api_sheets_export():
     if not leads:
         return jsonify({"error": "No leads to export"}), 400
 
-    existing = db.get_sheet_for_csv(name) if (name and not force_new) else None
-    title = data.get("title") or f"Leads — {name or 'Search'} — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-
     try:
-        if existing:
+        existing_master = db.get_setting("master_spreadsheet_id", "") or None
+        spreadsheet_id, master_url = ensure_master_spreadsheet(creds, existing_id=existing_master)
+        if spreadsheet_id != existing_master:
+            db.set_setting("master_spreadsheet_id", spreadsheet_id)
+            db.set_setting("master_spreadsheet_url", master_url)
+
+        # Pick a stable tab name — the CSV basename minus .csv. Fits the user's
+        # mental model of "one tab per lead list".
+        existing_mapping = db.get_sheet_for_csv(name)
+        tab_title = (existing_mapping and existing_mapping.get("tab_title")) or name.replace(".csv", "")
+
+        synced = False
+        if existing_mapping and existing_mapping.get("sheet_id") == spreadsheet_id and existing_mapping.get("tab_title"):
             try:
-                url = update_sheet_values(creds, existing["sheet_id"], leads, fieldnames=fieldnames)
-                db.set_sheet_for_csv(name, existing["sheet_id"], url)
-                return jsonify({"url": url, "synced": True})
+                info = update_tab(creds, spreadsheet_id, tab_title, leads, fieldnames=fieldnames)
+                synced = True
             except Exception:
-                pass  # sheet may have been deleted; fall through to create new
-        sheet_id, url = create_sheet_and_write(creds, title, leads, fieldnames=fieldnames)
-        if name:
-            db.set_sheet_for_csv(name, sheet_id, url)
-        return jsonify({"url": url, "synced": False, "created": True})
+                # Tab may have been deleted upstream — fall through and recreate.
+                info = add_tab(creds, spreadsheet_id, tab_title, leads, fieldnames=fieldnames)
+        else:
+            info = add_tab(creds, spreadsheet_id, tab_title, leads, fieldnames=fieldnames)
+
+        db.set_sheet_for_csv(name, spreadsheet_id, info["url"], tab_title=info["tab_title"])
+        return jsonify({
+            "url": info["url"],
+            "master_url": master_url,
+            "tab_title": info["tab_title"],
+            "synced": synced,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -477,12 +639,82 @@ def api_verify_email():
 
     result = verify_lead_email(business_name, current_email, region, country)
     persisted = False
-    if persist and csv_name and result.get("email") and result["email"] != current_email:
+    if persist and csv_name and business_name:
         path = _safe_csv_path(csv_name)
         if path:
-            persisted = update_csv_email(path, business_name, result["email"])
+            persisted = update_csv_email(
+                path, business_name,
+                new_email=result.get("email", ""),
+                verified=result.get("verified"),
+            )
     result["persisted"] = persisted
     return jsonify(result)
+
+
+@app.route("/api/bulk-verify-emails", methods=["POST"])
+def api_bulk_verify_emails():
+    """Iterate every row in a CSV. For each business, look up + MX-verify
+    an email and persist back to the CSV. Streams progress via SSE.
+    """
+    if not GOOGLE_PLACES_API_KEY:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY required"}), 400
+    data = request.json or {}
+    csv_name = data.get("csv_name", "")
+    path = _safe_csv_path(csv_name)
+    if not path:
+        return jsonify({"error": f"CSV not found: {csv_name}"}), 404
+
+    _, rows = metrics.read_csv_with_scores(path)
+    total = len(rows)
+
+    label = f"Bulk verify emails · {csv_name}"
+    jid = jobs.create_job("bulk_verify", label)
+
+    def worker():
+        verified, found, missing, persisted = 0, 0, 0, 0
+        for i, r in enumerate(rows, 1):
+            n = r["_normalized"]
+            name = n["business_name"]
+            current = n["email"]
+            region = n["city"]
+            if not name:
+                continue
+            v = verify_lead_email(name, current, region, "")
+            if v.get("verified"):
+                verified += 1
+            elif v.get("email"):
+                found += 1
+            else:
+                missing += 1
+            if v.get("email") or current:
+                ok = update_csv_email(
+                    path, name, new_email=v.get("email", current),
+                    verified=v.get("verified"),
+                )
+                if ok:
+                    persisted += 1
+            jobs.append(jid, {
+                "type": "progress",
+                "i": i, "total": total,
+                "name": name,
+                "email": v.get("email", ""),
+                "verified": v.get("verified"),
+                "verified_count": verified,
+                "found_count": found,
+                "missing_count": missing,
+            })
+        result = {
+            "total": total,
+            "verified": verified,
+            "found": found,
+            "missing": missing,
+            "persisted": persisted,
+        }
+        jobs.append(jid, {"type": "done", **result})
+        jobs.finish(jid, result=result)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
 
 
 @app.route("/api/fitcheck", methods=["POST"])
@@ -551,7 +783,7 @@ def api_ai_score_leads():
 
 
 def _persist_ai_scores(csv_path, leads, scores):
-    """Write ai_score + ai_score_reason columns to the matching rows in csv."""
+    """Write ai_niche_fit + ai_lead_score + ai_score_reason columns."""
     import csv as _csv
     csv_path = Path(csv_path)
     if not csv_path.exists():
@@ -563,15 +795,20 @@ def _persist_ai_scores(csv_path, leads, scores):
     name_col = next((c for c in ("business_name", "Business Name", "prospect_company_name") if c in fieldnames), None)
     if not name_col:
         return 0
-    for col in ("ai_score", "ai_score_reason"):
+    for col in ("ai_niche_fit", "ai_lead_score", "ai_score_reason"):
         if col not in fieldnames:
             fieldnames.append(col)
     by_name = {(l.get("business_name") or "").strip(): s for l, s in zip(leads, scores)}
     n = 0
     for r in rows:
         s = by_name.get((r.get(name_col) or "").strip())
-        if s and s.get("score") is not None:
-            r["ai_score"] = str(s["score"])
+        if not s:
+            continue
+        if s.get("niche_fit") is not None or s.get("lead_score") is not None:
+            if s.get("niche_fit") is not None:
+                r["ai_niche_fit"] = str(s["niche_fit"])
+            if s.get("lead_score") is not None:
+                r["ai_lead_score"] = str(s["lead_score"])
             r["ai_score_reason"] = s.get("reason", "")
             n += 1
     if n == 0:
@@ -644,12 +881,19 @@ def auth_google():
         prompt="consent",
     )
     session["oauth_state"] = state
+    # google_auth_oauthlib uses PKCE by default — the code_verifier generated
+    # during authorization_url() must be replayed on /auth/callback.
+    if getattr(flow, "code_verifier", None):
+        session["oauth_code_verifier"] = flow.code_verifier
     return redirect(auth_url)
 
 
 @app.route("/auth/callback")
 def auth_callback():
     flow = _oauth_flow()
+    cv = session.pop("oauth_code_verifier", None)
+    if cv:
+        flow.code_verifier = cv
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
     db.save_token({

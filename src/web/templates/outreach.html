@@ -2,14 +2,26 @@
 {% block title %}Outreach — lead-gen{% endblock %}
 {% block breadcrumb %}Workspace / Outreach{% endblock %}
 {% block heading %}Outreach{% endblock %}
-{% block subheading %}Personalize and send cold emails. {% if not claude_enabled %}<span style="color: var(--amber);">ANTHROPIC_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
+{% block subheading %}Personalize and send cold emails via Resend. {% if not claude_enabled %}<span style="color: var(--amber);">ANTHROPIC_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
+
+{% block header_actions %}
+{% if google_connected %}
+<button type="button" onclick="checkReplies()" class="btn btn-sm">Check for replies (Gmail)</button>
+{% endif %}
+{% endblock %}
 
 {% block content %}
-{% if not google_connected and not resend_enabled %}
-<div class="n-card p-4 mb-5" style="background: rgba(203,145,47,0.1); border-color: rgba(203,145,47,0.3); color: #8a6020;">
-  <div class="text-sm">No send channel connected. Either <a href="/auth/google" class="underline font-medium">connect Google</a> for Gmail, or set <code>RESEND_API_KEY</code> + <code>RESEND_FROM</code> in <code>.env</code>.</div>
+{% if not resend_enabled %}
+<div class="n-card p-4 mb-5" style="background: rgba(224,62,62,0.08); border-color: rgba(224,62,62,0.3); color: #a52a2a;">
+  <div class="text-sm">Resend not configured — outreach send is disabled. Set <code>RESEND_API_KEY</code> + <code>RESEND_FROM</code> in <code>.env</code>.</div>
 </div>
 {% endif %}
+{% if resend_enabled and not google_connected %}
+<div class="n-card p-4 mb-5" style="background: rgba(203,145,47,0.08); border-color: rgba(203,145,47,0.3); color: #8a6020;">
+  <div class="text-sm">Tip: <a href="/auth/google" class="underline font-medium">connect Google</a> so we can scan your Gmail inbox for replies to outreach you sent through Resend.</div>
+</div>
+{% endif %}
+<div id="reply-status" class="hidden n-card p-3 mb-5 text-sm" style="background: var(--bg-soft);"></div>
 
 <div class="n-card p-4 mb-5">
   <form method="get" action="/outreach" class="flex items-center gap-3 text-sm">
@@ -100,14 +112,8 @@
   <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
     <div class="text-sm font-semibold" style="color: var(--text);">Drafts</div>
     <div class="flex items-center gap-2">
-      <label class="text-xs flex items-center gap-1.5" style="color: var(--text-soft);">
-        via
-        <select id="provider-select" aria-label="Email provider" class="n-select" style="width: 7rem;">
-          {% if google_connected %}<option value="gmail">Gmail</option>{% endif %}
-          {% if resend_enabled %}<option value="resend">Resend</option>{% endif %}
-        </select>
-      </label>
-      <button type="button" onclick="sendAll()" id="send-btn" class="btn btn-primary btn-sm" style="background: var(--green); border-color: var(--green);">Send all</button>
+      <span class="text-xs" style="color: var(--text-mute);">sending via Resend · Georgia 12pt + auto-signature</span>
+      <button type="button" onclick="sendAll()" id="send-btn" class="btn btn-primary btn-sm" style="background: var(--green); border-color: var(--green);" {% if not resend_enabled %}disabled{% endif %}>Send all</button>
     </div>
   </div>
   <div id="drafts-list"></div>
@@ -217,13 +223,11 @@ async function sendAll() {
     body: div.querySelector('.draft-body').value,
   }));
   if (!items.length) return;
-  const provider = document.getElementById('provider-select').value;
-  const endpoint = provider === 'resend' ? '/api/outreach/send-resend' : '/api/outreach/send';
   const status = document.getElementById('send-status');
-  status.textContent = `Sending ${items.length} via ${provider}…`;
+  status.textContent = `Sending ${items.length} via Resend…`;
   document.getElementById('send-btn').disabled = true;
   try {
-    const r = await fetch(endpoint, {
+    const r = await fetch('/api/outreach/send', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({sends: items, csv_path: CSV_PATH}),
@@ -243,6 +247,28 @@ async function sendAll() {
 async function markReplied(id) {
   await fetch('/api/outreach/mark-replied/' + id, {method: 'POST'});
   location.reload();
+}
+
+async function checkReplies() {
+  const status = document.getElementById('reply-status');
+  status.classList.remove('hidden');
+  status.textContent = 'Scanning Gmail inbox for replies (last 30 days)…';
+  try {
+    const r = await fetch('/api/outreach/check-replies', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({days: 30}),
+    });
+    const data = await r.json();
+    if (data.error) {
+      status.innerHTML = `<span style="color: var(--red);">${escapeHtml(data.error)}</span>`;
+      return;
+    }
+    status.innerHTML = `Scanned ${data.addresses} contacted addresses · matched ${data.matched} messages · marked <strong>${data.marked_replied}</strong> rows as replied.`;
+    if (data.marked_replied > 0) setTimeout(() => location.reload(), 2000);
+  } catch (e) {
+    status.innerHTML = `<span style="color: var(--red);">${escapeHtml(e.message)}</span>`;
+  }
 }
 
 async function syncSheet(name) {

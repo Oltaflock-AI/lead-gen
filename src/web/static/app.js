@@ -108,6 +108,77 @@ window.submitAsana = async function() {
   submitBtn.disabled = false;
 };
 
+// Poll a job for new events every `interval` ms. Calls onEvent for each new
+// event, returns a controller {stop()}.
+function attachJobPolling(jobId, onEvent, interval = 800) {
+  let cursor = 0;
+  let stopped = false;
+  async function tick() {
+    if (stopped) return;
+    try {
+      const r = await fetch(`/api/jobs/${jobId}/events?cursor=${cursor}`);
+      if (r.ok) {
+        const data = await r.json();
+        cursor = data.cursor;
+        for (const ev of data.events) onEvent(ev);
+        if (data.status !== 'running') {
+          onEvent({type: '_end', status: data.status, result: data.result, error: data.error});
+          return;
+        }
+      }
+    } catch (e) { /* keep retrying */ }
+    setTimeout(tick, interval);
+  }
+  tick();
+  return { stop() { stopped = true; } };
+}
+
+// Read SSE from a GET URL.
+async function streamGetSSE(url, onEvent) {
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    onEvent({type: '_error', error: `HTTP ${resp.status}`});
+    return;
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, {stream: true});
+    let idx;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith('data: ')) {
+          try { onEvent(JSON.parse(line.slice(6))); }
+          catch (e) { console.error('parse error', e, line); }
+        }
+      }
+    }
+  }
+}
+
+// startJob: POST to a long-running endpoint (returns {job_id}), then begin
+// polling /api/jobs/<id>/events for incremental updates and forward each event
+// to onEvent. Returns the job_id.
+async function startJob(url, body, onEvent) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  const data = await r.json();
+  if (!data.job_id) {
+    onEvent({type: '_error', error: data.error || 'no job id returned'});
+    return null;
+  }
+  attachJobPolling(data.job_id, onEvent);
+  return data.job_id;
+}
+
 // POST a JSON body and consume an SSE response, calling `onEvent(parsedJson)` per event.
 async function streamSSE(url, body, onEvent) {
   const resp = await fetch(url, {

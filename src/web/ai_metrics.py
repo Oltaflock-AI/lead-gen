@@ -49,23 +49,21 @@ Output strict JSON only, no prose:
 }
 """
 
-SYSTEM_SCORE_LEADS = """You score cold outreach leads from 0 to 100 for fit with our AI services (voice agent, website chatbot, missed-call recovery + booking automation).
+SYSTEM_SCORE_LEADS = """You score cold-outreach leads on TWO independent dimensions, each 0-100, for our AI services (24/7 voice agent, website chatbot, missed-call recovery + booking automation).
 
-Higher score = more likely to (a) need our services, (b) be willing to pay $200-1500/month, (c) respond to cold email.
+DIMENSION 1 — niche_fit
+How well does this BUSINESS NICHE match what our AI services solve?
+- 80-100: appointment-driven service business with phone bookings (home services, law, medical/dental, salons, auto repair, veterinarians, fitness studios)
+- 50-79: hybrid business with some booking flow (restaurants taking reservations, real estate, hotels)
+- 0-49: pure retail / transactional / e-commerce / one-time purchase (clothing store, grocery, food truck without booking)
 
-Strong positive signals:
-- Service businesses that take phone bookings (home services, law firms, medical, salons, auto repair)
-- High rating (4.3+) AND many reviews (200+) → established, has revenue
-- Operates with after-hours gap → voice agent fit
-- No website → chatbot/website agent upside
-
-Negative signals:
-- Restaurants, retail, transactional businesses (less appointment-driven)
-- Very high reviews but low rating (operational issues, won't buy)
-- Tiny review count (<20) → likely too small to afford SaaS
+DIMENSION 2 — lead_score
+Will THIS SPECIFIC business respond to cold email and become a customer?
+- Boost: high rating (4.3+), many reviews (200+), has email contact, has phone, established footprint
+- Penalize: tiny review count (<20), low rating + high reviews (operational issues), no contact info, very small business unlikely to afford $200-1500/mo
 
 Output a JSON array with EXACTLY one entry per input lead, in the same order:
-[{"score": <int 0-100>, "reason": "<8-15 word justification>"}]
+[{"niche_fit": <int 0-100>, "lead_score": <int 0-100>, "reason": "<10-20 word justification covering both dimensions>"}]
 """
 
 
@@ -141,9 +139,9 @@ def forecast_pipeline(per_csv_summaries):
 
 
 def score_leads(leads):
-    """Bulk score up to 50 leads. Returns list of {score, reason} same length as input."""
+    """Bulk score up to 50 leads. Returns list of {niche_fit, lead_score, reason}."""
     if not is_enabled():
-        return [{"score": None, "reason": "AI scoring disabled (no ANTHROPIC_API_KEY)"} for _ in leads]
+        return [{"niche_fit": None, "lead_score": None, "reason": "AI scoring disabled (no ANTHROPIC_API_KEY)"} for _ in leads]
     if not leads:
         return []
 
@@ -177,10 +175,9 @@ def score_leads(leads):
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
         parsed = _extract_json(text, "[")
         if not isinstance(parsed, list):
-            return [{"score": None, "reason": "no JSON array in response"} for _ in batch]
-        # Pad or truncate to match the batch length.
+            return [{"niche_fit": None, "lead_score": None, "reason": "no JSON array in response"} for _ in batch]
         while len(parsed) < len(batch):
-            parsed.append({"score": None, "reason": ""})
+            parsed.append({"niche_fit": None, "lead_score": None, "reason": ""})
         return parsed[:len(batch)]
     except Exception as e:
-        return [{"score": None, "reason": f"{type(e).__name__}: {e}"} for _ in batch]
+        return [{"niche_fit": None, "lead_score": None, "reason": f"{type(e).__name__}: {e}"} for _ in batch]

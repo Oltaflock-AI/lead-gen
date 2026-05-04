@@ -9,17 +9,32 @@
 {% endblock %}
 
 {% block content %}
-<div class="flex flex-wrap items-center gap-2 mb-5">
-  <button type="button" onclick="enrichCsv('{{ name }}', false, false)" class="btn btn-primary btn-sm">Enrich</button>
-  <button type="button" onclick="enrichCsv('{{ name }}', true, false)" class="btn btn-sm">Enrich (keep w/ websites)</button>
-  <button type="button" onclick="enrichCsv('{{ name }}', false, true)" class="btn btn-sm">Enrich (skip email)</button>
-  {% if claude_enabled %}
-  <button type="button" onclick="scoreVisibleWithAI()" class="btn btn-sm" style="border-color: var(--purple); color: var(--purple);">Score all with AI</button>
-  {% endif %}
-  {% if asana_enabled %}
-  <button type="button" onclick="bulkAsanaForLowScore()" class="btn btn-sm">Asana: low-score leads</button>
-  {% endif %}
-  <span id="action-status" class="text-xs ml-2" style="color: var(--text-mute);"></span>
+<div class="mb-5 n-card p-4" style="background: var(--bg-soft);">
+  <div class="text-xs font-semibold mb-2" style="color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.04em;">Bulk actions</div>
+  <div class="flex flex-wrap items-center gap-2 mb-3">
+    <button type="button" onclick="bulkVerifyEmails('{{ name }}')" class="btn btn-primary btn-sm" title="For every row, search for an email and MX-check it. Updates the CSV in place.">Scrape + verify emails</button>
+    {% if claude_enabled %}
+    <button type="button" onclick="scoreVisibleWithAI()" class="btn btn-sm" style="border-color: var(--purple); color: var(--purple);" title="Send the visible 50 rows to Claude for niche-fit + lead-score scoring. Persists to ai_niche_fit / ai_lead_score columns.">Score all with AI</button>
+    {% endif %}
+    {% if asana_enabled %}
+    <button type="button" onclick="bulkAsanaForLowScore()" class="btn btn-sm" title="Create one Asana task per lead whose AI lead score is below 60.">Asana: low-score leads</button>
+    {% endif %}
+    <span id="action-status" class="text-xs ml-2" style="color: var(--text-mute);"></span>
+  </div>
+
+  <details class="text-xs" style="color: var(--text-soft);">
+    <summary class="cursor-pointer" style="color: var(--text);">Three Enrich variants — what's the difference?</summary>
+    <div class="mt-2 space-y-2 pl-2">
+      <div><strong>Enrich (default)</strong> — for every row: hit Google Places, add phone + verified address + rating + reviews + maps URL, scrape & MX-verify an email. <span style="color: var(--red);">Drops</span> rows that have a website, no phone, or are permanently closed. Use this when you want a clean cold-call list.</div>
+      <div><strong>Enrich (keep w/ websites)</strong> — same as default but <strong>does not drop</strong> rows that have a website. Use this when you're pitching AI services to existing online businesses.</div>
+      <div><strong>Enrich (skip email)</strong> — same as default but skips the slow DDG search + MX-verify step. Faster; emails stay blank. Pair with the standalone <strong>Scrape + verify emails</strong> button above to do email lookup separately.</div>
+    </div>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <button type="button" onclick="enrichCsv('{{ name }}', false, false)" class="btn btn-sm">Enrich (default)</button>
+      <button type="button" onclick="enrichCsv('{{ name }}', true, false)" class="btn btn-sm">Enrich (keep w/ websites)</button>
+      <button type="button" onclick="enrichCsv('{{ name }}', false, true)" class="btn btn-sm">Enrich (skip email)</button>
+    </div>
+  </details>
 </div>
 
 <div class="mb-5 n-card p-4 flex items-center justify-between" style="background: var(--bg-soft);">
@@ -48,11 +63,10 @@
     <table class="n-table">
       <thead class="sticky top-0">
         <tr>
-          <th class="text-right">Score</th>
-          <th class="text-right">AI fit</th>
-          <th class="text-right">AI score</th>
+          <th class="text-right">Niche fit</th>
+          <th class="text-right">AI lead score</th>
+          <th>Email status</th>
           <th>Business</th>
-          <th>Email</th>
           <th>Phone</th>
           <th>City</th>
           <th class="text-right">Rating</th>
@@ -64,21 +78,32 @@
       <tbody>
         {% for r in rows %}
         {% set n = r._normalized %}
-        {% set fit = r.get('ai_fit_score', '') %}
-        {% set ai_s = r.get('ai_score', '') %}
+        {% set niche = r.get('ai_niche_fit', '') %}
+        {% set lead = r.get('ai_lead_score', '') %}
+        {% set ev = r.get('email_verified', '') %}
         <tr data-business="{{ n.business_name }}" data-region="{{ n.city }}" data-country="">
-          <td class="text-right">
-            <span class="chip {% if r._score >= 75 %}chip-green{% elif r._score >= 60 %}chip-amber{% else %}chip-gray{% endif %}">{{ r._score }}</span>
-          </td>
-          <td class="text-right cell-fit">
-            {% if fit %}
-              <span class="chip {% if fit|float >= 70 %}chip-green{% elif fit|float >= 50 %}chip-amber{% else %}chip-gray{% endif %}">{{ fit }}</span>
+          <td class="text-right cell-niche" title="{{ r.get('ai_score_reason', '') }}">
+            {% if niche %}
+              <span class="chip {% if niche|float >= 75 %}chip-green{% elif niche|float >= 50 %}chip-amber{% else %}chip-gray{% endif %}">{{ niche }}</span>
             {% else %}<span style="color: var(--text-mute);">—</span>{% endif %}
           </td>
-          <td class="text-right cell-ai-score" title="{{ r.get('ai_score_reason', '') }}">
-            {% if ai_s %}
-              <span class="chip {% if ai_s|float >= 75 %}chip-purple{% elif ai_s|float >= 55 %}chip-amber{% else %}chip-gray{% endif %}">{{ ai_s }}</span>
+          <td class="text-right cell-lead" title="{{ r.get('ai_score_reason', '') }}">
+            {% if lead %}
+              <span class="chip {% if lead|float >= 75 %}chip-purple{% elif lead|float >= 55 %}chip-amber{% else %}chip-gray{% endif %}">{{ lead }}</span>
             {% else %}<span style="color: var(--text-mute);">—</span>{% endif %}
+          </td>
+          <td class="cell-email-status">
+            {% if ev == 'yes' %}
+              <span class="chip chip-green">✓ verified</span>
+              <div class="text-[10px] mt-0.5 truncate" style="color: var(--text-soft); max-width: 14rem;">{{ n.email }}</div>
+            {% elif ev == 'found' or (n.email and not ev) %}
+              <span class="chip chip-amber">⚠ found</span>
+              <div class="text-[10px] mt-0.5 truncate" style="color: var(--text-soft); max-width: 14rem;">{{ n.email }}</div>
+            {% elif ev == 'no' %}
+              <span class="chip chip-red">no email</span>
+            {% else %}
+              <span class="chip chip-gray">unchecked</span>
+            {% endif %}
           </td>
           <td>
             <div style="color: var(--text);">{{ n.business_name }}</div>
@@ -86,16 +111,13 @@
             <div class="text-[10px] mt-0.5 truncate" style="color: var(--text-mute); max-width: 14rem;" title="{{ r.opening_hours_summary }}">{{ r.opening_hours_summary[:60] }}</div>
             {% endif %}
           </td>
-          <td class="cell-email" style="color: var(--text-soft);">{{ n.email or '—' }}</td>
           <td style="color: var(--text-soft);">{{ n.phone or '—' }}</td>
           <td style="color: var(--text-soft);">{{ n.city or '—' }}</td>
           <td class="text-right">{{ n.rating or '—' }}</td>
           <td class="text-right">{{ n.review_count or '—' }}</td>
           <td class="truncate" style="color: var(--text-soft); max-width: 12rem;">{{ n.website[:30] or '—' }}</td>
           <td class="whitespace-nowrap text-xs">
-            <button type="button" onclick="verifyRow(this)" style="color: var(--accent);" class="hover:underline">verify</button>
-            <span style="color: var(--text-mute);">·</span>
-            <button type="button" onclick="fitRow(this)" style="color: var(--accent);" class="hover:underline">fit</button>
+            <button type="button" onclick="verifyRow(this)" style="color: var(--accent);" class="hover:underline">verify email</button>
             {% if asana_enabled %}
               <span style="color: var(--text-mute);">·</span>
               {% if r._asana_url %}
@@ -117,11 +139,28 @@
 
 {% block scripts %}
 <script>
+async function bulkVerifyEmails(name) {
+  document.getElementById('log-wrap').classList.remove('hidden');
+  clearLog();
+  appendLog(`▶ Scraping + MX-verifying emails for every row in ${name}…`);
+  const status = document.getElementById('action-status');
+  await startJob('/api/bulk-verify-emails', {csv_name: name}, (ev) => {
+    if (ev.type === 'progress') {
+      const tag = ev.verified ? '✓' : (ev.email ? '~' : '✗');
+      appendLog(`  [${ev.i}/${ev.total}] ${tag} ${ev.name} — ${ev.email || 'no email'}`);
+      status.textContent = `${ev.i}/${ev.total} · ${ev.verified_count} verified · ${ev.found_count} found · ${ev.missing_count} missing`;
+    } else if (ev.type === 'done') {
+      appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found unverified, ${ev.missing} missing. Persisted ${ev.persisted} rows.`);
+      status.innerHTML = `Verified ${ev.verified}/${ev.total}. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;
+    }
+  });
+}
+
 async function enrichCsv(name, keepWebsite, skipEmail) {
   document.getElementById('log-wrap').classList.remove('hidden');
   clearLog();
   appendLog(`▶ Enriching ${name}…`);
-  await streamSSE('/api/enrich', {name, keep_with_website: keepWebsite, skip_email: skipEmail}, (ev) => {
+  await startJob('/api/enrich', {name, keep_with_website: keepWebsite, skip_email: skipEmail}, (ev) => {
     if (ev.type === 'log') appendLog(ev.line);
     else if (ev.type === 'done') {
       appendLog('✔ Done. Reload to see updated rows.');
@@ -154,46 +193,25 @@ async function verifyRow(btn) {
   const tr = btn.closest('tr');
   const name = tr.dataset.business;
   const region = tr.dataset.region || '';
-  const cell = tr.querySelector('.cell-email');
+  const statusCell = tr.querySelector('.cell-email-status');
   const status = tr.querySelector('.row-status');
-  const current = (cell.textContent || '').trim() === '—' ? '' : cell.textContent.trim();
   status.textContent = '…';
   try {
     const r = await fetch('/api/verify-email', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({business_name: name, current_email: current, region, csv_name: '{{ name }}'}),
+      body: JSON.stringify({business_name: name, current_email: '', region, csv_name: '{{ name }}'}),
     });
     const data = await r.json();
-    if (data.email) {
-      cell.innerHTML = `<span style="color: ${data.verified ? 'var(--green)' : 'var(--amber)'}">${escapeHtml(data.email)}</span>`;
-      status.textContent = data.verified ? '✓ MX' : 'no MX';
-    } else {
-      status.textContent = 'not found';
-    }
-    if (data.persisted) status.textContent += ' • saved';
-  } catch (e) { status.textContent = 'error'; }
-}
-
-async function fitRow(btn) {
-  const tr = btn.closest('tr');
-  const name = tr.dataset.business;
-  const region = tr.dataset.region || '';
-  const status = tr.querySelector('.row-status');
-  status.textContent = '…';
-  try {
-    const r = await fetch('/api/fitcheck', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({business_name: name, region, csv_name: '{{ name }}'}),
-    });
-    const data = await r.json();
-    if (data.error) { status.textContent = data.error; return; }
-    const cell = tr.querySelector('.cell-fit');
-    const score = data.ai_fit_score;
-    const cls = score >= 70 ? 'chip-green' : score >= 50 ? 'chip-amber' : 'chip-gray';
-    cell.innerHTML = `<span class="chip ${cls}">${score}</span>`;
-    status.textContent = `${data.after_hours_gap === 'yes' ? 'after-hrs gap' : '24/7'}${data.persisted ? ' • saved' : ''}`;
+    let chipCls, chipText;
+    if (data.verified) { chipCls = 'chip-green'; chipText = '✓ verified'; }
+    else if (data.email) { chipCls = 'chip-amber'; chipText = '⚠ found'; }
+    else { chipCls = 'chip-red'; chipText = 'no email'; }
+    const emailLine = data.email
+      ? `<div class="text-[10px] mt-0.5 truncate" style="color: var(--text-soft); max-width: 14rem;">${escapeHtml(data.email)}</div>`
+      : '';
+    statusCell.innerHTML = `<span class="chip ${chipCls}">${chipText}</span>${emailLine}`;
+    status.textContent = data.persisted ? 'saved' : '';
   } catch (e) { status.textContent = 'error'; }
 }
 
@@ -234,18 +252,22 @@ async function scoreVisibleWithAI() {
   const status = document.getElementById('action-status');
   const trs = Array.from(document.querySelectorAll('tbody tr'));
   if (!trs.length) return;
+  // Cell index map (matches table header order):
+  //   0 niche  1 lead  2 email  3 business  4 phone  5 city
+  //   6 rating  7 reviews  8 website  9 actions
   const leads = trs.slice(0, 50).map(tr => {
     const ds = tr.dataset;
     const cells = tr.querySelectorAll('td');
+    const emailText = cells[2]?.querySelector('.text-\\[10px\\]')?.textContent.trim() || '';
     return {
       business_name: ds.business || '',
       city: ds.region || '',
       business_type: '',
-      rating: parseFloat(cells[7]?.textContent) || 0,
-      review_count: parseInt(cells[8]?.textContent) || 0,
-      email: (cells[4]?.textContent || '').trim() === '—' ? '' : cells[4].textContent.trim(),
-      phone: (cells[5]?.textContent || '').trim() === '—' ? '' : cells[5].textContent.trim(),
-      website: (cells[9]?.textContent || '').trim() === '—' ? '' : cells[9].textContent.trim(),
+      rating: parseFloat(cells[6]?.textContent) || 0,
+      review_count: parseInt(cells[7]?.textContent) || 0,
+      email: emailText,
+      phone: (cells[4]?.textContent || '').trim() === '—' ? '' : cells[4].textContent.trim(),
+      website: (cells[8]?.textContent || '').trim() === '—' ? '' : cells[8].textContent.trim(),
     };
   });
   status.textContent = `Scoring ${leads.length} leads with Claude…`;

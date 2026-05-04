@@ -92,10 +92,69 @@
 
   {% if asana_enabled %}{% include "_asana_modal.html" %}{% endif %}
 
+  <!-- Floating background-job panel — shows running scrapes/enriches across page changes. -->
+  <div id="job-tray" class="hidden fixed bottom-4 right-4 z-40" style="width: 360px;">
+    <div class="n-card" style="box-shadow: 0 10px 32px rgba(15,15,15,0.12);">
+      <div class="flex items-center justify-between px-3 py-2" style="border-bottom: 1px solid var(--border);">
+        <div class="flex items-center gap-2">
+          <span class="inline-block w-2 h-2 rounded-full" style="background: var(--green); animation: pulse 1.6s ease-in-out infinite;"></span>
+          <span class="text-xs font-semibold" id="job-tray-title" style="color: var(--text);">Background jobs</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <button type="button" id="job-tray-toggle" onclick="toggleJobTray()" class="btn-ghost btn btn-sm" aria-label="Toggle">−</button>
+        </div>
+      </div>
+      <div id="job-tray-body" class="p-3 space-y-2 text-xs max-h-80 overflow-auto"></div>
+    </div>
+  </div>
+  <style>
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  </style>
+
   <script>
     window.ASANA_ENABLED = {{ 'true' if asana_enabled else 'false' }};
   </script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script>
+    // Background-job tray: poll /api/jobs/active every 2s, render running jobs.
+    let _trayCollapsed = false;
+    function toggleJobTray() {
+      const body = document.getElementById('job-tray-body');
+      const btn = document.getElementById('job-tray-toggle');
+      _trayCollapsed = !_trayCollapsed;
+      body.style.display = _trayCollapsed ? 'none' : '';
+      btn.textContent = _trayCollapsed ? '+' : '−';
+    }
+    async function _refreshTray() {
+      try {
+        const r = await fetch('/api/jobs/active');
+        const data = await r.json();
+        const list = data.jobs || [];
+        const tray = document.getElementById('job-tray');
+        const body = document.getElementById('job-tray-body');
+        const title = document.getElementById('job-tray-title');
+        if (list.length === 0) { tray.classList.add('hidden'); return; }
+        tray.classList.remove('hidden');
+        title.textContent = list.length === 1
+          ? `1 job running`
+          : `${list.length} jobs running`;
+        body.innerHTML = list.map(j => {
+          const p = j.progress;
+          const progressLine = p
+            ? `${p.leads_found}/${p.total_target} · ${escapeHtml(p.current_city || '')} / ${escapeHtml(p.current_type || '')}`
+            : (j.leads_count ? `${j.leads_count} items` : 'starting…');
+          return `
+            <div style="border-left: 2px solid var(--green); padding: 4px 8px;">
+              <div style="color: var(--text); font-weight: 500;">${escapeHtml(j.label || j.kind)}</div>
+              <div style="color: var(--text-mute); margin-top: 2px;">${progressLine}</div>
+              ${j.last_log ? `<div style="color: var(--text-soft); margin-top: 2px; font-family: 'SF Mono', monospace; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(j.last_log).slice(0, 80)}</div>` : ''}
+            </div>`;
+        }).join('');
+      } catch (e) { /* swallow — server might be reloading */ }
+    }
+    setInterval(_refreshTray, 2000);
+    _refreshTray();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

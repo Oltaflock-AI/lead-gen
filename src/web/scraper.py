@@ -96,6 +96,83 @@ COUNTRY_REGION_CODES = {
     "Italy": "IT", "Netherlands": "NL", "Ireland": "IE", "Sweden": "SE",
 }
 
+COUNTRY_STATES = {
+    "US": [
+        "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+        "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+        "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
+        "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota",
+        "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada",
+        "New Hampshire", "New Jersey", "New Mexico", "New York",
+        "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon",
+        "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+        "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+        "West Virginia", "Wisconsin", "Wyoming", "District of Columbia",
+    ],
+    "India": [
+        "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh",
+        "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jharkhand",
+        "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra", "Manipur",
+        "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan",
+        "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh",
+        "Uttarakhand", "West Bengal",
+        "Delhi", "Jammu and Kashmir", "Ladakh", "Puducherry", "Chandigarh",
+    ],
+    "UK": ["England", "Scotland", "Wales", "Northern Ireland"],
+    "Canada": [
+        "Alberta", "British Columbia", "Manitoba", "New Brunswick",
+        "Newfoundland and Labrador", "Nova Scotia", "Ontario",
+        "Prince Edward Island", "Quebec", "Saskatchewan",
+        "Northwest Territories", "Nunavut", "Yukon",
+    ],
+    "Australia": [
+        "New South Wales", "Victoria", "Queensland", "Western Australia",
+        "South Australia", "Tasmania", "Australian Capital Territory",
+        "Northern Territory",
+    ],
+    "New Zealand": [
+        "Auckland", "Bay of Plenty", "Canterbury", "Gisborne", "Hawke's Bay",
+        "Manawatū-Whanganui", "Marlborough", "Nelson", "Northland", "Otago",
+        "Southland", "Taranaki", "Tasman", "Waikato", "Wellington", "West Coast",
+    ],
+    "Germany": [
+        "Baden-Württemberg", "Bavaria", "Berlin", "Brandenburg", "Bremen",
+        "Hamburg", "Hesse", "Lower Saxony", "Mecklenburg-Vorpommern",
+        "North Rhine-Westphalia", "Rhineland-Palatinate", "Saarland",
+        "Saxony", "Saxony-Anhalt", "Schleswig-Holstein", "Thuringia",
+    ],
+    "France": [
+        "Auvergne-Rhône-Alpes", "Bourgogne-Franche-Comté", "Brittany",
+        "Centre-Val de Loire", "Corsica", "Grand Est", "Hauts-de-France",
+        "Île-de-France", "Normandy", "Nouvelle-Aquitaine", "Occitanie",
+        "Pays de la Loire", "Provence-Alpes-Côte d'Azur",
+    ],
+    "Spain": [
+        "Andalusia", "Aragon", "Asturias", "Balearic Islands", "Basque Country",
+        "Canary Islands", "Cantabria", "Castile and León", "Castilla-La Mancha",
+        "Catalonia", "Extremadura", "Galicia", "La Rioja", "Madrid", "Murcia",
+        "Navarre", "Valencia",
+    ],
+    "Italy": [
+        "Abruzzo", "Aosta Valley", "Apulia", "Basilicata", "Calabria",
+        "Campania", "Emilia-Romagna", "Friuli-Venezia Giulia", "Lazio",
+        "Liguria", "Lombardy", "Marche", "Molise", "Piedmont", "Sardinia",
+        "Sicily", "Trentino-Alto Adige", "Tuscany", "Umbria", "Veneto",
+    ],
+    "Netherlands": [
+        "Drenthe", "Flevoland", "Friesland", "Gelderland", "Groningen",
+        "Limburg", "North Brabant", "North Holland", "Overijssel", "South Holland",
+        "Utrecht", "Zeeland",
+    ],
+    "Ireland": ["Connacht", "Leinster", "Munster", "Ulster"],
+    "Sweden": [
+        "Stockholm", "Västra Götaland", "Skåne", "Östergötland", "Uppsala",
+        "Jönköping", "Halland", "Örebro", "Södermanland", "Dalarna",
+        "Gävleborg", "Värmland", "Västerbotten", "Norrbotten", "Västmanland",
+        "Kronoberg", "Kalmar", "Blekinge", "Jämtland", "Västernorrland", "Gotland",
+    ],
+}
+
 NICHE_PRESETS = {
     "Law Firms": [
         "law firm", "attorney", "immigration lawyer", "criminal defense lawyer",
