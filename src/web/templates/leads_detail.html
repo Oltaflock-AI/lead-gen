@@ -94,9 +94,77 @@
   <pre id="log" class="n-log h-64 m-5 mt-3"></pre>
 </div>
 
+{# ---------- Range selector ---------- #}
+<div class="range-bar mb-5" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+  <span class="text-xs" style="color: var(--ink-mute);">Showing metrics for</span>
+  {% for k, lbl in [('today','Today'), ('7','Last 7 days'), ('14','Last 14 days'), ('30','Last 30 days'), ('90','Last 90 days'), ('all','All time')] %}
+    <a href="?range={{ k }}" class="filter-chip {% if range_key == k %}active{% endif %}" style="text-decoration: none;">{{ lbl }}</a>
+  {% endfor %}
+  <span class="text-xs ml-2" style="color: var(--ink-faint);">· outreach status filtered to this window</span>
+</div>
+
+{# Bucket helper macro keeps row + filter-count logic in lockstep.
+   Honors opens > 0 / clicks > 0 so a "delivered" row that was opened
+   buckets correctly. When range_key != 'all' and outreach_status is
+   empty for an email, the lead is dropped from view entirely. #}
+{% macro _bucket_for(st) -%}
+{%- if not st -%}notsent
+{%- elif st.status == 'replied' -%}replied
+{%- elif (st.clicks or 0) > 0 or st.status == 'clicked' -%}clicked
+{%- elif (st.opens  or 0) > 0 or st.status == 'opened'  -%}opened
+{%- elif st.status == 'bounced' -%}bounced
+{%- elif st.status == 'failed'  -%}failed
+{%- else -%}delivered
+{%- endif -%}
+{% endmacro %}
+
+{# When a non-'all' range is selected we narrow the visible row set to leads
+   with a send inside the window. 'all' keeps every CSV row visible. #}
+{% set _visible = [] %}
+{% for r in rows %}
+  {% set _n = r._normalized %}
+  {% set _st = outreach_status.get((_n.email or '')|lower) %}
+  {% if range_key == 'all' or _st %}
+    {% set _ = _visible.append((r, _st)) %}
+  {% endif %}
+{% endfor %}
+
+{% set _sc = namespace(all=0, notsent=0, delivered=0, opened=0, clicked=0, replied=0, bounced=0, failed=0) %}
+{% for r, _st in _visible %}
+  {% set _b = _bucket_for(_st)|trim %}
+  {% set _sc.all = _sc.all + 1 %}
+  {% if   _b == 'notsent'   %}{% set _sc.notsent   = _sc.notsent   + 1 %}
+  {% elif _b == 'replied'   %}{% set _sc.replied   = _sc.replied   + 1 %}
+  {% elif _b == 'clicked'   %}{% set _sc.clicked   = _sc.clicked   + 1 %}
+  {% elif _b == 'opened'    %}{% set _sc.opened    = _sc.opened    + 1 %}
+  {% elif _b == 'bounced'   %}{% set _sc.bounced   = _sc.bounced   + 1 %}
+  {% elif _b == 'failed'    %}{% set _sc.failed    = _sc.failed    + 1 %}
+  {% else                   %}{% set _sc.delivered = _sc.delivered + 1 %}{% endif %}
+{% endfor %}
+
 <section class="n-card overflow-hidden">
+  <div class="filter-row" id="lead-status-filters" style="padding: 10px 18px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px;">
+    <button class="filter-chip active" data-filter="all">All <span class="count">{{ _sc.all }}</span></button>
+    <button class="filter-chip" data-filter="notsent">Not sent <span class="count">{{ _sc.notsent }}</span></button>
+    <button class="filter-chip" data-filter="delivered">Delivered <span class="count">{{ _sc.delivered }}</span></button>
+    <button class="filter-chip" data-filter="opened">Opened <span class="count">{{ _sc.opened }}</span></button>
+    <button class="filter-chip" data-filter="clicked">Clicked <span class="count">{{ _sc.clicked }}</span></button>
+    <button class="filter-chip" data-filter="replied">Replied <span class="count">{{ _sc.replied }}</span></button>
+    <button class="filter-chip" data-filter="bounced">Bounced <span class="count">{{ _sc.bounced }}</span></button>
+    <button class="filter-chip" data-filter="failed">Failed <span class="count">{{ _sc.failed }}</span></button>
+    <span style="flex: 1;"></span>
+    <label class="text-xs" style="color: var(--ink-soft); display: flex; align-items: center; gap: 6px;">
+      Sort
+      <select id="lead-status-sort" class="n-input n-input-sm" style="min-width: 130px;">
+        <option value="default">Default</option>
+        <option value="status">Outreach status</option>
+        <option value="lead-desc">AI score ↓</option>
+        <option value="lead-asc">AI score ↑</option>
+      </select>
+    </label>
+  </div>
   <div class="overflow-auto" style="max-height: 70vh;">
-    <table class="n-table">
+    <table class="n-table" id="leads-table">
       <thead class="sticky top-0">
         <tr>
           <th class="text-right">Niche fit</th>
@@ -113,12 +181,14 @@
         </tr>
       </thead>
       <tbody>
-        {% for r in rows %}
+        {% for r, _rst in _visible %}
         {% set n = r._normalized %}
         {% set niche = r.get('ai_niche_fit', '') %}
         {% set lead = r.get('ai_lead_score', '') %}
         {% set ev = r.get('email_verified', '') %}
-        <tr data-business="{{ n.business_name }}" data-region="{{ n.city }}" data-country="">
+        {% set _bucket = _bucket_for(_rst)|trim %}
+        {% set _rank = {'replied': 0, 'clicked': 1, 'opened': 2, 'delivered': 3, 'bounced': 4, 'failed': 5, 'notsent': 6}[_bucket] %}
+        <tr data-business="{{ n.business_name }}" data-region="{{ n.city }}" data-country="" data-outreach-status="{{ _bucket }}" data-status-rank="{{ _rank }}" data-lead-score="{{ lead or 0 }}">
           <td class="text-right cell-niche" title="{{ r.get('ai_score_reason', '') }}">
             {% if niche %}
               <span class="chip {% if niche|float >= 75 %}chip-green{% elif niche|float >= 50 %}chip-amber{% else %}chip-gray{% endif %}">{{ niche }}</span>
@@ -143,15 +213,14 @@
             {% endif %}
           </td>
           <td class="cell-outreach-status">
-            {% set st = outreach_status.get((n.email or '')|lower) %}
+            {% set st = _rst %}
             {% if st %}
-              {% if st.status == 'replied' %}<span class="chip chip-status chip-status-replied">replied</span>
-              {% elif st.status == 'clicked' %}<span class="chip chip-status chip-status-clicked">clicked</span>
-              {% elif st.status == 'opened' %}<span class="chip chip-status chip-status-opened">opened</span>
-              {% elif st.status == 'delivered' or st.status == 'sent' %}<span class="chip chip-status chip-status-delivered">delivered</span>
-              {% elif st.status == 'bounced' %}<span class="chip chip-status chip-status-bounced">bounced</span>
-              {% elif st.status == 'failed' %}<span class="chip chip-status chip-status-failed">failed</span>
-              {% else %}<span class="chip chip-status chip-status-sent">{{ st.status }}</span>
+              {% if _bucket == 'replied' %}<span class="chip chip-status chip-status-replied">replied</span>
+              {% elif _bucket == 'clicked' %}<span class="chip chip-status chip-status-clicked">clicked</span>
+              {% elif _bucket == 'opened' %}<span class="chip chip-status chip-status-opened">opened</span>
+              {% elif _bucket == 'bounced' %}<span class="chip chip-status chip-status-bounced">bounced</span>
+              {% elif _bucket == 'failed' %}<span class="chip chip-status chip-status-failed">failed</span>
+              {% else %}<span class="chip chip-status chip-status-delivered">delivered</span>
               {% endif %}
               {% if st.opens or st.clicks %}
               <div class="text-[10px] mt-0.5" style="color: var(--text-mute);">{{ st.opens or 0 }} open · {{ st.clicks or 0 }} click</div>
@@ -194,6 +263,49 @@
 
 {% block scripts %}
 <script>
+// Outreach-status filter chips + sort selector for the leads table.
+(function () {
+  const table = document.getElementById('leads-table');
+  if (!table) return;
+  const tbody = table.tBodies[0];
+  if (!tbody) return;
+  const originalOrder = Array.from(tbody.querySelectorAll('tr'));
+  let activeFilter = 'all';
+
+  function applyFilter() {
+    originalOrder.forEach(tr => {
+      const bucket = tr.dataset.outreachStatus || 'notsent';
+      tr.style.display = (activeFilter === 'all' || bucket === activeFilter) ? '' : 'none';
+    });
+  }
+
+  document.querySelectorAll('#lead-status-filters .filter-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#lead-status-filters .filter-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeFilter = btn.dataset.filter;
+      applyFilter();
+    });
+  });
+
+  const sortSel = document.getElementById('lead-status-sort');
+  if (sortSel) {
+    sortSel.addEventListener('change', () => {
+      const mode = sortSel.value;
+      let rows = originalOrder.slice();
+      if (mode === 'status') {
+        rows.sort((a, b) => (+a.dataset.statusRank) - (+b.dataset.statusRank));
+      } else if (mode === 'lead-desc') {
+        rows.sort((a, b) => (+b.dataset.leadScore) - (+a.dataset.leadScore));
+      } else if (mode === 'lead-asc') {
+        rows.sort((a, b) => (+a.dataset.leadScore) - (+b.dataset.leadScore));
+      }
+      rows.forEach(r => tbody.appendChild(r));
+      applyFilter();
+    });
+  }
+})();
+
 // Paint the matching row's email-status cell live as each verify event arrives.
 // Maps the `progress` event to the chip + email line in cell-email-status,
 // keyed on data-business (which the worker also includes in `ev.name`).

@@ -430,18 +430,26 @@ def outreach_campaign_summary(csv_path=None):
         return d
 
 
-def outreach_status_by_email(csv_path):
-    """Map { lead_email_lower: dict(status, opens, clicks, bounced, replied_at, ...) }
-    so the outreach UI can paint a status chip per row."""
+def outreach_status_by_email(csv_path, days=None, since=None):
+    """Map { lead_email_lower: dict(...) } per send.
+    `since` (UTC ISO) preferred for calendar-day cutoffs; `days` is rolling."""
     out = {}
     if not csv_path:
         return out
+    extra_where, params = "", [csv_path]
+    cutoff = since
+    if cutoff is None and days is not None and days > 0:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    if cutoff:
+        extra_where = " AND sent_at >= ?"
+        params.append(cutoff)
     with _conn() as c:
         rows = c.execute(
             "SELECT id, lead_email, status, opens, clicks, bounced, "
             "       replied_at, sent_at, last_event_at, last_event_type "
-            "FROM outreach_log WHERE csv_path = ? ORDER BY sent_at DESC",
-            (csv_path,),
+            f"FROM outreach_log WHERE csv_path = ?{extra_where} ORDER BY sent_at DESC",
+            params,
         ).fetchall()
     for r in rows:
         em = (r["lead_email"] or "").lower()
@@ -1072,3 +1080,157 @@ def send_quota_status(daily_cap=100, monthly_cap=3000):
         "daily_blocked": today_n >= daily_cap,
         "monthly_blocked": month_n >= monthly_cap,
     }
+
+
+# ─────────────────────────── dashboard redesign helpers ───────────────────────────
+# All SELECT-only. Read-paths only — no schema changes, no inserts/updates/deletes.
+
+
+def detect_duplicate_sends(window_minutes=10, limit=20):
+    """Return list of dicts (lead_email, n, first, last) where the same
+    recipient received 2+ outreach_log sends within the rolling time window.
+    Catches the auto-enrol duplicate-send bug surfaced on the dashboard."""
+    with _conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT lead_email,
+                   COUNT(*)       AS n,
+                   MIN(sent_at)   AS first,
+                   MAX(sent_at)   AS last
+            FROM outreach_log
+            WHERE sent_at >= datetime('now', ?)
+            GROUP BY lead_email
+            HAVING n >= 2
+            ORDER BY n DESC, last DESC
+            LIMIT ?
+            """,
+            (f"-{int(window_minutes)} minutes", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_recent_failures(hours=24):
+    """Count outreach_log rows with status='failed' in the last N hours."""
+    with _conn() as c:
+        row = c.execute(
+            "SELECT COUNT(*) AS n FROM outreach_log "
+            "WHERE status = 'failed' "
+            "  AND sent_at >= datetime('now', ?)",
+            (f"-{int(hours)} hours",),
+        ).fetchone()
+        return int(row["n"] or 0)
+
+
+def outreach_funnel(days=None, since=None):
+    """Funnel counts across outreach_log. `days=None` → all-time;
+    integer `days` is a rolling-N-day window; `since` is an absolute
+    UTC ISO cutoff (preferred — used for IST calendar boundaries)."""
+    where, params = "", []
+    cutoff = since
+    if cutoff is None and days is not None and days > 0:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    if cutoff:
+        where = "WHERE sent_at >= ?"
+        params = [cutoff]
+    with _conn() as c:
+        row = c.execute(
+            f"""
+            SELECT
+              COUNT(*)                                                       AS sent,
+              SUM(CASE WHEN status NOT IN ('failed') THEN 1 ELSE 0 END)      AS delivered,
+              SUM(CASE WHEN opens > 0                THEN 1 ELSE 0 END)      AS opened,
+              SUM(CASE WHEN status = 'replied'       THEN 1 ELSE 0 END)      AS replied,
+              SUM(CASE WHEN status = 'failed'        THEN 1 ELSE 0 END)      AS failed,
+              SUM(CASE WHEN status = 'bounced'       THEN 1 ELSE 0 END)      AS bounced
+            FROM outreach_log
+            {where}
+            """,
+            params,
+        ).fetchone()
+        return {k: int(row[k] or 0) for k in ("sent", "delivered", "opened",
+                                              "replied", "failed", "bounced")}
+
+
+def outreach_stats_by_niche(days=None, since=None):
+    """Per-niche outreach performance. `days=None` and `since=None` → all-time."""
+    where, params = "", []
+    cutoff = since
+    if cutoff is None and days is not None and days > 0:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    if cutoff:
+        where = "WHERE o.sent_at >= ?"
+        params = [cutoff]
+    with _conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT
+              COALESCE(s.niche, '(unassigned)')                              AS niche,
+              s.city                                                         AS city,
+              COUNT(o.id)                                                    AS sent,
+              SUM(CASE WHEN o.status NOT IN ('failed') THEN 1 ELSE 0 END)    AS delivered,
+              SUM(CASE WHEN o.opens > 0                THEN 1 ELSE 0 END)    AS opened,
+              SUM(CASE WHEN o.status = 'replied'       THEN 1 ELSE 0 END)    AS replied,
+              SUM(CASE WHEN o.status = 'failed'        THEN 1 ELSE 0 END)    AS failed,
+              MAX(o.sent_at)                                                 AS last_send
+            FROM outreach_log o
+            LEFT JOIN sequences s ON lower(s.lead_email) = lower(o.lead_email)
+            {where}
+            GROUP BY niche
+            ORDER BY sent DESC
+            """,
+            params,
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            sent = max(1, d.get("sent") or 0)
+            delivered = d.get("delivered") or 0
+            d["delivery_rate"] = round(100 * delivered / sent, 1)
+            d["open_rate"] = round(100 * (d.get("opened") or 0) / max(1, delivered), 1) if delivered else 0
+            out.append(d)
+        return out
+
+
+def sequence_step_distribution():
+    """Where every active lead currently sits in the 7-step pipeline.
+    Returns a dict {1..7: count}. `current_step` is 0 when nothing has
+    sent yet, otherwise the most recent step that did send — so an
+    "active at step N" lead lives at bucket N+1 (the step queued next).
+    """
+    out = {i: 0 for i in range(1, 8)}
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT current_step, COUNT(*) AS n "
+            "FROM sequences WHERE status = 'active' "
+            "GROUP BY current_step"
+        ).fetchall()
+        for r in rows:
+            cur = int(r["current_step"] or 0)
+            bucket = cur + 1 if cur < 7 else 7
+            out[bucket] = out.get(bucket, 0) + int(r["n"] or 0)
+        return out
+
+
+def csv_send_summary(csv_path):
+    """For a CSV path, return aggregated send health for the Leads card
+    footer. Counts are scoped to outreach_log rows tagged with that csv_path."""
+    with _conn() as c:
+        row = c.execute(
+            """
+            SELECT
+              COUNT(*)                                                       AS sent,
+              SUM(CASE WHEN status NOT IN ('failed') THEN 1 ELSE 0 END)      AS delivered,
+              SUM(CASE WHEN status = 'failed'        THEN 1 ELSE 0 END)      AS failed,
+              SUM(CASE WHEN opens > 0                THEN 1 ELSE 0 END)      AS opened,
+              SUM(CASE WHEN status = 'replied'       THEN 1 ELSE 0 END)      AS replied,
+              MAX(sent_at)                                                   AS last_send
+            FROM outreach_log
+            WHERE csv_path = ?
+            """,
+            (csv_path,),
+        ).fetchone()
+        return {k: (int(row[k] or 0) if k != "last_send" else row["last_send"])
+                for k in ("sent", "delivered", "failed", "opened",
+                          "replied", "last_send")}

@@ -155,3 +155,81 @@ def dashboard_summary(settings, outreach):
         "replies": outreach["replied"],
         "per_csv": per_csv,
     }
+
+
+# ─────────────────────────── dashboard redesign helpers ───────────────────────────
+# Read-only aggregations layered on top of the existing summary helpers.
+
+
+def daily_sends_last_n(n=14):
+    """Return list of {date, count} for the last N days, oldest first.
+    Counts merge one-shot outreach_log + sent sequence_messages so the
+    sparkline matches the actual outbound volume the user sees."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    db_path = PROJECT_ROOT / "data" / "outreach.db"
+    if not db_path.exists():
+        return []
+    today = datetime.now(timezone.utc).date()
+    days = [(today - timedelta(days=i)) for i in range(n - 1, -1, -1)]
+    by_date = {d.isoformat(): 0 for d in days}
+    start_iso = (datetime.combine(days[0], datetime.min.time(),
+                                  tzinfo=timezone.utc)).isoformat()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        for sql in (
+            "SELECT substr(sent_at,1,10) AS d, COUNT(*) AS n "
+            "FROM outreach_log WHERE sent_at >= ? "
+            "GROUP BY d",
+            "SELECT substr(sent_at,1,10) AS d, COUNT(*) AS n "
+            "FROM sequence_messages "
+            "WHERE status = 'sent' AND sent_at IS NOT NULL AND sent_at >= ? "
+            "GROUP BY d",
+        ):
+            for row in conn.execute(sql, (start_iso,)).fetchall():
+                if row["d"] in by_date:
+                    by_date[row["d"]] += int(row["n"] or 0)
+    finally:
+        conn.close()
+    return [{"date": d, "count": by_date[d]} for d in by_date]
+
+
+def sparkline_points(daily, width=200, height=24, pad=2):
+    """Convert daily_sends_last_n() output to an SVG polyline points string."""
+    if not daily:
+        return ""
+    counts = [d["count"] for d in daily]
+    n = len(counts)
+    cmax = max(counts) or 1
+    step = (width - pad * 2) / max(1, n - 1)
+    inner = height - pad * 2
+    pts = []
+    for i, c in enumerate(counts):
+        x = pad + i * step
+        y = pad + (inner - (c / cmax) * inner)
+        pts.append(f"{x:.1f},{y:.1f}")
+    return " ".join(pts)
+
+
+def csv_health_score(summary):
+    """Score a CSV 0–100 based on coverage + quality + freshness.
+    `summary` is the dict from csv_summary(). Returns dict with `score`,
+    `band` (good/ok/bad), and `label`."""
+    rows = max(1, summary.get("rows") or 1)
+    email_pct = (summary.get("with_email") or 0) / rows
+    phone_pct = (summary.get("with_phone") or 0) / rows
+    score_pct = (summary.get("avg_score") or 0) / 100.0
+    fresh = 1.0  # freshness data not surfaced through csv_summary yet
+    raw = 40 * email_pct + 25 * phone_pct + 25 * score_pct + 10 * fresh
+    score = round(raw)
+    if score >= 85:
+        band, label = "good", "excellent"
+    elif score >= 70:
+        band, label = "ok", "fine"
+    else:
+        band, label = "bad", "needs review"
+    return {"score": score, "band": band, "label": label,
+            "email_pct": round(100 * email_pct),
+            "phone_pct": round(100 * phone_pct),
+            "score_pct": round(100 * score_pct)}

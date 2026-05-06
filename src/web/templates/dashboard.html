@@ -2,133 +2,250 @@
 {% block title %}Dashboard — lead-gen{% endblock %}
 {% block breadcrumb %}workspace / dashboard{% endblock %}
 {% block heading %}Today{% endblock %}
-{% block subheading %}{{ today_label }} · {{ summary.queued_today }} emails queued</p>{% endblock %}
+{% block subheading %}{{ today_label }} · {{ summary.queued_today }} emails queued{% endblock %}
 
 {% block content %}
 
-{# ---------- Brand strip ---------- #}
-<section class="n-card mb-6" style="background: linear-gradient(135deg, #FFFFFF 0%, var(--accent-soft) 100%); border-color: var(--accent-2);">
-  <div class="flex items-center gap-4 px-5 py-4">
-    <img src="{{ url_for('static', filename='img/favicon.png') }}" alt="Oltaflock"
-         style="width: 48px; height: 48px; object-fit: contain; flex-shrink: 0;">
-    <div class="leading-tight">
-      <div style="font-family: var(--font-serif); font-size: 22px; font-weight: 500; color: var(--accent); letter-spacing: -0.02em;">Oltaflock</div>
-      <div style="font-size: 12px; color: var(--ink-mute); margin-top: 2px;">lead-gen workspace</div>
-    </div>
-  </div>
-</section>
+{# ---------- Range selector ---------- #}
+<div class="range-bar mb-5" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+  <span class="text-xs" style="color: var(--ink-mute);">Showing metrics for</span>
+  {% for k, lbl in [('today','Today'), ('7','Last 7 days'), ('14','Last 14 days'), ('30','Last 30 days'), ('90','Last 90 days'), ('all','All time')] %}
+    <a href="?range={{ k }}" class="filter-chip {% if range_key == k %}active{% endif %}" style="text-decoration: none;">{{ lbl }}</a>
+  {% endfor %}
+  <span class="text-xs ml-2" style="color: var(--ink-faint);">· funnel + niche + sparkline use this window</span>
+</div>
 
-{# ---------- Stat row ---------- #}
-<section class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-  <div class="n-tile">
-    <div class="n-tile-label">Total leads</div>
-    <div class="n-tile-value">{{ '{:,}'.format(summary.total_leads) }}</div>
-    <div class="n-tile-sub">across imports + outputs</div>
-  </div>
-  <div class="n-tile">
-    <div class="n-tile-label">Qualified</div>
-    <div class="n-tile-value">{{ '{:,}'.format(summary.total_qualified) }}</div>
-    <div class="n-tile-sub">
-      {% if summary.total_leads %}
-        {{ ((summary.total_qualified / summary.total_leads) * 100) | round(0, 'floor') | int }}% of total
-      {% else %}—{% endif %}
+{# ---------- Critical alert banner ---------- #}
+{% if alert %}
+<div class="dash-alert crit mb-6">
+  <div class="dash-alert-icon">⚠</div>
+  <div class="dash-alert-body">
+    <div class="dash-alert-title">{{ alert.title }}</div>
+    <div class="dash-alert-msg">{{ alert.message }}</div>
+    <div class="dash-alert-actions">
+      <a href="/outreach" class="alert-btn primary">Investigate failures</a>
+      <a href="/sequences" class="alert-btn">Pause new sends</a>
     </div>
   </div>
-  <div class="n-tile">
-    <div class="n-tile-label">Sent today</div>
-    <div class="n-tile-value">{{ summary.sent_today }}</div>
-    <div class="n-tile-sub" style="color: var(--ink-mute);">{{ summary.niches_today }} niches</div>
-  </div>
-  <div class="n-tile">
-    <div class="n-tile-label">Replies</div>
-    <div class="n-tile-value">{{ summary.replies }}</div>
-    <div class="n-tile-sub">
-      {% if summary.emails_sent %}
-        {{ ((summary.replies / summary.emails_sent) * 100) | round(1) }}% rate
-      {% else %}—{% endif %}
-    </div>
-  </div>
-</section>
+</div>
+{% endif %}
 
-{# ---------- Today's queue ---------- #}
-<section class="mb-8">
-  <h2 class="n-section-title">Today's queue</h2>
-  <div class="n-card overflow-hidden">
-    {% if today_queue %}
-      <table class="n-table">
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Lead</th>
-            <th>Niche</th>
-            <th>Step</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for q in today_queue %}
-          <tr>
-            <td class="text-mono" style="color: var(--ink-mute); font-size: 11px;">{{ q.when }}</td>
-            <td>{{ q.business_name or q.lead_email }}</td>
-            <td style="color: var(--ink-soft);">{{ q.niche or '—' }}</td>
-            <td>
-              <div class="dot-progress">
-                {% for i in range(1, 8) %}<span class="d {% if i <= q.step %}on{% endif %}"></span>{% endfor %}
-              </div>
-              <span class="text-xs ml-2" style="color: var(--ink-mute);">{{ q.step_label }}</span>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% else %}
-      <div style="padding: 40px 24px; text-align: center;">
-        <div style="font-family: var(--font-serif); font-size: 18px; color: var(--ink); margin-bottom: 4px;">Nothing queued</div>
-        <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 14px;">Load a CSV from <a href="/outreach" style="color: var(--accent);">Outreach</a> to start sending.</p>
-      </div>
+{# ---------- KPI grid ---------- #}
+<section class="kpi-grid mb-8">
+  <div class="kpi">
+    <div class="kpi-label">Total leads</div>
+    <div class="kpi-num">{{ '{:,}'.format(kpis.total_leads) }}</div>
+    <div class="kpi-meta">across {{ kpis.csv_count }} CSV{{ '' if kpis.csv_count == 1 else 's' }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Sent today</div>
+    <div class="kpi-num">{{ kpis.sent_today }}</div>
+    <div class="kpi-meta">avg {{ kpis.avg_per_day }}/day · {{ range_label }}</div>
+    {% if kpis.spark %}
+    <svg class="kpi-spark" viewBox="0 0 200 24" preserveAspectRatio="none">
+      <polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{{ kpis.spark }}"/>
+    </svg>
     {% endif %}
   </div>
+  <div class="kpi {% if kpis.delivery_alert %}alert-kpi{% endif %}">
+    <div class="kpi-label">Delivery rate</div>
+    <div class="kpi-num">{{ kpis.delivery_rate }}<span class="unit">%</span></div>
+    <div class="kpi-meta">{{ kpis.delivered }} of {{ kpis.sent }} delivered · target ≥95%</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Replies</div>
+    <div class="kpi-num">{{ kpis.replies }}</div>
+    <div class="kpi-meta">{{ kpis.reply_rate }}% rate</div>
+  </div>
 </section>
 
-{# ---------- Recent outreach ---------- #}
-<section class="mb-8">
-  <h2 class="n-section-title">Recent outreach</h2>
-  <div class="n-card overflow-hidden">
-    {% if recent %}
-    <table class="n-table">
-      <thead>
-        <tr>
-          <th>When</th>
-          <th>To</th>
-          <th>Business</th>
-          <th>Subject</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in recent %}
-        <tr>
-          <td class="text-mono" style="color: var(--ink-mute); font-size: 11px;">{{ r.sent_at[:16].replace('T', ' ') }}</td>
-          <td>{{ r.lead_email }}</td>
-          <td>{{ r.business_name or '—' }}</td>
-          <td class="truncate" style="max-width: 22rem;">{{ r.subject }}</td>
-          <td>
-            {% if r.status == 'sent' %}<span class="chip chip-blue">Sent</span>
-            {% elif r.status == 'replied' %}<span class="chip chip-green">Replied</span>
-            {% elif r.status == 'opened' %}<span class="chip chip-blue">Opened</span>
-            {% else %}<span class="chip chip-red">{{ r.status }}</span>{% endif %}
-          </td>
-        </tr>
+{# ---------- Funnel + Today's queue ---------- #}
+<section class="dash-row-2 mb-6">
+  <div class="dash-block">
+    <div class="dash-block-head">
+      <div>
+        <div class="dash-block-title">Conversion funnel</div>
+        <div class="dash-block-sub">All-time, all CSVs · click to filter outreach log</div>
+      </div>
+    </div>
+    <div class="dash-block-body">
+      <div class="funnel">
+        {% for f in funnel %}
+        <a href="/outreach" class="funnel-row" style="text-decoration:none;color:inherit;">
+          <div class="funnel-label">{{ f.label }}</div>
+          <div class="funnel-bar-wrap">
+            <div class="funnel-bar {{ f.tone }}" style="width: {{ f.pct }}%"></div>
+          </div>
+          <div class="funnel-num">{{ f.n }}</div>
+          <div class="funnel-pct {% if f.warn %}warn{% endif %}">{{ f.pct }}%{% if f.warn %} ⚠{% endif %}</div>
+        </a>
         {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-      <div style="padding: 40px 24px; text-align: center;">
-        <div style="font-family: var(--font-serif); font-size: 18px; color: var(--ink); margin-bottom: 4px;">No outreach yet</div>
-        <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 14px;">Pick a CSV in Outreach and send the first batch.</p>
-        <a href="/outreach" class="btn btn-primary btn-sm">Go to Outreach</a>
       </div>
+      {% if real_open_rate and real_open_rate > 0 %}
+      <div class="note-bar" style="margin-top:18px">
+        <div class="note-icon">💡</div>
+        <div><strong>Real open rate is {{ real_open_rate }}%</strong>, not {{ ((kpis.sent and ((kpis.replies + (real_open_rate * kpis.delivered / 100))/kpis.sent*100))|round(1)) }}%. Open rate divided by <em>delivered</em> instead of sent — once delivery improves, the projected rate stays here.</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="dash-block">
+    <div class="dash-block-head">
+      <div>
+        <div class="dash-block-title">Today's queue</div>
+        <div class="dash-block-sub">Next 24 hours · 7-step sequencer</div>
+      </div>
+    </div>
+    <div class="dash-block-body">
+      {% if today_queue %}
+      <div class="timeline">
+        {% for q in today_queue %}
+        <div class="tl-item queued">
+          <div class="tl-time">{{ q.rel }}</div>
+          <div class="tl-text">{{ q.step_label }} → <strong>{{ q.business_name or q.lead_email }}</strong></div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="padding:24px 8px;text-align:center;">
+        <div style="font-family:var(--font-serif);font-size:18px;color:var(--ink);margin-bottom:4px;">Nothing queued</div>
+        <p class="text-xs" style="color:var(--ink-mute);margin:0 0 14px;">Enqueue a CSV from <a href="/sequences" style="color:var(--accent);">Sequences</a> to start a 7-step nurture.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# ---------- 7-step pipeline ---------- #}
+<section class="dash-block mb-6">
+  <div class="dash-block-head">
+    <div>
+      <div class="dash-block-title">Active sequences pipeline</div>
+      <div class="dash-block-sub">Where every enrolled lead currently sits in the 28-day cadence</div>
+    </div>
+  </div>
+  <div class="dash-block-body">
+    <div class="pipeline">
+      {% for p in pipeline %}
+      <div class="pipe-step {% if p.count %}active{% endif %}">
+        <div class="pipe-day">{{ p.day }}</div>
+        <div class="pipe-name">{{ p.name }}</div>
+        <div class="pipe-count {% if not p.count %}zero{% endif %}">{{ p.count }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% if pipeline_total == 0 %}
+    <div class="note-bar" style="margin-top:18px">
+      <div class="note-icon">⚠</div>
+      <div><strong>No leads enrolled in any sequence yet.</strong> Sends have gone through the one-shot Outreach path. Enrol a CSV from the <a href="/sequences" style="color:var(--accent);">Sequences</a> page to populate the pipeline.</div>
+    </div>
     {% endif %}
   </div>
+</section>
+
+{# ---------- Niche performance ---------- #}
+{% if niche_perf %}
+<section class="dash-block mb-6">
+  <div class="dash-block-head">
+    <div>
+      <div class="dash-block-title">Performance by niche</div>
+      <div class="dash-block-sub">Compare offer effectiveness across the niches you're running</div>
+    </div>
+  </div>
+  <div class="dash-block-body">
+    <div class="niche-grid">
+      {% for n in niche_perf %}
+      <div class="niche-card">
+        <div class="niche-name">
+          <span>{{ n.niche }}</span>
+          <span class="country">{{ n.sent }} send{{ '' if n.sent == 1 else 's' }}</span>
+        </div>
+        <div class="niche-stats">
+          <div>
+            <div class="niche-stat-label">Sent</div>
+            <div class="niche-stat-val">{{ n.sent }}</div>
+          </div>
+          <div>
+            <div class="niche-stat-label">Delivery</div>
+            <div class="niche-stat-val {% if n.delivery_rate < 50 %}warn{% elif n.delivery_rate >= 80 %}good{% endif %}">{{ n.delivery_rate }}%</div>
+          </div>
+          <div>
+            <div class="niche-stat-label">Replied</div>
+            <div class="niche-stat-val {% if not n.replied %}dim{% endif %}">{{ n.replied }}</div>
+          </div>
+        </div>
+        {% if n.delivery_rate < 50 and n.sent > 0 %}
+        <div style="margin-top:14px;font-size:11px;color:var(--warn);">
+          {{ n.failed }} of {{ n.sent }} failed · check Resend domain auth + recipient validity
+        </div>
+        {% elif n.last_send %}
+        <div style="margin-top:14px;font-size:11px;color:var(--ink-mute);">
+          Last send {{ n.last_send[:16].replace('T', ' ') }}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{# ---------- Recent activity grouped ---------- #}
+<section class="dash-block mb-6">
+  <div class="dash-block-head">
+    <div>
+      <div class="dash-block-title">Recent activity</div>
+      <div class="dash-block-sub">Last 50 sends · grouped by outcome</div>
+    </div>
+    <div class="block-actions"><a href="/outreach" class="alert-btn">View all</a></div>
+  </div>
+  {% if activity_groups %}
+  <table class="act-table">
+    <thead>
+      <tr>
+        <th style="width:170px">Timestamp</th>
+        <th>Lead</th>
+        <th>Subject</th>
+        <th style="width:100px">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for g in activity_groups %}
+      <tr><td colspan="4" style="padding:0">
+        <div class="group-head">
+          <span>{{ g.icon }} {{ g.label }} · {{ g.rows|length }}</span>
+        </div>
+      </td></tr>
+      {% for r in g.rows %}
+      <tr>
+        <td class="when">{{ r.sent_at|ist }}</td>
+        <td>
+          <div class="biz">{{ r.business_name or '—' }}</div>
+          <div class="email">{{ r.lead_email }}</div>
+        </td>
+        <td class="subj">{{ r.subject or '' }}</td>
+        <td>
+          {% set s = r.status or 'sent' %}
+          {% set chip = 'failed' if s == 'failed' else
+                        'bounced' if s == 'bounced' else
+                        'replied' if s == 'replied' else
+                        'opened' if (s == 'opened' or (s in ('sent','delivered') and (r.opens or 0) > 0)) else
+                        'sent' %}
+          <span class="chip-status chip-{{ chip }}">{{ chip }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div style="padding:40px 24px;text-align:center;">
+    <div style="font-family:var(--font-serif);font-size:18px;color:var(--ink);margin-bottom:4px;">No outreach yet</div>
+    <p class="text-xs" style="color:var(--ink-mute);margin:0 0 14px;">Pick a CSV in Outreach and send the first batch.</p>
+    <a href="/outreach" class="btn btn-primary btn-sm">Go to Outreach</a>
+  </div>
+  {% endif %}
 </section>
 
 {# ---------- Per-CSV breakdown (collapsed) ---------- #}

@@ -279,17 +279,96 @@ def _load_leads_by_email(csv_name):
 
 def _ctx():
     """Common template context — available to every page."""
+    try:
+        fail_count = db.count_recent_failures(hours=24)
+    except Exception:
+        fail_count = 0
+    try:
+        active_seq = db.sequence_stats().get("active", 0)
+    except Exception:
+        active_seq = 0
     return {
         "google_connected": _google_creds() is not None,
         "has_oauth_config": _has_oauth_config(),
         "claude_enabled": ai_metrics.is_enabled(),
         "asana_enabled": asana_api.is_configured(),
         "resend_enabled": resend_send.is_configured(),
+        "sidebar_counts": {"fail": fail_count, "sequences": active_seq},
     }
 
 
 def _sse(payload):
     return f"data: {json.dumps(payload)}\n\n"
+
+
+def _resolve_range(range_raw, default_key="14"):
+    """Map ?range=... query into (range_key, since_iso, days_for_metric, label).
+
+    'today' uses IST calendar midnight (UTC+5:30) so a send at 11pm yesterday IST
+    does NOT count. Other windows are rolling N-day cutoffs from now (UTC).
+    'all' returns since=None (no filter)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    keys = {"today", "7", "14", "30", "90", "all"}
+    key = (range_raw or default_key).strip().lower()
+    if key not in keys:
+        key = default_key
+    label = {"today": "Today", "7": "Last 7 days", "14": "Last 14 days",
+             "30": "Last 30 days", "90": "Last 90 days", "all": "All time"}[key]
+    if key == "today":
+        ist = _tz(_td(hours=5, minutes=30))
+        midnight_ist = _dt.now(ist).replace(hour=0, minute=0, second=0, microsecond=0)
+        since_iso = midnight_ist.astimezone(_tz.utc).isoformat()
+        return key, since_iso, 1, label
+    if key == "all":
+        return key, None, 90, label
+    days = int(key)
+    since_iso = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    return key, since_iso, days, label
+
+
+@app.template_filter("ist")
+def _ist_filter(value, fmt="full"):
+    """Convert a UTC ISO timestamp into 12-hour IST.
+
+    fmt='full'  → '2:30 PM IST · May 6'
+    fmt='time'  → '2:30 PM IST'
+    fmt='short' → '2:30 PM'  (no IST suffix; for tight cells)
+    """
+    if not value:
+        return "—"
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    try:
+        s = str(value).replace("Z", "+00:00")
+        ts = _dt.fromisoformat(s)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_tz.utc)
+        ist = ts.astimezone(_tz(_td(hours=5, minutes=30)))
+    except Exception:
+        return str(value)[:16]
+    hour = ist.hour % 12 or 12
+    ampm = "AM" if ist.hour < 12 else "PM"
+    time_str = f"{hour}:{ist.minute:02d} {ampm}"
+    if fmt == "time":
+        return f"{time_str} IST"
+    if fmt == "short":
+        return time_str
+    return f"{time_str} IST · {ist.strftime('%b %-d')}"
+
+
+@app.context_processor
+def _inject_dashboard_helpers():
+    """Expose the new dashboard-redesign read helpers to every template
+    so pages other than the dashboard route (Outreach, Sequences) can call
+    them without their underlying route being modified."""
+    return {
+        "daily_sends": metrics.daily_sends_last_n,
+        "sparkline_points": metrics.sparkline_points,
+        "csv_health": metrics.csv_health_score,
+        "detect_duplicate_sends": db.detect_duplicate_sends,
+        "sequence_step_distribution": db.sequence_step_distribution,
+        "outreach_funnel": db.outreach_funnel,
+        "csv_send_summary": db.csv_send_summary,
+    }
 
 
 # ─────────────────────────── pages ───────────────────────────
@@ -298,14 +377,17 @@ def _sse(payload):
 @app.route("/")
 def dashboard():
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    range_key, range_since, range_days, range_label = _resolve_range(
+        request.args.get("range"), default_key="14")
     settings = db.get_settings()
     outreach = db.outreach_stats()
     summary = metrics.dashboard_summary(settings, outreach)
-    recent = db.list_outreach(limit=10)
+    recent = db.list_outreach(limit=50)
 
     # Sent today / niches today (from outreach log).
     today_prefix = _dt.utcnow().strftime("%Y-%m-%d")
-    sent_today_rows = [r for r in db.list_outreach(limit=500) if (r.get("sent_at") or "").startswith(today_prefix)]
+    recent_500 = db.list_outreach(limit=500)
+    sent_today_rows = [r for r in recent_500 if (r.get("sent_at") or "").startswith(today_prefix)]
     summary["sent_today"] = len(sent_today_rows)
     summary["niches_today"] = 0  # outreach_log lacks niche column; placeholder
 
@@ -327,8 +409,16 @@ def dashboard():
         except Exception:
             continue
         if now <= ts <= horizon:
+            mins = int((ts - now).total_seconds() // 60)
+            if mins < 60:
+                rel = f"in {max(0, mins)}m"
+            elif mins < 24 * 60:
+                rel = f"in {mins // 60}h {mins % 60}m"
+            else:
+                rel = ts.strftime("tomorrow %H:%M")
             today_queue.append({
                 "when": ts.strftime("%H:%M"),
+                "rel": rel,
                 "business_name": s.get("business_name"),
                 "lead_email": s.get("lead_email"),
                 "niche": s.get("niche"),
@@ -340,6 +430,142 @@ def dashboard():
 
     today_label = _dt.utcnow().strftime("%A, %b %-d")
 
+    # ── Dashboard redesign additions ─────────────────────────────────────
+    funnel_raw = db.outreach_funnel(since=range_since)
+    sent_n      = funnel_raw.get("sent") or 0
+    delivered_n = funnel_raw.get("delivered") or 0
+    opened_n    = funnel_raw.get("opened") or 0
+    replied_n   = funnel_raw.get("replied") or 0
+    failed_n    = funnel_raw.get("failed") or 0
+    bounced_n   = funnel_raw.get("bounced") or 0
+
+    # CSV-derived top of funnel.
+    csvs = metrics.list_csvs()
+    csv_summaries = [metrics.csv_summary(c["path"]) for c in csvs]
+    total_leads_n = sum(c["rows"] for c in csv_summaries)
+    has_email_n   = sum(c["with_email"] for c in csv_summaries)
+    funnel_top    = max(1, total_leads_n)
+
+    funnel = [
+        {"label": "Scraped",    "n": total_leads_n, "pct": 100,
+         "tone": "ok",   "warn": False},
+        {"label": "Has email",  "n": has_email_n,
+         "pct": round(100 * has_email_n / funnel_top),
+         "tone": "ok",   "warn": False},
+        {"label": "Sent",       "n": sent_n,
+         "pct": round(100 * sent_n / funnel_top),
+         "tone": "ok",   "warn": False},
+        {"label": "Delivered",  "n": delivered_n,
+         "pct": round(100 * delivered_n / funnel_top),
+         "tone": "warn" if (sent_n and delivered_n / max(1, sent_n) < 0.7) else "ok",
+         "warn": (sent_n and delivered_n / max(1, sent_n) < 0.7)},
+        {"label": "Opened",     "n": opened_n,
+         "pct": round(100 * opened_n / funnel_top),
+         "tone": "dim",  "warn": False},
+        {"label": "Replied",    "n": replied_n,
+         "pct": round(100 * replied_n / funnel_top),
+         "tone": "dim",  "warn": False},
+    ]
+    delivery_rate = round(100 * delivered_n / sent_n, 1) if sent_n else 0
+    real_open_rate = round(100 * opened_n / delivered_n, 1) if delivered_n else 0
+
+    # KPI tiles
+    daily_series = metrics.daily_sends_last_n(range_days)
+    spark_points = metrics.sparkline_points(daily_series)
+    avg_per_day = round(sum(d["count"] for d in daily_series) / max(1, len(daily_series)), 1)
+
+    kpis = {
+        "total_leads": total_leads_n,
+        "csv_count": len(csvs),
+        "sent_today": summary.get("sent_today", 0),
+        "spark": spark_points,
+        "avg_per_day": avg_per_day,
+        "delivery_rate": delivery_rate,
+        "delivery_alert": delivery_rate < 70 and sent_n > 0,
+        "delivered": delivered_n,
+        "sent": sent_n,
+        "replies": replied_n,
+        "reply_rate": round(100 * replied_n / sent_n, 1) if sent_n else 0,
+    }
+
+    # Alert banner — fire when delivery is bad, or duplicates, or many failures.
+    duplicates = db.detect_duplicate_sends(window_minutes=10)
+    recent_failures_24h = db.count_recent_failures(hours=24)
+    alert = None
+    if (sent_n > 0 and delivery_rate < 70) or recent_failures_24h > 5 or duplicates:
+        title_bits = []
+        if sent_n > 0 and delivery_rate < 70:
+            fail_pct = 100 - delivery_rate
+            title_bits.append(f"{fail_pct:.0f}% of recent sends failed")
+        elif recent_failures_24h > 5:
+            title_bits.append(f"{recent_failures_24h} sends failed in last 24h")
+        elif duplicates:
+            title_bits.append("Duplicate sends detected")
+        msg_bits = []
+        if delivery_rate < 70 and sent_n > 0:
+            msg_bits.append(
+                f"{delivered_n} of {sent_n} delivered. Real open rate on delivered "
+                f"is {real_open_rate}%."
+            )
+        if duplicates:
+            sample = ", ".join((d.get("lead_email") or "")[:40]
+                               for d in duplicates[:3])
+            msg_bits.append(
+                f"Duplicates: {sample}{'…' if len(duplicates) > 3 else ''} "
+                f"received 2+ sends within 10 minutes."
+            )
+        alert = {
+            "title": title_bits[0] if title_bits else "Delivery issue",
+            "message": " ".join(msg_bits) or "Investigate the outreach log.",
+            "duplicates": duplicates,
+        }
+
+    # 7-step pipeline
+    pipe_dist = db.sequence_step_distribution()
+    pipeline = [
+        {"day": "Day 0",  "name": "Cold",   "count": pipe_dist.get(1, 0)},
+        {"day": "Day 3",  "name": "Bump",   "count": pipe_dist.get(2, 0)},
+        {"day": "Day 7",  "name": "FOMO",   "count": pipe_dist.get(3, 0)},
+        {"day": "Day 11", "name": "Loom",   "count": pipe_dist.get(4, 0)},
+        {"day": "Day 16", "name": "Math",   "count": pipe_dist.get(5, 0)},
+        {"day": "Day 21", "name": "Quirky", "count": pipe_dist.get(6, 0)},
+        {"day": "Day 28", "name": "Pizza",  "count": pipe_dist.get(7, 0)},
+    ]
+    pipeline_total = sum(p["count"] for p in pipeline)
+
+    niche_perf = db.outreach_stats_by_niche(since=range_since)
+
+    # Group recent activity by status for the activity block.
+    def _group(rows):
+        order = ["failed", "bounced", "replied", "opened", "clicked",
+                 "delivered", "sent"]
+        labels = {
+            "failed":    {"key": "failed",    "label": "Failed",          "icon": "✕"},
+            "bounced":   {"key": "bounced",   "label": "Bounced",         "icon": "↩"},
+            "opened":    {"key": "opened",    "label": "Sent + opened",   "icon": "✓"},
+            "clicked":   {"key": "clicked",   "label": "Clicked",         "icon": "✓"},
+            "replied":   {"key": "replied",   "label": "Replied",         "icon": "✦"},
+            "delivered": {"key": "delivered", "label": "Sent",            "icon": "✓"},
+            "sent":      {"key": "sent",      "label": "Sent (legacy)",   "icon": "✓"},
+        }
+        buckets = {k: [] for k in order}
+        for r in rows:
+            s = (r.get("status") or "").lower()
+            # opens bump status to 'opened' but legacy rows may still be
+            # 'sent' with opens > 0 — promote them visually.
+            if s in ("sent", "delivered") and (r.get("opens") or 0) > 0:
+                s = "opened"
+            if s in buckets:
+                buckets[s].append(r)
+            else:
+                buckets.setdefault("delivered", []).append(r)
+        return [
+            {**labels[k], "rows": buckets[k]}
+            for k in order if buckets.get(k)
+        ]
+
+    activity_groups = _group(recent[:50])
+
     return render_template(
         "dashboard.html",
         summary=summary,
@@ -347,6 +573,17 @@ def dashboard():
         settings=settings,
         today_queue=today_queue[:20],
         today_label=today_label,
+        funnel=funnel,
+        delivery_rate=delivery_rate,
+        real_open_rate=real_open_rate,
+        kpis=kpis,
+        alert=alert,
+        pipeline=pipeline,
+        pipeline_total=pipeline_total,
+        niche_perf=niche_perf,
+        activity_groups=activity_groups,
+        range_key=range_key,
+        range_label=range_label,
         **_ctx(),
     )
 
@@ -376,6 +613,8 @@ def leads_detail(name):
     path = _safe_csv_path(name)
     if not path:
         return redirect(url_for("leads_index"))
+    range_key, range_since, _, range_label = _resolve_range(
+        request.args.get("range"), default_key="all")
     fieldnames, rows = metrics.read_csv_with_scores(path)
     summary = metrics.csv_summary(path)
     contacted = db.outreach_stats()["contacted_emails"]
@@ -386,7 +625,7 @@ def leads_detail(name):
         bn = r["_normalized"]["business_name"]
         r["_asana_url"] = asana_for_rows.get(bn, "")
     # Outreach status per email so the leads table mirrors the outreach board.
-    outreach_status = db.outreach_status_by_email(name)
+    outreach_status = db.outreach_status_by_email(name, since=range_since)
     campaign = db.outreach_campaign_summary(name)
     return render_template(
         "leads_detail.html",
@@ -398,6 +637,8 @@ def leads_detail(name):
         outreach_status=outreach_status,
         campaign=campaign,
         sheet=db.get_sheet_for_csv(name),
+        range_key=range_key,
+        range_label=range_label,
         **_ctx(),
     )
 
@@ -405,6 +646,8 @@ def leads_detail(name):
 @app.route("/outreach")
 def outreach_page():
     csv_name = request.args.get("csv", "")
+    range_key, range_since, range_days, range_label = _resolve_range(
+        request.args.get("range"), default_key="14")
     selected_path = _safe_csv_path(csv_name) if csv_name else None
     rows = []
     fieldnames = []
@@ -442,6 +685,9 @@ def outreach_page():
         campaign=campaign,
         status_by_email=status_by_email,
         sheet=db.get_sheet_for_csv(csv_name) if csv_name else None,
+        range_key=range_key,
+        range_label=range_label,
+        range_days=range_days,
         **_ctx(),
     )
 

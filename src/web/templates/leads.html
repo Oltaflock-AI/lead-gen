@@ -2,45 +2,62 @@
 {% block title %}Leads — lead-gen{% endblock %}
 {% block breadcrumb %}workspace / leads{% endblock %}
 {% block heading %}Leads{% endblock %}
-{% block subheading %}CSV library — every scrape and import.{% endblock %}
+{% block subheading %}CSV library · every scrape and import · health score combines coverage + score + freshness{% endblock %}
 
 {% block content %}
 
 {% if csvs %}
-<section class="n-card" style="padding: 0; overflow: hidden;">
-  <table class="n-table">
-    <thead>
-      <tr>
-        <th>CSV</th>
-        <th>Source</th>
-        <th class="text-right">Rows</th>
-        <th class="text-right">Avg score</th>
-        <th class="text-right">Qualified</th>
-        <th class="text-right">w/ email</th>
-        <th class="text-right">w/ phone</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for c in csvs %}
-      <tr>
-        <td><a href="/leads/{{ c.name }}" style="color: var(--ink); font-weight: 500;" class="hover:underline">{{ c.name }}</a></td>
-        <td><span class="chip {% if c.dir == 'outputs' %}chip-blue{% else %}chip-gray{% endif %}">{{ 'Scraped' if c.dir == 'outputs' else 'Imported' }}</span></td>
-        <td class="text-right">{{ c.rows }}</td>
-        <td class="text-right">{{ c.avg_score }}</td>
-        <td class="text-right">{{ c.qualified }}</td>
-        <td class="text-right">{{ c.with_email }}</td>
-        <td class="text-right">{{ c.with_phone }}</td>
-        <td class="text-right text-xs">
-          <a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">view</a>
-          <span style="color: var(--ink-faint); margin: 0 4px;">·</span>
-          <a href="/outreach?csv={{ c.name }}" style="color: var(--accent);" class="hover:underline">outreach</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<section class="csv-grid">
+  {% for c in csvs %}
+    {% set h = csv_health(c) %}
+    {% set send = csv_send_summary(c.path) %}
+    <a href="/leads/{{ c.name }}" class="csv-card" style="text-decoration: none; color: inherit;">
+      <div class="csv-name">{{ c.name }}</div>
+      <div class="csv-meta">
+        <span class="chip {% if c.dir == 'outputs' %}chip-blue{% else %}chip-gray{% endif %}">{{ 'Scraped' if c.dir == 'outputs' else 'Imported' }}</span>
+        · {{ c.rows }} rows
+      </div>
+      <div class="csv-health">
+        <div class="csv-health-num {{ h.band }}">{{ h.score }}</div>
+        <div class="csv-health-label">health score<br>{{ h.label }}</div>
+      </div>
+      <div class="csv-bars">
+        <div>
+          <div class="csv-bar-label"><span>w/ email</span><span>{{ c.with_email }}/{{ c.rows }}</span></div>
+          <div class="csv-bar-track"><div class="csv-bar-fill {% if h.email_pct < 70 %}warn{% endif %}" style="width: {{ h.email_pct }}%"></div></div>
+        </div>
+        <div>
+          <div class="csv-bar-label"><span>w/ phone</span><span>{{ c.with_phone }}/{{ c.rows }}</span></div>
+          <div class="csv-bar-track"><div class="csv-bar-fill" style="width: {{ h.phone_pct }}%"></div></div>
+        </div>
+        <div>
+          <div class="csv-bar-label"><span>avg score</span><span>{{ c.avg_score }}</span></div>
+          <div class="csv-bar-track"><div class="csv-bar-fill" style="width: {{ h.score_pct }}%"></div></div>
+        </div>
+        <div>
+          <div class="csv-bar-label"><span>qualified</span><span>{{ c.qualified }}/{{ c.rows }}</span></div>
+          <div class="csv-bar-track"><div class="csv-bar-fill" style="width: {{ ((100 * c.qualified // c.rows) if c.rows else 0) }}%"></div></div>
+        </div>
+      </div>
+      {% if send.sent %}
+      <div class="csv-card-foot {% if send.failed and send.failed >= send.delivered %}warn{% endif %}">
+        <span class="dot-tiny"></span>
+        {{ send.sent }} sent · {{ send.delivered }} delivered{% if send.opened %} · {{ send.opened }} opened{% endif %}{% if send.replied %} · {{ send.replied }} replied{% endif %}{% if send.failed %} · {{ send.failed }} failed{% endif %}
+      </div>
+      {% else %}
+      <div class="csv-card-foot">
+        <span class="dot-tiny dim"></span>
+        no sends yet
+      </div>
+      {% endif %}
+    </a>
+  {% endfor %}
 </section>
+
+<div class="note-bar mt-5">
+  <div class="note-icon">💡</div>
+  <div><strong>Health score formula:</strong> 40% email coverage + 25% phone coverage + 25% avg lead score + 10% freshness. Below 70 means review the CSV before sending.</div>
+</div>
 {% else %}
 <section class="n-card" style="padding: 56px 24px; text-align: center;">
   <div style="font-family: var(--font-serif); font-size: 22px; color: var(--ink); margin-bottom: 6px;">No CSVs yet</div>

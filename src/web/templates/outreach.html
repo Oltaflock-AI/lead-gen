@@ -13,6 +13,33 @@
 </div>
 {% endif %}
 
+{# ---------- Critical alert banner ---------- #}
+{% set _failed_n = (campaign.failed or 0) if campaign else 0 %}
+{% set _delivered_n = ((campaign.sent or 0) - _failed_n) if campaign else 0 %}
+{% set _delivery_pct = (100 * _delivered_n / campaign.sent) | round(0, 'floor') | int if (campaign and campaign.sent) else 100 %}
+{% set _dups = detect_duplicate_sends(10, 5) %}
+{% if (_failed_n >= 5) or (_dups and selected) or (campaign and campaign.sent and _delivery_pct < 70) %}
+<div class="dash-alert crit mb-5">
+  <div class="dash-alert-icon">⚠</div>
+  <div class="dash-alert-body">
+    <div class="dash-alert-title">
+      {% if campaign and campaign.sent and _delivery_pct < 70 %}
+        {{ 100 - _delivery_pct }}% of recent sends failed delivery
+      {% elif _dups %}
+        Duplicate sends detected
+      {% else %}
+        {{ _failed_n }} failed sends in this campaign
+      {% endif %}
+    </div>
+    <div class="dash-alert-msg">
+      {% if campaign and campaign.sent %}{{ _delivered_n }} of {{ campaign.sent }} delivered.{% endif %}
+      {% if _dups %} {{ _dups|length }} recipient{{ '' if _dups|length == 1 else 's' }} received 2+ sends within 10 minutes — likely the duplicate-send bug.{% endif %}
+      Click any failed row below for the saved draft, or use "Retry failed" to resend with the same draft.
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div id="reply-status" class="hidden n-callout info mb-5"><div class="icon">ℹ</div><div id="reply-status-text"></div></div>
 
 {# ---------- Block 1 — CSV picker ---------- #}
@@ -47,42 +74,98 @@
   {% endif %}
 </section>
 
+{# ---------- Range selector ---------- #}
+<div class="range-bar mb-5" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+  <span class="text-xs" style="color: var(--ink-mute);">Showing metrics for</span>
+  {% for k, lbl in [('today','Today'), ('7','Last 7 days'), ('14','Last 14 days'), ('30','Last 30 days'), ('90','Last 90 days'), ('all','All time')] %}
+    <a href="?{% if selected %}csv={{ selected }}&{% endif %}range={{ k }}" class="filter-chip {% if range_key == k %}active{% endif %}" style="text-decoration: none;">{{ lbl }}</a>
+  {% endfor %}
+  <span class="text-xs ml-2" style="color: var(--ink-faint);">· volume chart respects this window</span>
+</div>
+
 {% if campaign and campaign.sent %}
-<section id="campaign-banner" class="n-card mb-5" style="padding: 22px 24px;">
-  <div class="flex items-baseline justify-between mb-4">
-    <div class="n-block-title" style="margin: 0;">Campaign analytics</div>
-    <div class="text-xs" style="color: var(--ink-faint);">
-      <span id="live-status">● live</span> · refreshed <span id="live-tick">just now</span>
+{# Funnel + 14-day volume — replaces the 5-tile metrics block. Live counters
+   referenced by the polling JS still exist further down (id='cm-*'). #}
+{% set _camp_sent      = campaign.sent or 0 %}
+{% set _camp_failed    = campaign.failed or 0 %}
+{% set _camp_delivered = _camp_sent - _camp_failed %}
+{% set _camp_opened    = campaign.unique_opened or 0 %}
+{% set _camp_replied   = campaign.replied or 0 %}
+{% set _daily          = daily_sends(range_days or 90) %}
+{% set _max_daily      = (_daily | map(attribute='count') | max) or 1 %}
+<section id="campaign-banner" class="grid-2 mb-5">
+  <div class="dash-block">
+    <div class="dash-block-head">
+      <div>
+        <div class="dash-block-title">Funnel</div>
+        <div class="dash-block-sub" style="color: var(--ink-faint);">
+          <span id="live-status">● live</span> · refreshed <span id="live-tick">just now</span>
+        </div>
+      </div>
+    </div>
+    <div class="dash-block-body">
+      {% set _bar_delivered = ((100 * _camp_delivered // _camp_sent) if _camp_sent else 0) %}
+      {% set _bar_opened    = ((100 * _camp_opened    // _camp_sent) if _camp_sent else 0) %}
+      {% set _bar_replied   = ((100 * _camp_replied   // _camp_sent) if _camp_sent else 0) %}
+      {% set _delivery_low  = (_camp_sent and (_camp_delivered * 100 / _camp_sent) < 70) %}
+      <div class="funnel">
+        <div class="funnel-row">
+          <div class="funnel-label">Sent</div>
+          <div class="funnel-bar-wrap"><div class="funnel-bar ok" style="width:100%"></div></div>
+          <div class="funnel-num" id="cm-sent">{{ _camp_sent }}</div>
+          <div class="funnel-pct">100%</div>
+        </div>
+        <div class="funnel-row">
+          <div class="funnel-label">Delivered</div>
+          <div class="funnel-bar-wrap"><div class="funnel-bar {% if _delivery_low %}warn{% else %}ok{% endif %}" style="width: {{ _bar_delivered }}%"></div></div>
+          <div class="funnel-num">{{ _camp_delivered }}</div>
+          <div class="funnel-pct {% if _delivery_low %}warn{% endif %}">{{ _bar_delivered }}%</div>
+        </div>
+        <div class="funnel-row">
+          <div class="funnel-label">Opened</div>
+          <div class="funnel-bar-wrap"><div class="funnel-bar ok" style="width: {{ _bar_opened }}%"></div></div>
+          <div class="funnel-num"><span id="cm-opened">{{ _camp_opened }}</span></div>
+          <div class="funnel-pct"><span id="cm-open-rate">{{ campaign.open_rate }}</span>%</div>
+        </div>
+        <div class="funnel-row">
+          <div class="funnel-label">Replied</div>
+          <div class="funnel-bar-wrap"><div class="funnel-bar dim" style="width: {{ _bar_replied }}%"></div></div>
+          <div class="funnel-num"><span id="cm-replied">{{ _camp_replied }}</span></div>
+          <div class="funnel-pct"><span id="cm-reply-rate">{{ campaign.reply_rate }}</span>%</div>
+        </div>
+      </div>
+      <div class="text-xs mt-3" style="color: var(--ink-mute); display:none;">
+        <span id="cm-clicked">{{ campaign.unique_clicked }}</span> clicks ·
+        <span id="cm-click-rate">{{ campaign.click_rate }}</span>% click rate ·
+        <span id="cm-bounced">{{ campaign.bounced }}</span> bounced ·
+        <span id="cm-bounce-rate">{{ campaign.bounce_rate }}</span>% bounce rate
+        <span id="cm-failed-wrap" {% if not campaign.failed %}style="display:none;"{% endif %}>·
+          <span id="cm-failed">{{ campaign.failed }}</span> failed
+        </span>
+      </div>
     </div>
   </div>
-  <div class="campaign-grid">
-    <div class="metric-tile">
-      <div class="metric-rate" id="cm-sent">{{ campaign.sent }}</div>
-      <div class="metric-label">sent</div>
-      <div class="metric-sub">total emails delivered</div>
-    </div>
-    <div class="metric-tile metric-tile-accent">
-      <div class="metric-rate"><span id="cm-open-rate">{{ campaign.open_rate }}</span><span class="metric-pct">%</span></div>
-      <div class="metric-label">open rate</div>
-      <div class="metric-sub"><span id="cm-opened">{{ campaign.unique_opened }}</span> unique opens</div>
-    </div>
-    <div class="metric-tile metric-tile-good">
-      <div class="metric-rate"><span id="cm-click-rate">{{ campaign.click_rate }}</span><span class="metric-pct">%</span></div>
-      <div class="metric-label">click rate</div>
-      <div class="metric-sub"><span id="cm-clicked">{{ campaign.unique_clicked }}</span> unique clicks</div>
-    </div>
-    <div class="metric-tile metric-tile-warm">
-      <div class="metric-rate"><span id="cm-reply-rate">{{ campaign.reply_rate }}</span><span class="metric-pct">%</span></div>
-      <div class="metric-label">reply rate</div>
-      <div class="metric-sub"><span id="cm-replied">{{ campaign.replied }}</span> replied</div>
-    </div>
-    <div class="metric-tile metric-tile-warn">
-      <div class="metric-rate"><span id="cm-bounce-rate">{{ campaign.bounce_rate }}</span><span class="metric-pct">%</span></div>
-      <div class="metric-label">bounce rate</div>
-      <div class="metric-sub">
-        <span id="cm-bounced">{{ campaign.bounced }}</span> bounced
-        <span id="cm-failed-wrap" {% if not campaign.failed %}style="display:none;"{% endif %}>· <span id="cm-failed">{{ campaign.failed }}</span> failed</span>
+
+  <div class="dash-block">
+    <div class="dash-block-head">
+      <div>
+        <div class="dash-block-title">Daily volume</div>
+        <div class="dash-block-sub">Last 14 days · today highlighted</div>
       </div>
+    </div>
+    <div class="dash-block-body">
+      <svg viewBox="0 0 400 120" preserveAspectRatio="none" style="width:100%;height:120px">
+        <line x1="0" y1="100" x2="400" y2="100" stroke="var(--line)" stroke-width="1"/>
+        {% for d in _daily %}
+          {% set _bx = 6 + loop.index0 * 28 %}
+          {% set _bh = (98 * d.count / _max_daily) %}
+          {% set _by = 100 - _bh %}
+          <rect x="{{ _bx }}" y="{{ _by }}" width="20" height="{{ _bh }}"
+                fill="{% if loop.last %}var(--warn){% else %}var(--accent){% endif %}"></rect>
+        {% endfor %}
+        <text x="6"   y="118" font-family="var(--font-mono)" font-size="9" fill="var(--ink-mute)">14d</text>
+        <text x="394" y="118" font-family="var(--font-mono)" font-size="9" fill="var(--warn)" text-anchor="end">today</text>
+      </svg>
     </div>
   </div>
 </section>
@@ -206,28 +289,55 @@
 {% endif %}
 
 {# ---------- Block 3 — Log ---------- #}
+{# Pre-compute filter counts + duplicate index for inline detection. #}
+{% set _counts = namespace(all=0, failed=0, opened=0, sent=0, replied=0, bounced=0) %}
+{% set _by_email = {} %}
+{% for r in log %}
+  {% set _ = _by_email.setdefault(r.lead_email|lower, []).append(r) %}
+  {% set _counts.all = _counts.all + 1 %}
+  {% if r.status == 'failed' %}{% set _counts.failed = _counts.failed + 1 %}
+  {% elif r.status == 'replied' %}{% set _counts.replied = _counts.replied + 1 %}
+  {% elif r.status == 'bounced' %}{% set _counts.bounced = _counts.bounced + 1 %}
+  {% elif r.status == 'opened' or (r.status in ['sent','delivered'] and (r.opens or 0) > 0) %}{% set _counts.opened = _counts.opened + 1 %}
+  {% else %}{% set _counts.sent = _counts.sent + 1 %}{% endif %}
+{% endfor %}
+
 <section class="n-card" style="padding: 0; overflow: hidden;">
   <div style="padding: 14px 22px; border-bottom: 1px solid var(--line);" class="n-block-title flex items-center justify-between">
-    <span>Outreach log <span style="color: var(--ink-mute); font-weight: 400; margin-left: 6px;">last 50</span></span>
+    <span>Outreach log <span style="color: var(--ink-mute); font-weight: 400; margin-left: 6px;">last 50 · click row to expand</span></span>
     {% if selected %}
     <button type="button" class="btn btn-ghost btn-sm" onclick="clearFailedLogs()" title="Delete every 'failed' row for this CSV from the log (keeps sent/replied/etc.)">Clear failed logs</button>
     {% endif %}
   </div>
-  <table class="n-table">
+  <div class="filter-row" id="log-filters">
+    <button class="filter-chip active" data-filter="all">All <span class="count">{{ _counts.all }}</span></button>
+    <button class="filter-chip" data-filter="failed">Failed <span class="count">{{ _counts.failed }}</span></button>
+    <button class="filter-chip" data-filter="opened">Opened <span class="count">{{ _counts.opened }}</span></button>
+    <button class="filter-chip" data-filter="sent">Sent <span class="count">{{ _counts.sent }}</span></button>
+    <button class="filter-chip" data-filter="replied">Replied <span class="count">{{ _counts.replied }}</span></button>
+    <button class="filter-chip" data-filter="bounced">Bounced <span class="count">{{ _counts.bounced }}</span></button>
+  </div>
+  <table class="n-table" id="log-table">
     <thead>
       <tr>
-        <th>When</th>
+        <th>Timestamp</th>
         <th>To</th>
         <th>Business</th>
         <th>Subject</th>
         <th>Status</th>
-        <th></th>
+        <th><span class="sr-only">Action</span></th>
       </tr>
     </thead>
     <tbody>
       {% for r in log %}
-      <tr data-log-id="{{ r.id }}" data-log-status="{{ r.status }}">
-        <td class="text-xs text-mono" style="color: var(--ink-mute);">{{ r.sent_at[:16].replace('T', ' ') }}</td>
+      {% set _peers = _by_email[r.lead_email|lower] %}
+      {% set _bucket = 'failed' if r.status == 'failed'
+                       else 'replied' if r.status == 'replied'
+                       else 'bounced' if r.status == 'bounced'
+                       else 'opened' if (r.status == 'opened' or (r.status in ['sent','delivered'] and (r.opens or 0) > 0))
+                       else 'sent' %}
+      <tr data-log-id="{{ r.id }}" data-log-status="{{ r.status }}" data-bucket="{{ _bucket }}">
+        <td class="text-mono" style="color: var(--ink);">{{ r.sent_at|ist }}</td>
         <td>{{ r.lead_email }}</td>
         <td>{{ r.business_name or '—' }}</td>
         <td class="truncate" style="max-width: 22rem;">{{ r.subject }}</td>
@@ -252,6 +362,16 @@
           {% endif %}
         </td>
       </tr>
+      {# Inline duplicate-send detection: only on first occurrence per email. #}
+      {% if loop.first or (loop.previtem and loop.previtem.lead_email|lower != r.lead_email|lower) %}
+        {% if _peers|length >= 2 %}
+        <tr class="dup-note-row" data-bucket="{{ _bucket }}">
+          <td colspan="6" style="padding: 6px 22px; font-size: 11px; color: var(--ink-mute); font-family: var(--font-mono); background: var(--bg-sunken);">
+            ↳ Same recipient, sent {{ _peers|length }}× ({% for p in _peers %}{{ p.sent_at|ist('short') }}{{ '' if loop.last else ', ' }}{% endfor %}) — likely duplicate-send bug
+          </td>
+        </tr>
+        {% endif %}
+      {% endif %}
       {% else %}
       <tr><td colspan="6" style="padding: 32px; text-align: center; color: var(--ink-mute);">No outreach yet.</td></tr>
       {% endfor %}
@@ -266,7 +386,20 @@ const CSV_PATH = "{{ selected }}";
 
 function toggleAll(cb) {
   document.querySelectorAll('.lead-cb').forEach(x => x.checked = cb.checked);
+  updateSendButtonLabel();
 }
+
+function updateSendButtonLabel() {
+  const btn = document.getElementById('send-btn');
+  if (!btn) return;
+  const n = document.querySelectorAll('.lead-cb:checked').length;
+  btn.textContent = n ? `Send ${n} selected` : 'Send all';
+}
+
+document.addEventListener('change', e => {
+  if (e.target.classList && e.target.classList.contains('lead-cb')) updateSendButtonLabel();
+});
+document.addEventListener('DOMContentLoaded', updateSendButtonLabel);
 
 function selectedLeads() {
   return Array.from(document.querySelectorAll('.lead-cb:checked')).map(cb => ({
@@ -552,7 +685,12 @@ async function _runSendBatch(items, btn) {
 }
 
 async function sendAll() {
+  const checkedEmails = new Set(
+    Array.from(document.querySelectorAll('.lead-cb:checked'))
+      .map(cb => (cb.dataset.email || '').toLowerCase())
+  );
   const items = Array.from(document.querySelectorAll('tr[data-row-email]'))
+    .filter(tr => !checkedEmails.size || checkedEmails.has(tr.dataset.rowEmail))
     .filter(tr => (tr.querySelector('.draft-body').value || '').trim())
     .map(tr => ({
       to: tr.dataset.rowEmail,
@@ -560,8 +698,14 @@ async function sendAll() {
       subject: tr.querySelector('.draft-subject').value,
       body: tr.querySelector('.draft-body').value,
     }));
-  if (!items.length) { alert('No drafts to send. Generate some first.'); return; }
-  if (!confirm(`Send ${items.length} email${items.length===1?'':'s'} via Resend?`)) return;
+  if (!items.length) {
+    alert(checkedEmails.size
+      ? 'Selected leads have no saved drafts. Generate drafts first.'
+      : 'No drafts to send. Generate some first.');
+    return;
+  }
+  const scope = checkedEmails.size ? `${items.length} selected lead${items.length===1?'':'s'}` : `${items.length} email${items.length===1?'':'s'}`;
+  if (!confirm(`Send to ${scope} via Resend?`)) return;
   await _runSendBatch(items, document.getElementById('send-btn'));
 }
 
@@ -701,5 +845,21 @@ if (CSV_PATH) {
   // First refresh after 3s so initial page render isn't slowed.
   setTimeout(refreshLiveStatus, 3000);
 }
+
+// ── Outreach log filter chips ─────────────────────────────────
+(function wireFilterChips() {
+  const chipsEl = document.getElementById('log-filters');
+  if (!chipsEl) return;
+  const chips = chipsEl.querySelectorAll('.filter-chip');
+  chips.forEach(btn => btn.addEventListener('click', () => {
+    chips.forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const f = btn.dataset.filter;
+    document.querySelectorAll('#log-table tbody tr').forEach(tr => {
+      const b = tr.dataset.bucket;
+      tr.style.display = (f === 'all' || !b || b === f) ? '' : 'none';
+    });
+  }));
+})();
 </script>
 {% endblock %}
