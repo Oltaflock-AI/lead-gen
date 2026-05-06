@@ -6,6 +6,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -301,6 +302,80 @@ def _sse(payload):
     return f"data: {json.dumps(payload)}\n\n"
 
 
+def _resolve_window_start(window):
+    """Map the dashboard 'window' query (today | 7d | 30d | all) to a UTC
+    ISO cutoff. Today uses IST calendar midnight."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    w = (window or "today").strip().lower()
+    if w == "all":
+        return None
+    if w in ("7d", "30d"):
+        days = 7 if w == "7d" else 30
+        return (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    ist = _tz(_td(hours=5, minutes=30))
+    midnight_ist = _dt.now(ist).replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight_ist.astimezone(_tz.utc).isoformat()
+
+
+def _detect_issues(window_start, sent_in_window, bounce_count):
+    """Build the Issues tab card list. Always includes the duplicate-send
+    'all clear' green card so operators see something even on a healthy day.
+    Severity:
+      'crit' (red)   — bounce rate over threshold
+      'warn' (amber) — fake-prospect addresses got mailed
+      'ok' (green)   — duplicate-send guard holding
+    Tab badge counts only crit + warn."""
+    issues = []
+    if sent_in_window:
+        b_rate = bounce_count / sent_in_window
+        if b_rate > 0.05:
+            samples = db.recent_bounces(window_minutes=24 * 60, limit=3)
+            sample_lines = ", ".join(
+                f"{(s.get('business_name') or s.get('lead_email') or '').strip()} ({s.get('lead_email') or ''})"
+                for s in samples
+            )
+            issues.append({
+                "id": "bounce_rate",
+                "severity": "crit",
+                "title": f"Bounce rate at {b_rate * 100:.1f}% — over the 5% threshold",
+                "body": (f"{bounce_count} of {sent_in_window} sends in this window bounced. "
+                         f"{sample_lines}. Permanent bounces are auto-suppressed; "
+                         "sustained rates above 5% will hurt domain reputation."),
+            })
+
+    fake_prospects = db.detect_likely_fake_prospects(window_minutes=24 * 60, limit=3)
+    if fake_prospects:
+        sample = fake_prospects[0]
+        issues.append({
+            "id": "fake_prospects",
+            "severity": "warn",
+            "title": f"{sample.get('lead_email')} isn't a real prospect",
+            "body": (f"Sent at {(sample.get('sent_at') or '')[:16].replace('T', ' ')} from "
+                     f"{(sample.get('csv_path') or '').split('/')[-1]}. "
+                     "Looks like a role account or institutional contact. "
+                     f"{len(fake_prospects)} similar misclassification{'s' if len(fake_prospects) != 1 else ''} found in last 24h."),
+        })
+
+    duplicates = db.detect_duplicate_sends(window_minutes=24 * 60, limit=5)
+    if duplicates:
+        names = ", ".join(d.get("lead_email") or "" for d in duplicates[:3])
+        issues.append({
+            "id": "duplicates",
+            "severity": "warn",
+            "title": "Duplicate sends detected in last 24h",
+            "body": f"{names} received 2+ sends within 10 minutes. Auto-enrol guard may be slipping.",
+        })
+    else:
+        issues.append({
+            "id": "duplicates_ok",
+            "severity": "ok",
+            "title": "No duplicate sends in the last 24h",
+            "body": "Auto-enrol guard appears to be holding.",
+        })
+
+    return issues
+
+
 def _resolve_range(range_raw, default_key="14"):
     """Map ?range=... query into (range_key, since_iso, days_for_metric, label).
 
@@ -435,6 +510,7 @@ def dashboard():
     sent_n      = funnel_raw.get("sent") or 0
     delivered_n = funnel_raw.get("delivered") or 0
     opened_n    = funnel_raw.get("opened") or 0
+    clicked_n   = funnel_raw.get("clicked") or 0
     replied_n   = funnel_raw.get("replied") or 0
     failed_n    = funnel_raw.get("failed") or 0
     bounced_n   = funnel_raw.get("bounced") or 0
@@ -465,9 +541,15 @@ def dashboard():
         {"label": "Replied",    "n": replied_n,
          "pct": round(100 * replied_n / funnel_top),
          "tone": "dim",  "warn": False},
+        {"label": "Bounced",    "n": bounced_n,
+         "pct": round(100 * bounced_n / funnel_top),
+         "tone": "warn" if bounced_n > 0 else "dim",
+         "warn": (sent_n and bounced_n / max(1, sent_n) >= 0.05)},
     ]
-    delivery_rate = round(100 * delivered_n / sent_n, 1) if sent_n else 0
-    real_open_rate = round(100 * opened_n / delivered_n, 1) if delivered_n else 0
+    delivery_rate  = round(100 * delivered_n / sent_n,      1) if sent_n      else 0
+    real_open_rate = round(100 * opened_n    / delivered_n, 1) if delivered_n else 0
+    bounce_rate    = round(100 * bounced_n   / sent_n,      1) if sent_n      else 0
+    click_rate     = round(100 * clicked_n   / delivered_n, 1) if delivered_n else 0
 
     # KPI tiles
     daily_series = metrics.daily_sends_last_n(range_days)
@@ -484,6 +566,14 @@ def dashboard():
         "delivery_alert": delivery_rate < 70 and sent_n > 0,
         "delivered": delivered_n,
         "sent": sent_n,
+        "opened": opened_n,
+        "clicked": clicked_n,
+        "bounced": bounced_n,
+        "failed": failed_n,
+        "open_rate": real_open_rate,
+        "click_rate": click_rate,
+        "bounce_rate": bounce_rate,
+        "bounce_alert": bounce_rate >= 5 and sent_n > 0,
         "replies": replied_n,
         "reply_rate": round(100 * replied_n / sent_n, 1) if sent_n else 0,
     }
@@ -566,6 +656,53 @@ def dashboard():
 
     activity_groups = _group(recent[:50])
 
+    bounce_reasons = db.bounce_breakdown(since=range_since, limit=8)
+    suppression_total = db.suppression_count()
+    copy_top = db.copy_performance_by_subject(since_iso=range_since, min_sends=1, limit=5)
+    copy_summary = db.copy_telemetry_summary(since_iso=range_since)
+
+    # ── Dashboard redesign · time-windowed KPIs + tabbed block ──
+    window = (request.args.get("window") or "today").strip().lower()
+    if window not in ("today", "7d", "30d", "all"):
+        window = "today"
+    window_start = _resolve_window_start(window)
+
+    sent_in_window      = db.count_outreach_since(window_start)
+    delivered_in_window = db.count_delivered_since(window_start)
+    bounced_in_window   = db.count_bounced_since(window_start)
+    delivery_rate_w     = metrics.delivery_rate(window_start)
+    open_rate_w         = metrics.open_rate_on_delivered(window_start)
+    bounce_rate_w       = metrics.bounce_rate(window_start)
+
+    activity_status = (request.args.get("activity_status") or "").strip().lower() or None
+    if activity_status not in ("opened", "clicked", "sent", "bounced", "replied", "failed"):
+        activity_status = None
+
+    new_kpis = {
+        "total_leads": metrics.total_leads_all_time(),
+        "csv_count": len(csvs),
+        "sent_in_window": sent_in_window,
+        "delivered_in_window": delivered_in_window,
+        "bounced_in_window": bounced_in_window,
+        "click_count": db.count_clicks_since(window_start),
+        "unique_opens": db.count_unique_opens_since(window_start),
+        "delivery_rate": round(delivery_rate_w * 100, 1),
+        "open_rate": round(open_rate_w * 100, 1),
+        "bounce_rate": round(bounce_rate_w * 100, 1),
+        "bounce_alert": bounce_rate_w > 0.05 and sent_in_window > 0,
+        "delivery_alert": delivery_rate_w < 0.7 and sent_in_window > 0,
+        "avg_per_day": round(
+            sum(d["count"] for d in metrics.daily_sends_last_n(7)) / 7, 1),
+        "spark": metrics.sparkline_points(metrics.daily_sends_last_n(14)),
+    }
+    activity_rows = db.activity_feed(window_start, limit=10, status_filter=activity_status)
+    activity_counts = db.activity_counts_by_status(window_start)
+    upcoming = db.upcoming_sends(hours=24, limit=20)
+    issues = _detect_issues(window_start, sent_in_window, bounced_in_window)
+    issues_warn_count = sum(1 for i in issues if i["severity"] in ("crit", "warn"))
+    window_label = {"today": "Today", "7d": "Last 7 days",
+                    "30d": "Last 30 days", "all": "All time"}[window]
+
     return render_template(
         "dashboard.html",
         summary=summary,
@@ -577,6 +714,7 @@ def dashboard():
         delivery_rate=delivery_rate,
         real_open_rate=real_open_rate,
         kpis=kpis,
+        new_kpis=new_kpis,
         alert=alert,
         pipeline=pipeline,
         pipeline_total=pipeline_total,
@@ -584,6 +722,18 @@ def dashboard():
         activity_groups=activity_groups,
         range_key=range_key,
         range_label=range_label,
+        bounce_reasons=bounce_reasons,
+        suppression_total=suppression_total,
+        copy_top=copy_top,
+        copy_summary=copy_summary,
+        window=window,
+        window_label=window_label,
+        activity_rows=activity_rows,
+        activity_counts=activity_counts,
+        activity_status=activity_status,
+        upcoming=upcoming,
+        issues=issues,
+        issues_warn_count=issues_warn_count,
         **_ctx(),
     )
 
@@ -944,6 +1094,18 @@ def api_scrape_interactive():
                 break
 
         csv_path = _save_interactive_csv(leads, niche, country)
+        # Long-term lead store — mirror every scraped row into Supabase
+        # so cross-CSV intent + cohort analysis are possible later.
+        try:
+            from . import supabase_leads
+            if supabase_leads.is_configured() and leads:
+                src = Path(csv_path).name if csv_path else ""
+                # Tag rows so column projection picks niche/country.
+                tagged = [{**l, "niche": niche, "country": country} for l in leads]
+                n = supabase_leads.upsert_leads(tagged, source_csv=src)
+                log.info("supabase leads_master upsert: %d rows from %s", n, src)
+        except Exception:
+            log.exception("supabase_leads upsert (scrape) failed")
         sheet_info = None
         creds = _google_creds()
         if leads and creds:
@@ -1307,6 +1469,27 @@ def api_outreach_draft_clear():
     return jsonify({"ok": True})
 
 
+@app.route("/api/copy-performance")
+def api_copy_performance():
+    """Surface per-subject and per-first-line open/click/reply rates.
+
+    Used by the dashboard 'copy telemetry' card AND by external tooling
+    that wants to inspect what subject lines are working. Outreach_log
+    is the source of truth — every send already records subject + body
+    + opens + clicks per row, so this is pure aggregation."""
+    days_raw = (request.args.get("days") or "").strip()
+    since_iso = None
+    if days_raw and days_raw.isdigit():
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        since_iso = (_dt.now(_tz.utc) - _td(days=int(days_raw))).isoformat()
+    return jsonify({
+        "summary":      db.copy_telemetry_summary(since_iso=since_iso),
+        "by_subject":   db.copy_performance_by_subject(since_iso=since_iso, min_sends=1, limit=50),
+        "by_first_line": db.copy_performance_by_first_line(since_iso=since_iso, min_sends=2, limit=20),
+        "winners":      db.top_performing_subjects(min_sends=2, min_open_rate=20, limit=10),
+    })
+
+
 @app.route("/api/outreach/check-replies", methods=["POST"])
 def api_outreach_check_replies():
     creds = _google_creds()
@@ -1375,6 +1558,10 @@ def api_outreach_send():
         if retry_emails:
             db.delete_failed_outreach(csv_path=csv_path, lead_emails=retry_emails)
 
+    all_addrs = [s.get("to") or s.get("email") for s in sends]
+    suppressed_set = db.filter_suppressed(all_addrs)
+    verify_on_send = os.getenv("LEADGEN_VERIFY_ON_SEND", "0") in ("1", "true", "yes")
+
     results = []
     for s in sends:
         to_addr = s.get("to") or s.get("email")
@@ -1384,6 +1571,36 @@ def api_outreach_send():
         if not (to_addr and subject and body):
             results.append({"to": to_addr, "ok": False, "error": "missing fields"})
             continue
+
+        addr_lower = (to_addr or "").strip().lower()
+        if addr_lower in suppressed_set:
+            results.append({
+                "to": to_addr, "ok": False,
+                "error": "suppressed (previously bounced or complained)",
+                "skipped": "suppressed",
+            })
+            continue
+
+        if verify_on_send:
+            try:
+                v = verify_lead_email(business_name, to_addr, "", "",
+                                      probe_smtp=True, skip_search=True)
+                if not v.get("legit"):
+                    smtp_check = v.get("smtp_check") or "unknown"
+                    diag = "; ".join(v.get("reasons", [])) or smtp_check
+                    db.upsert_suppression(
+                        to_addr, reason="manual",
+                        bounce_type="PreSendVerify",
+                        bounce_subtype=smtp_check, diagnostic=diag,
+                    )
+                    results.append({
+                        "to": to_addr, "ok": False,
+                        "error": f"failed pre-send verify ({smtp_check})",
+                        "skipped": "verify_failed",
+                    })
+                    continue
+            except Exception as e:
+                log.warning("pre-send verify error for %s: %s", to_addr, e)
 
         csv_lead = leads_by_email.get(to_addr.strip().lower(), {})
         lead = {
@@ -1409,6 +1626,11 @@ def api_outreach_send():
                     gmail_message_id=f"resend:{result['resend_id']}",
                     status="sent", resend_id=result["resend_id"],
                 )
+                try:
+                    from . import supabase_leads
+                    supabase_leads.mark_sent(to_addr, business_name, subject)
+                except Exception:
+                    log.exception("supabase_leads mark_sent failed for %s", to_addr)
             results.append({
                 "to": to_addr, "ok": True,
                 "message_id": result["resend_id"],
@@ -2222,6 +2444,47 @@ def api_outreach_live_status():
         "status_by_email": status_map,
         "pulled_now": pulled,
     })
+
+
+@app.route("/api/supabase/sync-leads", methods=["POST"])
+def api_supabase_sync_leads():
+    """Backfill the Supabase leads_master table from existing CSVs.
+    Call once after creating the table; subsequent scrapes auto-sync.
+    Body (optional JSON): {"csv": "<basename>"}  — limit to one CSV.
+    """
+    from . import supabase_leads
+    if not supabase_leads.is_configured():
+        return jsonify({"error": "Supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_KEY)"}), 400
+    target = (request.get_json(silent=True) or {}).get("csv", "")
+    csvs = metrics.list_csvs()
+    if target:
+        csvs = [c for c in csvs if c.get("name") == target or Path(c.get("path", "")).name == target]
+        if not csvs:
+            return jsonify({"error": f"CSV not found: {target}"}), 404
+    totals = {"csvs": 0, "rows": 0, "skipped_no_email": 0}
+    for c in csvs:
+        path = c.get("path")
+        if not path:
+            continue
+        try:
+            _, rows = metrics.read_csv_with_scores(path)
+        except Exception as e:
+            log.warning("backfill read failed %s: %s", path, e)
+            continue
+        # Filename pattern: interactive_<niche>_<country>.csv → derive tags.
+        basename = Path(path).name
+        m = re.match(r"interactive_(.+?)_([^_]+)\.csv$", basename)
+        niche_slug   = m.group(1).replace("_", " ").replace("-", " ").strip() if m else ""
+        country_slug = m.group(2).replace("_", " ").replace("-", " ").strip() if m else ""
+        with_email = [r for r in rows if (r.get("_normalized") or {}).get("email")]
+        totals["skipped_no_email"] += len(rows) - len(with_email)
+        tagged = [{**r, "niche": r.get("niche") or niche_slug,
+                   "country": r.get("country") or country_slug}
+                  for r in with_email]
+        n = supabase_leads.upsert_leads(tagged, source_csv=basename)
+        totals["csvs"] += 1
+        totals["rows"] += n
+    return jsonify({"ok": True, **totals})
 
 
 @app.route("/api/webhook-status")

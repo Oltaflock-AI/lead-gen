@@ -125,6 +125,18 @@ def init_db():
               ts           TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_email_events_resend ON email_events(resend_id);
+            CREATE TABLE IF NOT EXISTS email_suppressions (
+              email           TEXT PRIMARY KEY,
+              reason          TEXT NOT NULL,
+              bounce_type     TEXT,
+              bounce_subtype  TEXT,
+              diagnostic      TEXT,
+              first_at        TEXT NOT NULL,
+              last_at         TEXT NOT NULL,
+              count           INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_suppressions_last
+              ON email_suppressions(last_at DESC);
             CREATE TABLE IF NOT EXISTS scrape_history (
               id                  INTEGER PRIMARY KEY AUTOINCREMENT,
               job_id              TEXT,             -- link to in-memory jobs tray
@@ -185,6 +197,9 @@ def init_db():
             "ALTER TABLE outreach_log ADD COLUMN replied_at TEXT",
             "ALTER TABLE outreach_log ADD COLUMN last_event_at TEXT",
             "ALTER TABLE outreach_log ADD COLUMN last_event_type TEXT",
+            "ALTER TABLE outreach_log ADD COLUMN bounce_type TEXT",
+            "ALTER TABLE outreach_log ADD COLUMN bounce_subtype TEXT",
+            "ALTER TABLE outreach_log ADD COLUMN bounce_diagnostic TEXT",
         ):
             try:
                 c.execute(ddl)
@@ -413,7 +428,11 @@ def outreach_campaign_summary(csv_path=None):
             f"  COUNT(*)                                          AS sent, "
             f"  COALESCE(SUM(opens),0)                            AS opens, "
             f"  COALESCE(SUM(clicks),0)                           AS clicks, "
-            f"  COALESCE(SUM(bounced),0)                          AS bounced, "
+            # `bounced` was previously SUM(bounced) — that column is a
+            # webhook-event counter that increments on every replay, so a
+            # single bounced row could push the rate over 100%. Use the
+            # per-row status flag instead so bounce_rate stays in 0–100.
+            f"  SUM(CASE WHEN status='bounced'    THEN 1 ELSE 0 END) AS bounced, "
             f"  SUM(CASE WHEN status='replied'    THEN 1 ELSE 0 END) AS replied, "
             f"  SUM(CASE WHEN status='failed'     THEN 1 ELSE 0 END) AS failed, "
             f"  SUM(CASE WHEN opens > 0           THEN 1 ELSE 0 END) AS unique_opened, "
@@ -845,6 +864,145 @@ def get_message_by_resend_id(resend_id):
         return dict(row) if row else None
 
 
+# ─────────────────────────── suppression list ───────────────────────────
+
+
+def upsert_suppression(email, reason, bounce_type=None, bounce_subtype=None,
+                       diagnostic=None):
+    """Add or bump an entry on the suppression list. Idempotent.
+
+    `reason` is the high-level cause: bounced | complained | manual.
+    Resend's bounce object provides type/subType/message — pass through so
+    operators can see WHY each address bounced (mailbox missing, mailbox
+    full, ISP block, content complaint, etc.)."""
+    if not email:
+        return False
+    addr = email.strip().lower()
+    if not addr:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO email_suppressions "
+            "  (email, reason, bounce_type, bounce_subtype, diagnostic, "
+            "   first_at, last_at, count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1) "
+            "ON CONFLICT(email) DO UPDATE SET "
+            "  reason         = excluded.reason, "
+            "  bounce_type    = COALESCE(excluded.bounce_type,    bounce_type), "
+            "  bounce_subtype = COALESCE(excluded.bounce_subtype, bounce_subtype), "
+            "  diagnostic     = COALESCE(excluded.diagnostic,     diagnostic), "
+            "  last_at        = excluded.last_at, "
+            "  count          = count + 1",
+            (addr, reason, bounce_type, bounce_subtype, diagnostic, now, now),
+        )
+    return True
+
+
+def remove_suppression(email):
+    """Manually clear an address from the suppression list."""
+    if not email:
+        return 0
+    addr = email.strip().lower()
+    with _conn() as c:
+        cur = c.execute("DELETE FROM email_suppressions WHERE email = ?", (addr,))
+        return cur.rowcount
+
+
+def is_suppressed(email):
+    if not email:
+        return False
+    addr = email.strip().lower()
+    with _conn() as c:
+        row = c.execute(
+            "SELECT 1 FROM email_suppressions WHERE email = ? LIMIT 1", (addr,),
+        ).fetchone()
+        return bool(row)
+
+
+def filter_suppressed(emails):
+    """Given an iterable of addresses, return set of those on the suppression
+    list. Used by the outreach send route to drop known-bad addresses BEFORE
+    we hit Resend's API (saves quota and keeps bounce rate low)."""
+    addrs = sorted({(e or "").strip().lower() for e in emails if e})
+    addrs = [a for a in addrs if a]
+    if not addrs:
+        return set()
+    with _conn() as c:
+        placeholders = ",".join("?" for _ in addrs)
+        rows = c.execute(
+            f"SELECT email FROM email_suppressions WHERE email IN ({placeholders})",
+            addrs,
+        ).fetchall()
+    return {r["email"] for r in rows}
+
+
+def list_suppressions(limit=200):
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT email, reason, bounce_type, bounce_subtype, diagnostic, "
+            "       first_at, last_at, count "
+            "FROM email_suppressions ORDER BY last_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def suppression_count():
+    with _conn() as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM email_suppressions").fetchone()
+        return int(row["n"] or 0)
+
+
+def bounce_breakdown(days=None, since=None, limit=10):
+    """Top N bounce reasons over a window. Drives the dashboard
+    'why are we bouncing' card. Falls back to bounce_subtype, then
+    bounce_type, then 'unknown' so every bounce is accounted for."""
+    where, params = "WHERE status = 'bounced'", []
+    cutoff = since
+    if cutoff is None and days is not None and days > 0:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        cutoff = (_dt.now(_tz.utc) - _td(days=days)).isoformat()
+    if cutoff:
+        where += " AND sent_at >= ?"
+        params.append(cutoff)
+    with _conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT
+              COALESCE(NULLIF(bounce_subtype, ''),
+                       NULLIF(bounce_type,    ''),
+                       'unknown')                AS label,
+              COUNT(*)                           AS n,
+              MAX(bounce_diagnostic)             AS sample_diag
+            FROM outreach_log
+            {where}
+            GROUP BY label
+            ORDER BY n DESC
+            LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def annotate_bounce(resend_id, bounce_type, bounce_subtype, diagnostic):
+    """Persist Resend's bounce reason fields onto the outreach_log row so
+    operators can diagnose WHY each address bounced from the outreach UI."""
+    if not resend_id:
+        return False
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE outreach_log SET "
+            "  bounce_type       = COALESCE(?, bounce_type), "
+            "  bounce_subtype    = COALESCE(?, bounce_subtype), "
+            "  bounce_diagnostic = COALESCE(?, bounce_diagnostic) "
+            "WHERE resend_id = ?",
+            (bounce_type, bounce_subtype, diagnostic, resend_id),
+        )
+        return cur.rowcount > 0
+
+
 def sequence_stats():
     with _conn() as c:
         active = c.execute("SELECT COUNT(*) AS n FROM sequences WHERE status='active'").fetchone()["n"]
@@ -1137,19 +1295,21 @@ def outreach_funnel(days=None, since=None):
         row = c.execute(
             f"""
             SELECT
-              COUNT(*)                                                       AS sent,
-              SUM(CASE WHEN status NOT IN ('failed') THEN 1 ELSE 0 END)      AS delivered,
-              SUM(CASE WHEN opens > 0                THEN 1 ELSE 0 END)      AS opened,
-              SUM(CASE WHEN status = 'replied'       THEN 1 ELSE 0 END)      AS replied,
-              SUM(CASE WHEN status = 'failed'        THEN 1 ELSE 0 END)      AS failed,
-              SUM(CASE WHEN status = 'bounced'       THEN 1 ELSE 0 END)      AS bounced
+              COUNT(*)                                                              AS sent,
+              SUM(CASE WHEN status NOT IN ('failed','bounced') THEN 1 ELSE 0 END)   AS delivered,
+              SUM(CASE WHEN opens > 0                          THEN 1 ELSE 0 END)   AS opened,
+              SUM(CASE WHEN clicks > 0                         THEN 1 ELSE 0 END)   AS clicked,
+              SUM(CASE WHEN status = 'replied'                 THEN 1 ELSE 0 END)   AS replied,
+              SUM(CASE WHEN status = 'failed'                  THEN 1 ELSE 0 END)   AS failed,
+              SUM(CASE WHEN status = 'bounced'                 THEN 1 ELSE 0 END)   AS bounced
             FROM outreach_log
             {where}
             """,
             params,
         ).fetchone()
         return {k: int(row[k] or 0) for k in ("sent", "delivered", "opened",
-                                              "replied", "failed", "bounced")}
+                                              "clicked", "replied", "failed",
+                                              "bounced")}
 
 
 def outreach_stats_by_niche(days=None, since=None):
@@ -1234,3 +1394,352 @@ def csv_send_summary(csv_path):
         return {k: (int(row[k] or 0) if k != "last_send" else row["last_send"])
                 for k in ("sent", "delivered", "failed", "opened",
                           "replied", "last_send")}
+
+
+# ─────────────────────────── dashboard-redesign read helpers ───────────────────────────
+# Append-only · all SELECT, no schema changes.
+
+
+def _since_clause(since_iso, col="sent_at"):
+    """Build a tuple ('AND col >= ?', [iso]) when since_iso is set,
+    else ('', []). Helper for the *_since family below."""
+    if since_iso:
+        return f" AND {col} >= ?", [since_iso]
+    return "", []
+
+
+def count_outreach_since(since_iso=None):
+    """Total outreach_log rows since the cutoff. None → all-time."""
+    where, params = ("WHERE sent_at >= ?", [since_iso]) if since_iso else ("", [])
+    with _conn() as c:
+        row = c.execute(
+            f"SELECT COUNT(*) AS n FROM outreach_log {where}", params,
+        ).fetchone()
+        return int(row["n"] or 0)
+
+
+def count_delivered_since(since_iso=None):
+    where, params = ("WHERE sent_at >= ?", [since_iso]) if since_iso else ("", [])
+    with _conn() as c:
+        row = c.execute(
+            f"SELECT COUNT(*) AS n FROM outreach_log "
+            f"{where}{' AND' if since_iso else 'WHERE'} status NOT IN ('failed','bounced')",
+            params,
+        ).fetchone()
+        return int(row["n"] or 0)
+
+
+def count_bounced_since(since_iso=None):
+    where, params = ("WHERE sent_at >= ?", [since_iso]) if since_iso else ("", [])
+    with _conn() as c:
+        row = c.execute(
+            f"SELECT COUNT(*) AS n FROM outreach_log "
+            f"{where}{' AND' if since_iso else 'WHERE'} status = 'bounced'",
+            params,
+        ).fetchone()
+        return int(row["n"] or 0)
+
+
+def count_clicks_since(since_iso=None):
+    """Count outreach_log rows where clicks > 0 since cutoff."""
+    where, params = ("WHERE sent_at >= ?", [since_iso]) if since_iso else ("", [])
+    with _conn() as c:
+        row = c.execute(
+            f"SELECT COALESCE(SUM(clicks), 0) AS n FROM outreach_log {where}",
+            params,
+        ).fetchone()
+        return int(row["n"] or 0)
+
+
+def count_unique_opens_since(since_iso=None):
+    """Distinct outreach_log rows with opens > 0 since cutoff."""
+    where, params = ("WHERE sent_at >= ?", [since_iso]) if since_iso else ("", [])
+    with _conn() as c:
+        row = c.execute(
+            f"SELECT COUNT(*) AS n FROM outreach_log "
+            f"{where}{' AND' if since_iso else 'WHERE'} opens > 0",
+            params,
+        ).fetchone()
+        return int(row["n"] or 0)
+
+
+def activity_feed(since_iso=None, limit=10, status_filter=None):
+    """Recent outreach rows for the Activity tab. `status_filter` is one of
+    'opened' | 'clicked' | 'sent' | 'bounced' | 'replied' | None.
+
+    Each row carries `seq_step` (1..7 — the drip step this send represents)
+    and `seq_status` so the Activity column can show 'Step 3 of 7' for
+    sequence-driven sends and '—' for one-shots."""
+    clauses = []
+    params = []
+    if since_iso:
+        clauses.append("o.sent_at >= ?")
+        params.append(since_iso)
+    if status_filter == "opened":
+        clauses.append("o.opens > 0 AND o.status NOT IN ('replied','bounced')")
+    elif status_filter == "clicked":
+        clauses.append("o.clicks > 0")
+    elif status_filter == "bounced":
+        clauses.append("o.status = 'bounced'")
+    elif status_filter == "replied":
+        clauses.append("o.status = 'replied'")
+    elif status_filter == "sent":
+        clauses.append("o.status IN ('sent','delivered') AND o.opens = 0")
+    elif status_filter == "failed":
+        clauses.append("o.status = 'failed'")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with _conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT
+              o.id, o.lead_email, o.business_name, o.csv_path, o.subject,
+              o.status, o.opens, o.clicks, o.sent_at, o.replied_at,
+              o.bounce_type, o.bounce_subtype, o.bounce_diagnostic,
+              o.resend_id,
+              sm.step        AS seq_step,
+              s.status       AS seq_status,
+              s.current_step AS seq_current_step
+            FROM outreach_log o
+            LEFT JOIN sequence_messages sm
+              ON sm.resend_id = o.resend_id AND sm.resend_id IS NOT NULL
+            LEFT JOIN sequences s
+              ON s.id = sm.sequence_id
+            {where}
+            ORDER BY o.sent_at DESC LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def activity_counts_by_status(since_iso=None):
+    """Counts for the Activity tab filter chips. Returns
+    {all, opened, clicked, sent, bounced, replied, failed}."""
+    where, params = ("WHERE sent_at >= ?", [since_iso]) if since_iso else ("", [])
+    with _conn() as c:
+        row = c.execute(
+            f"""
+            SELECT
+              COUNT(*)                                                   AS total_n,
+              SUM(CASE WHEN opens > 0 AND status NOT IN ('replied','bounced')
+                       THEN 1 ELSE 0 END)                                AS opened,
+              SUM(CASE WHEN clicks > 0                THEN 1 ELSE 0 END) AS clicked,
+              SUM(CASE WHEN status IN ('sent','delivered') AND opens = 0
+                       THEN 1 ELSE 0 END)                                AS sent,
+              SUM(CASE WHEN status = 'bounced'        THEN 1 ELSE 0 END) AS bounced,
+              SUM(CASE WHEN status = 'replied'        THEN 1 ELSE 0 END) AS replied,
+              SUM(CASE WHEN status = 'failed'         THEN 1 ELSE 0 END) AS failed
+            FROM outreach_log {where}
+            """,
+            params,
+        ).fetchone()
+    out = {k: int(row[k] or 0) for k in ("total_n", "opened", "clicked", "sent", "bounced", "replied", "failed")}
+    out["all"] = out.pop("total_n")
+    return out
+
+
+def recent_bounces(window_minutes=1440, limit=20):
+    """Most recent bounced sends with their diagnostic. Drives the Issues
+    tab bounce card. window_minutes None → all-time."""
+    where = ""
+    params = []
+    if window_minutes:
+        where = "AND sent_at >= datetime('now', ?)"
+        params.append(f"-{int(window_minutes)} minutes")
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT lead_email, business_name, csv_path, sent_at, "
+            f"       bounce_type, bounce_subtype, bounce_diagnostic "
+            f"FROM outreach_log "
+            f"WHERE status = 'bounced' {where} "
+            f"ORDER BY sent_at DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# Recipient local-parts that almost never represent real prospects.
+# Used to flag misclassified leads that ate quota — not for scoring.
+_FAKE_PROSPECT_LOCALS = (
+    "accessibility", "webmaster", "postmaster", "abuse", "noreply", "no-reply",
+    "donotreply", "do-not-reply", "privacy", "compliance", "legal",
+    "media", "press", "careers", "jobs", "recruiting", "recruitment",
+    "events",
+)
+_FAKE_PROSPECT_DOMAIN_HINTS = (".edu", ".gov", ".gc.ca", ".ac.uk")
+
+
+def detect_likely_fake_prospects(window_minutes=1440, limit=20):
+    """Heuristic match for misclassified recipients (university accessibility
+    desks, government contact lines, role accounts). Reads outreach_log
+    rows in the window and returns those whose address looks non-prospect.
+    Pure SELECT — no writes."""
+    where = ""
+    params = []
+    if window_minutes:
+        where = "WHERE sent_at >= datetime('now', ?)"
+        params.append(f"-{int(window_minutes)} minutes")
+    with _conn() as c:
+        rows = c.execute(
+            f"SELECT lead_email, business_name, csv_path, sent_at, status "
+            f"FROM outreach_log {where} "
+            f"ORDER BY sent_at DESC LIMIT 500",
+            params,
+        ).fetchall()
+    out = []
+    for r in rows:
+        em = (r["lead_email"] or "").lower().strip()
+        if not em or "@" not in em:
+            continue
+        local, _, domain = em.partition("@")
+        looks_fake = (
+            local in _FAKE_PROSPECT_LOCALS
+            or any(domain.endswith(h) for h in _FAKE_PROSPECT_DOMAIN_HINTS)
+        )
+        if looks_fake:
+            out.append(dict(r))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def upcoming_sends(hours=24, limit=20):
+    """Active sequence messages whose next_send_at falls in the next N
+    hours. Drives the Pipeline tab 'Next 24 hours' timeline."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT id, lead_email, business_name, niche, current_step, "
+            "       next_send_at "
+            "FROM sequences "
+            "WHERE status = 'active' "
+            "  AND next_send_at IS NOT NULL "
+            "  AND next_send_at >= datetime('now') "
+            "  AND next_send_at <= datetime('now', ?) "
+            "ORDER BY next_send_at ASC LIMIT ?",
+            (f"+{int(hours)} hours", limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def copy_performance_by_subject(since_iso=None, min_sends=1, limit=50):
+    """Per-subject performance aggregation. Drives the copy-telemetry
+    feedback loop — the AI prompt pulls top performers from this query
+    so future drafts learn from what's actually getting opened.
+
+    Returns rows of {subject, sent, delivered, opens, opens_rate,
+    clicks, replied, bounced} ordered by opens_rate DESC."""
+    where, params = "", []
+    cutoff = since_iso
+    if cutoff:
+        where = "WHERE sent_at >= ?"
+        params = [cutoff]
+    with _conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT
+              subject,
+              COUNT(*)                                                       AS sent,
+              SUM(CASE WHEN status NOT IN ('failed','bounced') THEN 1 ELSE 0 END) AS delivered,
+              SUM(CASE WHEN opens > 0 THEN 1 ELSE 0 END)                     AS unique_opens,
+              COALESCE(SUM(opens), 0)                                        AS total_opens,
+              SUM(CASE WHEN clicks > 0 THEN 1 ELSE 0 END)                    AS unique_clicks,
+              SUM(CASE WHEN status = 'replied' THEN 1 ELSE 0 END)            AS replied,
+              SUM(CASE WHEN status = 'bounced' THEN 1 ELSE 0 END)            AS bounced,
+              MAX(sent_at)                                                   AS last_sent
+            FROM outreach_log
+            {where}
+            GROUP BY subject
+            HAVING sent >= ?
+            ORDER BY (CAST(unique_opens AS FLOAT) / NULLIF(delivered, 0)) DESC,
+                     sent DESC
+            LIMIT ?
+            """,
+            params + [min_sends, limit],
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        delivered = d["delivered"] or 0
+        d["open_rate"]  = round(100 * (d["unique_opens"] or 0) / delivered, 1) if delivered else 0
+        d["click_rate"] = round(100 * (d["unique_clicks"] or 0) / delivered, 1) if delivered else 0
+        d["reply_rate"] = round(100 * (d["replied"] or 0) / delivered, 1) if delivered else 0
+        out.append(d)
+    return out
+
+
+def top_performing_subjects(min_sends=2, min_open_rate=20, limit=10):
+    """Subjects with proven open performance. Used by personalize.py
+    to inject positive examples into the LLM prompt so newly-drafted
+    subject lines learn from what's actually working."""
+    rows = copy_performance_by_subject(min_sends=min_sends, limit=200)
+    winners = [r for r in rows if r["open_rate"] >= min_open_rate]
+    return winners[:limit]
+
+
+def copy_performance_by_first_line(since_iso=None, min_sends=2, limit=30):
+    """Aggregate by the body's first non-empty line (the cold open). The
+    opening line is what makes a recipient keep reading — track its open
+    rate so the AI can converge on what works."""
+    where, params = "", []
+    cutoff = since_iso
+    if cutoff:
+        where = "WHERE sent_at >= ?"
+        params = [cutoff]
+    with _conn() as c:
+        rows = c.execute(
+            f"""
+            SELECT id, subject, body, status, opens, clicks, sent_at
+            FROM outreach_log
+            {where}
+            ORDER BY sent_at DESC
+            """,
+            params,
+        ).fetchall()
+    buckets = {}
+    for r in rows:
+        body = (r["body"] or "").strip()
+        first = next((ln.strip() for ln in body.split("\n") if ln.strip()), "")
+        # Hi <name> openers are nearly identical across sends — skip the
+        # greeting, key on the second non-greeting line which is the hook.
+        if first.lower().startswith(("hi ", "hello ", "hey ", "dear ")):
+            after = body.split("\n", 1)[1] if "\n" in body else ""
+            second = next((ln.strip() for ln in after.split("\n") if ln.strip()), "")
+            first = second or first
+        if not first:
+            continue
+        key = first[:120]
+        b = buckets.setdefault(key, {"first_line": key, "sent": 0,
+                                     "delivered": 0, "unique_opens": 0,
+                                     "unique_clicks": 0, "last_sent": None})
+        b["sent"] += 1
+        if r["status"] not in ("failed", "bounced"):
+            b["delivered"] += 1
+        if (r["opens"] or 0) > 0:
+            b["unique_opens"] += 1
+        if (r["clicks"] or 0) > 0:
+            b["unique_clicks"] += 1
+        if not b["last_sent"] or (r["sent_at"] or "") > b["last_sent"]:
+            b["last_sent"] = r["sent_at"]
+    out = []
+    for b in buckets.values():
+        if b["sent"] < min_sends:
+            continue
+        delivered = b["delivered"] or 0
+        b["open_rate"]  = round(100 * b["unique_opens"]  / delivered, 1) if delivered else 0
+        b["click_rate"] = round(100 * b["unique_clicks"] / delivered, 1) if delivered else 0
+        out.append(b)
+    out.sort(key=lambda x: (-x["open_rate"], -x["sent"]))
+    return out[:limit]
+
+
+def copy_telemetry_summary(since_iso=None):
+    """Top-level numbers for the copy-telemetry block on the dashboard.
+    Counts how many distinct subject lines we've actually shipped + how
+    many have proven (>=20% open) performance."""
+    subjects = copy_performance_by_subject(since_iso=since_iso, min_sends=1, limit=10000)
+    winners = [s for s in subjects if s["sent"] >= 2 and s["open_rate"] >= 20]
+    return {
+        "distinct_subjects": len(subjects),
+        "proven_winners": len(winners),
+        "subjects_tested_2plus": sum(1 for s in subjects if s["sent"] >= 2),
+    }

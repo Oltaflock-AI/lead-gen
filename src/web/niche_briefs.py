@@ -210,14 +210,24 @@ def system_blocks(brief: dict) -> list[dict]:
     ]
 
 
+_LABEL_TO_NICHE = {
+    "home_services": "home services",
+    "real_estate":   "real estate",
+}
+
+
 def user_directive(brief: dict, lead: dict) -> str:
     """Tail text appended to the user message so Claude knows which slice."""
     country = brief.get("country") or "infer from address"
-    biz = lead.get("business_type") or lead.get("niche") or "home services"
+    label = brief.get("label") or "custom"
+    niche_h = _LABEL_TO_NICHE.get(label, lead.get("niche") or "the playbook niche")
+    biz = lead.get("business_type") or niche_h
     return (
         f"\n\n--- niche playbook directive ---\n"
-        f"Niche: home services. Country: {country}. Business type: {biz}.\n"
-        "Use Section 4 for country-specific currency, voice accent, CRM, "
-        "stat, and tone. Use Section 5 to choose the opener for the business "
-        "type. Generate ONE email matching the requested step/length."
+        f"Niche: {niche_h}. Country: {country}. Business type: {biz}.\n"
+        f"Use Section 4 for country-specific currency, voice accent, CRM, "
+        f"stat, and tone. Use Section 5 to choose the opener for the business "
+        f"type ({biz}). Section 6 holds country/business templates — borrow "
+        f"phrasing but DO NOT copy the example subject lines verbatim. "
+        f"Generate ONE email matching the requested step/length."
     )

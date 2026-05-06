@@ -795,7 +795,9 @@ details.disclosure[open] > summary::before { content: "▾ "; }
   .dash-row-2, .grid-2 { grid-template-columns: 1fr; }
 }
 
-.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+@media (max-width: 1100px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 720px)  { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
 .kpi {
   background: var(--bg-elev);
@@ -1110,3 +1112,144 @@ details.disclosure[open] > summary::before { content: "▾ "; }
   padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
+
+
+/* ─────────── dashboard redesign · window pills ─────────── */
+.window-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; font-size: 12px; color: var(--ink-mute); }
+.window-pills {
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.window-pill {
+  padding: 5px 12px; font-size: 12px; border-radius: 5px;
+  background: transparent; border: none; cursor: pointer;
+  color: var(--ink-soft); font-family: inherit; font-weight: 450;
+  text-decoration: none;
+  transition: background 0.12s;
+}
+.window-pill:hover:not(.active) { color: var(--ink); }
+.window-pill.active {
+  background: var(--bg-elev);
+  color: var(--ink);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+
+/* ─────────── dashboard redesign · inner tabs (Activity / Pipeline / Issues) ─────────── */
+.inner-tabs {
+  display: flex; gap: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+.inner-tab {
+  padding: 14px 22px; font-size: 13px; cursor: pointer;
+  background: none; border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  color: var(--ink-mute); font-weight: 450;
+  font-family: inherit;
+  display: flex; align-items: center; gap: 8px;
+  transition: color 0.12s;
+}
+.inner-tab:hover { color: var(--ink-soft); }
+.inner-tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+.inner-tab .count {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--ink-mute);
+  background: var(--bg-elev);
+  padding: 1px 6px; border-radius: 10px;
+  border: 1px solid var(--line);
+  font-weight: 500;
+}
+.inner-tab.active .count {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+}
+.inner-tab.warn .count {
+  color: var(--warn);
+  border-color: var(--warn-line, #f5c6c0);
+  background: var(--warn-soft);
+}
+.inner-panel { display: none; padding: 0; }
+.inner-panel.active { display: block; }
+
+/* ─────────── dashboard redesign · alert banner (crit / warn) ─────────── */
+.dash-alert {
+  display: flex; gap: 14px;
+  padding: 14px 18px; border-radius: 8px;
+  margin-bottom: 24px;
+  align-items: flex-start;
+  border: 1px solid;
+}
+.dash-alert.crit { background: var(--warn-soft); border-color: var(--warn-line, #f5c6c0); color: var(--warn); }
+.dash-alert.warn { background: #fef7ec; border-color: #f0d8a8; color: #8a5a16; }
+.dash-alert.ok   { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.dash-alert .alert-icon { font-size: 18px; line-height: 1.2; flex-shrink: 0; margin-top: 1px; }
+.dash-alert .alert-body { flex: 1; }
+.dash-alert .alert-title { font-weight: 600; margin-bottom: 2px; font-size: 14px; }
+.dash-alert .alert-msg { font-size: 13px; line-height: 1.5; color: var(--ink-soft); }
+.dash-alert.crit .alert-msg { color: #7a2820; }
+.dash-alert.warn .alert-msg { color: #7a4d12; }
+.dash-alert.ok   .alert-msg { color: #1f4030; }
+
+/* ─────────── dashboard redesign · pipeline grid (7 steps) ─────────── */
+.pipeline-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+.pipe-day {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.pipe-name {
+  font-size: 11px;
+  color: var(--ink-soft);
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+.pipe-count {
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 24px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.pipe-count.zero { color: var(--ink-faint); }
+
+/* ─────────── dashboard redesign · "Next 24h" timeline ─────────── */
+.next24-timeline {
+  display: flex; flex-direction: column; gap: 0;
+  border-left: 1.5px solid var(--line);
+  margin-left: 8px; padding-left: 24px;
+  position: relative;
+}
+.next24-timeline .tl-item { position: relative; padding: 10px 0; }
+.next24-timeline .tl-item::before {
+  content: ''; position: absolute; left: -30px; top: 14px;
+  width: 8px; height: 8px;
+  background: var(--bg-elev);
+  border: 2px solid var(--ink-faint);
+  border-radius: 50%;
+}
+.next24-timeline .tl-item.live::before {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ─────────── dashboard redesign · KPI tile spark line container ─────────── */
+.kpi-spark { margin-top: 10px; height: 24px; width: 100%; }
+.kpi-meta .warn-text { color: var(--warn); font-weight: 500; }

@@ -233,3 +233,47 @@ def csv_health_score(summary):
             "email_pct": round(100 * email_pct),
             "phone_pct": round(100 * phone_pct),
             "score_pct": round(100 * score_pct)}
+
+
+# ─────────────────────────── dashboard-redesign aggregations ───────────────────────────
+# Append-only · pure compute over CSVs and the read helpers in db.py.
+
+
+def total_leads_all_time():
+    """Sum of `rows` across every CSV in data/outputs/. NEVER windowed —
+    Total leads is an all-time KPI on the redesigned dashboard."""
+    try:
+        return sum(csv_summary(c["path"])["rows"] for c in list_csvs())
+    except Exception:
+        return 0
+
+
+def delivery_rate(since_iso=None):
+    """delivered / sent in the window. Returns 1.0 when sent == 0 so a
+    quiet day reads as "no problem" instead of 0% delivery."""
+    from . import db
+    sent = db.count_outreach_since(since_iso)
+    if not sent:
+        return 1.0
+    delivered = db.count_delivered_since(since_iso)
+    return delivered / sent
+
+
+def bounce_rate(since_iso=None):
+    """bounced / sent in the window. Returns 0.0 when sent == 0."""
+    from . import db
+    sent = db.count_outreach_since(since_iso)
+    if not sent:
+        return 0.0
+    return db.count_bounced_since(since_iso) / sent
+
+
+def open_rate_on_delivered(since_iso=None):
+    """unique_opens / delivered_count. Denominator is delivered, NOT sent
+    — dividing by sent inflates the failure case as a low open rate.
+    Returns 0.0 when delivered == 0."""
+    from . import db
+    delivered = db.count_delivered_since(since_iso)
+    if not delivered:
+        return 0.0
+    return db.count_unique_opens_since(since_iso) / delivered

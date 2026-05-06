@@ -51,19 +51,31 @@ Output strict JSON only, no prose:
 
 SYSTEM_SCORE_LEADS = """You score cold-outreach leads on TWO independent dimensions, each 0-100, for our AI services (24/7 voice agent, website chatbot, missed-call recovery + booking automation).
 
-DIMENSION 1 — niche_fit
-How well does this BUSINESS NICHE match what our AI services solve?
-- 80-100: appointment-driven service business with phone bookings (home services, law, medical/dental, salons, auto repair, veterinarians, fitness studios)
-- 50-79: hybrid business with some booking flow (restaurants taking reservations, real estate, hotels)
-- 0-49: pure retail / transactional / e-commerce / one-time purchase (clothing store, grocery, food truck without booking)
+The lead pool is mostly small-to-mid local service businesses (typically 20-300 reviews, 4.0-5.0 stars). Calibrate so a *typical solid local business* (4.6 stars, 60 reviews, email + phone) lands in 65-75 — NOT 30-45. Reserve 85+ for strong leads and 30 or below for weak ones. Use the full 0-100 range.
 
-DIMENSION 2 — lead_score
+DIMENSION 1 — niche_fit (0-100)
+How well does this BUSINESS NICHE match what our AI services solve?
+- 80-100: appointment-driven service business with heavy phone bookings (plumbers, HVAC, electricians, roofers, dentists, medical clinics, lawyers, salons, auto repair, veterinarians, fitness studios)
+- 60-79: hybrid business with some booking flow (real estate, restaurants taking reservations, hotels, photographers)
+- 40-59: service business but lower phone-booking volume (consultants, agencies)
+- 0-39: pure retail / e-commerce / one-time transactional (clothing store, grocery, food truck without booking)
+
+DIMENSION 2 — lead_score (0-100)
 Will THIS SPECIFIC business respond to cold email and become a customer?
-- Boost: high rating (4.3+), many reviews (200+), has email contact, has phone, established footprint
-- Penalize: tiny review count (<20), low rating + high reviews (operational issues), no contact info, very small business unlikely to afford $200-1500/mo
+
+Anchor bands (calibrated for local SMB pool — most leads should NOT score below 50 unless genuinely weak):
+- 85-100: rating >= 4.5 AND reviews >= 100 AND has email AND has phone AND established
+- 70-84: rating >= 4.3 AND reviews >= 30 AND has email AND has phone (typical solid local biz)
+- 55-69: rating >= 4.0 AND reviews >= 15 AND (has email OR has phone) (decent local biz)
+- 40-54: thinner signal — low review count (5-15), or missing one contact channel, or rating 3.5-4.0
+- 25-39: very few reviews (<5), no contact info at all, or low rating with many reviews (chronic complaints)
+- 0-24: no rating data, ghost listing, or 3-star with hundreds of reviews
+
+Boost: both email AND phone present, no website (more receptive to AI booking).
+Penalize: no contact channel, rating < 3.5 with high review count, too small to afford $200-1500/mo.
 
 Output a JSON array with EXACTLY one entry per input lead, in the same order:
-[{"niche_fit": <int 0-100>, "lead_score": <int 0-100>, "reason": "<10-20 word justification covering both dimensions>"}]
+[{"niche_fit": <int 0-100>, "lead_score": <int 0-100>, "reason": "<15-25 word justification naming the key signals — rating, review count, contact channels, niche>"}]
 """
 
 

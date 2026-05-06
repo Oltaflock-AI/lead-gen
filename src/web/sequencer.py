@@ -59,18 +59,25 @@ Hard rules:
 - Body ends after the CTA. Nothing else.
 - Never use em dashes. Use commas, periods, or parentheses instead.
 
-Subject-line rules (CRITICAL — make them open the email):
-- Under 50 chars. Lowercase preferred (feels human, not corporate).
-- Quirky, curious, pattern-interrupt. Make the recipient stop scrolling.
-- Use ONE of these angles per email, vary across the 7 steps so the inbox view feels different each time:
-    a) A specific observation framed as a question: "335 reviews and still missing calls?"
-    b) A surprising number or comparison: "27% of your phone is voicemail"
-    c) An incomplete thought / curiosity gap: "the after-hours problem at {business_name}"
-    d) A direct ask in the prospect's voice: "10 mins, then I leave you alone"
-    e) A scenario / micro-story: "what your competitor 3 suburbs over just did"
-    f) Self-aware bump: "still on a roof?" / "third and final"
-- NEVER use these stock subject patterns: "Quick idea for X", "Re: X", "Following up", "Just checking in", "Touching base", "Idea for {business_name}".
-- No exclamation marks. No ALL CAPS. No emoji. No spammy punctuation. No words like "free", "guaranteed", "win".
+Subject-line rules (CRITICAL — these decide opens):
+- Under 45 chars. Lowercase preferred (feels human, not corporate).
+- Quirky, curious, pattern-interrupting. Read it aloud — if it sounds like every other cold email, rewrite.
+- Anchor in ONE concrete fact from THIS lead (rating, review_count, suburb, niche-specific noun). Generic = trash.
+- Pick one angle per step; rotate angles across the 7 steps so the inbox view feels different each time:
+    a) Number-as-question — "335 reviews and still missing calls?", "{rating}★ but Tuesday gaps?"
+    b) Surprising stat from playbook Section 4 — never invent numbers.
+    c) Curiosity gap — "the after-hours problem at {business_name}"
+    d) Micro-ask — "10 mins, then I disappear", "one screenshot, no pitch"
+    e) Competitor scenario — "what the {business_type} 2 suburbs over stopped doing"
+    f) Industry insider one-liner — "still on the roof?", "another voicemail Saturday?"
+    g) Number-as-cost — "$8k of leaks past 9pm"
+    h) Confessional — "we tried this on three plumbers in {city}"
+    i) But-flip — "73 listings, no chatbot, why?"
+    j) Tiny imperative — "open this if Mondays bury you"
+- BANNED subjects (no paraphrases either): "Quick idea for X", "Re: X", "Following up", "Just checking in", "Touching base", "Idea for {business_name}", "Question about {business_name}", "{business_name} + AI", anything starting with "Hi" or "Hey".
+- BANNED words anywhere in subject: free, guaranteed, win, exclusive, opportunity, ROI, scale, growth, partnership.
+- No exclamation marks. No ALL CAPS. No emoji. No spammy punctuation. Don't end with a period.
+- If the playbook has example subjects (Section 6), treat as inspiration only — DO NOT copy verbatim.
 
 Output JSON: {"subject": "...", "body": "..."}. Nothing else.
 """
@@ -293,6 +300,20 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
     if brief:
         sys_blocks.extend(niche_briefs.system_blocks(brief))
         user_msg += niche_briefs.user_directive(brief, lead)
+
+    # Self-improvement: feed proven subject lines (open rate >= 20%, 2+ sends)
+    # into the prompt so steps 2-7 also converge on what's getting opened.
+    try:
+        winners = db.top_performing_subjects(min_sends=2, min_open_rate=20, limit=6)
+    except Exception:
+        winners = []
+    if winners:
+        ex = "\n".join(f"- {w['subject']}  ({w['open_rate']}% open)"
+                       for w in winners if w.get("subject"))
+        user_msg += (
+            "\n\nPROVEN WINNERS — past subjects from our own sends with "
+            "good open rates. Match the style + voice; do NOT copy:\n" + ex
+        )
 
     try:
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -768,6 +789,50 @@ def record_event(payload):
     if metric:
         db.increment_message_metric(resend_id, metric)
     if event in ("email.bounced", "email.complained") and resend_id:
+        # Resend's bounce payload carries the WHY we need for diagnosis.
+        # `data.bounce` exists on email.bounced; complaints rarely have it.
+        bounce_obj = data.get("bounce") or {}
+        b_type = (bounce_obj.get("type") or "").strip() or None
+        b_subtype = (bounce_obj.get("subType")
+                     or bounce_obj.get("subtype") or "").strip() or None
+        b_diag = (bounce_obj.get("message")
+                  or bounce_obj.get("diagnosticCode")
+                  or bounce_obj.get("diagnostic_code") or "").strip() or None
+        if event == "email.complained" and not b_type:
+            b_type = "Complaint"
+
+        # Pin the diagnosis on the outreach_log row so the per-lead UI
+        # can show "why did this one bounce?" without touching the raw payload.
+        try:
+            db.annotate_bounce(resend_id, b_type, b_subtype, b_diag)
+        except Exception:
+            log.exception("annotate_bounce failed rid=%s", resend_id)
+
+        # Resolve recipient address from payload so we can suppress it on
+        # all FUTURE sends (not just this campaign). Permanent bounces and
+        # complaints both go on the list — Resend will block us anyway if
+        # we keep mailing them.
+        recipient = ""
+        to_field = data.get("to") or []
+        if isinstance(to_field, list) and to_field:
+            recipient = (to_field[0] or "").strip().lower()
+        elif isinstance(to_field, str):
+            recipient = to_field.strip().lower()
+        # Soft (Transient) bounces are NOT auto-suppressed — those are
+        # mailbox-full / greylisted / temp-failed and may recover. We only
+        # block permanent + complaint events.
+        is_permanent = (b_type or "").lower() in ("permanent", "complaint", "")
+        if recipient and (event == "email.complained" or is_permanent):
+            try:
+                db.upsert_suppression(
+                    recipient,
+                    reason=event.replace("email.", ""),
+                    bounce_type=b_type, bounce_subtype=b_subtype,
+                    diagnostic=b_diag,
+                )
+            except Exception:
+                log.exception("upsert_suppression failed for %s", recipient)
+
         msg = db.get_message_by_resend_id(resend_id)
         if msg:
             seq = db.get_sequence(msg["sequence_id"])
@@ -779,6 +844,27 @@ def record_event(payload):
 
     # One-shot outreach analytics: bumps opens/clicks/bounced + status.
     outreach_updated = db.update_outreach_event(resend_id, event)
+
+    # Mirror engagement onto the Supabase leads_master profile so the
+    # long-term store reflects opens/clicks/replies for cohort analysis.
+    try:
+        from . import supabase_leads
+        if supabase_leads.is_configured() and resend_id:
+            recipient = ""
+            to_field = data.get("to") or []
+            if isinstance(to_field, list) and to_field:
+                recipient = (to_field[0] or "").strip().lower()
+            elif isinstance(to_field, str):
+                recipient = to_field.strip().lower()
+            short = event.replace("email.", "")
+            if recipient and short in {"delivered", "opened", "clicked",
+                                       "bounced", "failed", "complained"}:
+                supabase_leads.mark_event(
+                    recipient,
+                    "bounced" if short == "complained" else short,
+                )
+    except Exception:
+        log.exception("supabase_leads event mirror failed")
 
     log.info("resend event %s rid=%s paused_sid=%s outreach_updated=%s",
              event, resend_id, paused_sid, outreach_updated)

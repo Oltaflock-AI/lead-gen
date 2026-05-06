@@ -6,282 +6,270 @@
 
 {% block content %}
 
-{# ---------- Range selector ---------- #}
-<div class="range-bar mb-5" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-  <span class="text-xs" style="color: var(--ink-mute);">Showing metrics for</span>
-  {% for k, lbl in [('today','Today'), ('7','Last 7 days'), ('14','Last 14 days'), ('30','Last 30 days'), ('90','Last 90 days'), ('all','All time')] %}
-    <a href="?range={{ k }}" class="filter-chip {% if range_key == k %}active{% endif %}" style="text-decoration: none;">{{ lbl }}</a>
-  {% endfor %}
-  <span class="text-xs ml-2" style="color: var(--ink-faint);">· funnel + niche + sparkline use this window</span>
+{# ---------- Time-window pills (today / 7d / 30d / all) ---------- #}
+<div class="window-bar mb-5">
+  <span>Window</span>
+  <div class="window-pills">
+    {% for w, lbl in [('today','Today'), ('7d','7d'), ('30d','30d'), ('all','All')] %}
+      <a href="?window={{ w }}" class="window-pill {% if window == w %}active{% endif %}">{{ lbl }}</a>
+    {% endfor %}
+  </div>
 </div>
 
 {# ---------- Critical alert banner ---------- #}
 {% if alert %}
-<div class="dash-alert crit mb-6">
-  <div class="dash-alert-icon">⚠</div>
-  <div class="dash-alert-body">
-    <div class="dash-alert-title">{{ alert.title }}</div>
-    <div class="dash-alert-msg">{{ alert.message }}</div>
-    <div class="dash-alert-actions">
-      <a href="/outreach" class="alert-btn primary">Investigate failures</a>
-      <a href="/sequences" class="alert-btn">Pause new sends</a>
-    </div>
+<div class="dash-alert crit">
+  <div class="alert-icon">⚠</div>
+  <div class="alert-body">
+    <div class="alert-title">{{ alert.title }}</div>
+    <div class="alert-msg">{{ alert.message }}</div>
   </div>
 </div>
 {% endif %}
 
-{# ---------- KPI grid ---------- #}
-<section class="kpi-grid mb-8">
+{# ---------- Region 1 · 4 KPI tiles ---------- #}
+<div class="kpi-grid mb-6">
+  {# Tile 1 — Total leads (all-time, never windowed) #}
   <div class="kpi">
     <div class="kpi-label">Total leads</div>
-    <div class="kpi-num">{{ '{:,}'.format(kpis.total_leads) }}</div>
-    <div class="kpi-meta">across {{ kpis.csv_count }} CSV{{ '' if kpis.csv_count == 1 else 's' }}</div>
+    <div class="kpi-num">{{ new_kpis.total_leads }}</div>
+    <div class="kpi-meta">across {{ new_kpis.csv_count }} CSV{{ '' if new_kpis.csv_count == 1 else 's' }}</div>
   </div>
+
+  {# Tile 2 — Sent in window + sparkline #}
   <div class="kpi">
-    <div class="kpi-label">Sent today</div>
-    <div class="kpi-num">{{ kpis.sent_today }}</div>
-    <div class="kpi-meta">avg {{ kpis.avg_per_day }}/day · {{ range_label }}</div>
-    {% if kpis.spark %}
+    <div class="kpi-label">Sent {{ window_label|lower }}</div>
+    <div class="kpi-num">{{ new_kpis.sent_in_window }}</div>
+    <div class="kpi-meta">avg {{ new_kpis.avg_per_day }}/day · 7-day window</div>
     <svg class="kpi-spark" viewBox="0 0 200 24" preserveAspectRatio="none">
-      <polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{{ kpis.spark }}"/>
+      <polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{{ new_kpis.spark }}"/>
     </svg>
-    {% endif %}
   </div>
-  <div class="kpi {% if kpis.delivery_alert %}alert-kpi{% endif %}">
+
+  {# Tile 3 — Delivery rate (with bounce detail folded into subtitle) #}
+  <div class="kpi {% if new_kpis.delivery_alert %}alert-kpi{% endif %}">
     <div class="kpi-label">Delivery rate</div>
-    <div class="kpi-num">{{ kpis.delivery_rate }}<span class="unit">%</span></div>
-    <div class="kpi-meta">{{ kpis.delivered }} of {{ kpis.sent }} delivered · target ≥95%</div>
+    <div class="kpi-num">{{ new_kpis.delivery_rate }}<span class="unit">%</span></div>
+    <div class="kpi-meta">
+      {{ new_kpis.delivered_in_window }} of {{ new_kpis.sent_in_window }} delivered{% if new_kpis.bounced_in_window %} · <span class="warn-text">{{ new_kpis.bounced_in_window }} bounced ({{ new_kpis.bounce_rate }}%)</span>{% endif %}
+    </div>
   </div>
+
+  {# Tile 4 — Open rate on delivered (NOT divided by sent) #}
   <div class="kpi">
-    <div class="kpi-label">Replies</div>
-    <div class="kpi-num">{{ kpis.replies }}</div>
-    <div class="kpi-meta">{{ kpis.reply_rate }}% rate</div>
+    <div class="kpi-label">Open rate</div>
+    <div class="kpi-num">{{ new_kpis.open_rate }}<span class="unit">%</span></div>
+    <div class="kpi-meta">{{ new_kpis.unique_opens }} of {{ new_kpis.delivered_in_window }} delivered · {{ new_kpis.click_count }} click{{ '' if new_kpis.click_count == 1 else 's' }}</div>
   </div>
-</section>
 
-{# ---------- Funnel + Today's queue ---------- #}
-<section class="dash-row-2 mb-6">
-  <div class="dash-block">
-    <div class="dash-block-head">
-      <div>
-        <div class="dash-block-title">Conversion funnel</div>
-        <div class="dash-block-sub">All-time, all CSVs · click to filter outreach log</div>
-      </div>
+  {# Tile 5 — Bounce rate (red when over 5% threshold) #}
+  <div class="kpi {% if new_kpis.bounce_alert %}alert-kpi{% endif %}">
+    <div class="kpi-label">Bounce rate</div>
+    <div class="kpi-num">{{ new_kpis.bounce_rate }}<span class="unit">%</span></div>
+    <div class="kpi-meta">
+      {{ new_kpis.bounced_in_window }} of {{ new_kpis.sent_in_window }} sent{% if new_kpis.bounce_alert %} · over 5% threshold{% elif new_kpis.bounced_in_window == 0 and new_kpis.sent_in_window %} · clean{% endif %}
     </div>
-    <div class="dash-block-body">
-      <div class="funnel">
-        {% for f in funnel %}
-        <a href="/outreach" class="funnel-row" style="text-decoration:none;color:inherit;">
-          <div class="funnel-label">{{ f.label }}</div>
-          <div class="funnel-bar-wrap">
-            <div class="funnel-bar {{ f.tone }}" style="width: {{ f.pct }}%"></div>
-          </div>
-          <div class="funnel-num">{{ f.n }}</div>
-          <div class="funnel-pct {% if f.warn %}warn{% endif %}">{{ f.pct }}%{% if f.warn %} ⚠{% endif %}</div>
+  </div>
+</div>
+
+{# ---------- Region 2 · ONE tabbed block (Activity / Pipeline / Issues) ---------- #}
+<div class="dash-block mb-6">
+  <div class="inner-tabs">
+    <button type="button" class="inner-tab active" data-panel="activity">
+      Activity <span class="count">{{ activity_counts.all }}</span>
+    </button>
+    <button type="button" class="inner-tab" data-panel="pipeline">
+      Pipeline <span class="count">{{ pipeline_total }}</span>
+    </button>
+    <button type="button" class="inner-tab {% if issues_warn_count %}warn{% endif %}" data-panel="issues">
+      Issues <span class="count">{{ issues_warn_count }}</span>
+    </button>
+  </div>
+
+  {# ────── ACTIVITY PANEL ────── #}
+  <div class="inner-panel active" id="panel-activity">
+    <div class="filter-row" style="padding:14px 22px;border-bottom:1px solid var(--line-soft);background:var(--bg);">
+      {% set _statuses = [
+        ('',         'All',      activity_counts.all),
+        ('opened',   'Opened',   activity_counts.opened),
+        ('clicked',  'Clicked',  activity_counts.clicked),
+        ('sent',     'Sent',     activity_counts.sent),
+        ('bounced',  'Bounced',  activity_counts.bounced),
+        ('replied',  'Replied',  activity_counts.replied),
+      ] %}
+      {% for code, label, n in _statuses %}
+        <a href="?window={{ window }}{% if code %}&activity_status={{ code }}{% endif %}"
+           class="filter-chip {% if (activity_status or '') == code %}active{% endif %}"
+           style="text-decoration:none;">
+          {{ label }} <span class="count">{{ n }}</span>
         </a>
-        {% endfor %}
-      </div>
-      {% if real_open_rate and real_open_rate > 0 %}
-      <div class="note-bar" style="margin-top:18px">
-        <div class="note-icon">💡</div>
-        <div><strong>Real open rate is {{ real_open_rate }}%</strong>, not {{ ((kpis.sent and ((kpis.replies + (real_open_rate * kpis.delivered / 100))/kpis.sent*100))|round(1)) }}%. Open rate divided by <em>delivered</em> instead of sent — once delivery improves, the projected rate stays here.</div>
-      </div>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="dash-block">
-    <div class="dash-block-head">
-      <div>
-        <div class="dash-block-title">Today's queue</div>
-        <div class="dash-block-sub">Next 24 hours · 7-step sequencer</div>
-      </div>
-    </div>
-    <div class="dash-block-body">
-      {% if today_queue %}
-      <div class="timeline">
-        {% for q in today_queue %}
-        <div class="tl-item queued">
-          <div class="tl-time">{{ q.rel }}</div>
-          <div class="tl-text">{{ q.step_label }} → <strong>{{ q.business_name or q.lead_email }}</strong></div>
-        </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <div style="padding:24px 8px;text-align:center;">
-        <div style="font-family:var(--font-serif);font-size:18px;color:var(--ink);margin-bottom:4px;">Nothing queued</div>
-        <p class="text-xs" style="color:var(--ink-mute);margin:0 0 14px;">Enqueue a CSV from <a href="/sequences" style="color:var(--accent);">Sequences</a> to start a 7-step nurture.</p>
-      </div>
-      {% endif %}
-    </div>
-  </div>
-</section>
-
-{# ---------- 7-step pipeline ---------- #}
-<section class="dash-block mb-6">
-  <div class="dash-block-head">
-    <div>
-      <div class="dash-block-title">Active sequences pipeline</div>
-      <div class="dash-block-sub">Where every enrolled lead currently sits in the 28-day cadence</div>
-    </div>
-  </div>
-  <div class="dash-block-body">
-    <div class="pipeline">
-      {% for p in pipeline %}
-      <div class="pipe-step {% if p.count %}active{% endif %}">
-        <div class="pipe-day">{{ p.day }}</div>
-        <div class="pipe-name">{{ p.name }}</div>
-        <div class="pipe-count {% if not p.count %}zero{% endif %}">{{ p.count }}</div>
-      </div>
       {% endfor %}
     </div>
-    {% if pipeline_total == 0 %}
-    <div class="note-bar" style="margin-top:18px">
-      <div class="note-icon">⚠</div>
-      <div><strong>No leads enrolled in any sequence yet.</strong> Sends have gone through the one-shot Outreach path. Enrol a CSV from the <a href="/sequences" style="color:var(--accent);">Sequences</a> page to populate the pipeline.</div>
+    <table class="act-table">
+      <thead>
+        <tr>
+          <th style="width:120px">When</th>
+          <th>Lead</th>
+          <th>Subject</th>
+          <th style="width:90px">Step</th>
+          <th style="width:90px">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in activity_rows %}
+        <tr>
+          <td class="when">{{ r.sent_at|ist('short') }}</td>
+          <td>
+            <div class="biz">{{ r.business_name or r.lead_email }}</div>
+            <div class="email">{{ r.lead_email }}</div>
+          </td>
+          <td class="subj">{{ r.subject }}</td>
+          <td>
+            {% if r.seq_step %}
+              <span class="chip" style="background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:500;">Step {{ r.seq_step }} / 7</span>
+              {% if r.seq_status == 'paused' %}<div style="font-size:10px;color:var(--ink-mute);margin-top:2px;">paused</div>
+              {% elif r.seq_status == 'done' %}<div style="font-size:10px;color:var(--ink-mute);margin-top:2px;">done</div>
+              {% endif %}
+            {% else %}
+              <span style="color:var(--ink-faint);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.status == 'replied' %}<span class="chip chip-status chip-status-replied">replied</span>
+            {% elif r.status == 'bounced' %}<span class="chip chip-status chip-status-bounced" title="{{ r.bounce_subtype or r.bounce_type or '' }}{% if r.bounce_diagnostic %} — {{ r.bounce_diagnostic }}{% endif %}">bounced</span>
+            {% elif r.clicks and r.clicks > 0 %}<span class="chip chip-status chip-status-clicked">clicked</span>
+            {% elif r.opens and r.opens > 0 %}<span class="chip chip-status chip-status-opened">opened</span>
+            {% elif r.status == 'failed' %}<span class="chip chip-status chip-status-failed">failed</span>
+            {% else %}<span class="chip chip-status chip-status-sent">{{ r.status or 'sent' }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not activity_rows %}
+        <tr><td colspan="5" style="padding:30px 22px;text-align:center;color:var(--ink-mute);font-size:13px;">No activity in this window{% if activity_status %} for status “{{ activity_status }}”{% endif %}.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+    {% if activity_rows %}
+    <div style="padding:14px 22px;border-top:1px solid var(--line-soft);text-align:center;">
+      <a href="/outreach" style="font-size:12px;color:var(--ink-mute);text-decoration:none;">View all {{ activity_counts.all }} →</a>
     </div>
     {% endif %}
   </div>
-</section>
 
-{# ---------- Niche performance ---------- #}
-{% if niche_perf %}
-<section class="dash-block mb-6">
-  <div class="dash-block-head">
-    <div>
-      <div class="dash-block-title">Performance by niche</div>
-      <div class="dash-block-sub">Compare offer effectiveness across the niches you're running</div>
+  {# ────── PIPELINE PANEL ────── #}
+  <div class="inner-panel" id="panel-pipeline">
+    <div style="padding:22px;">
+      <div style="font-size:12px;color:var(--ink-mute);margin-bottom:14px;">Where every active lead currently sits in the 28-day cadence.</div>
+      <div class="pipeline-grid">
+        {% for p in pipeline %}
+        <div class="dash-pipe-step {% if p.count > 0 %}active{% endif %}" style="background:{% if p.count > 0 %}var(--accent-soft){% else %}var(--bg-sunken){% endif %};border:1px solid {% if p.count > 0 %}var(--accent){% else %}var(--line){% endif %};border-radius:8px;padding:14px 12px;text-align:center;">
+          <div class="pipe-day">{{ p.day }}</div>
+          <div class="pipe-name">{{ p.name }}</div>
+          <div class="pipe-count {% if p.count == 0 %}zero{% endif %}" style="{% if p.count > 0 %}color:var(--accent);{% endif %}">{{ p.count }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% if upcoming %}
+      <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--line-soft);">
+        <div style="font-size:12px;color:var(--ink-mute);margin-bottom:12px;">Next 24 hours</div>
+        <div class="next24-timeline">
+          {% for u in upcoming %}
+          <div class="tl-item {% if loop.index0 == 0 %}live{% endif %}">
+            <div class="tl-time" style="font-size:11px;color:var(--ink-mute);font-family:monospace;">{{ u.next_send_at|ist('time') }}</div>
+            <div class="tl-text" style="font-size:13px;color:var(--ink);margin-top:2px;">Step {{ (u.current_step or 0) + 1 }} → <strong>{{ u.business_name or u.lead_email }}</strong></div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
-  <div class="dash-block-body">
-    <div class="niche-grid">
-      {% for n in niche_perf %}
-      <div class="niche-card">
-        <div class="niche-name">
-          <span>{{ n.niche }}</span>
-          <span class="country">{{ n.sent }} send{{ '' if n.sent == 1 else 's' }}</span>
+
+  {# ────── ISSUES PANEL ────── #}
+  <div class="inner-panel" id="panel-issues">
+    <div style="padding:22px;">
+      {% for it in issues %}
+      <div class="dash-alert {{ it.severity }}" style="margin-bottom:14px;{% if it.severity == 'ok' %}opacity:0.85;{% endif %}">
+        <div class="alert-icon">{% if it.severity == 'ok' %}✓{% else %}●{% endif %}</div>
+        <div class="alert-body">
+          <div class="alert-title">{{ it.title }}</div>
+          <div class="alert-msg">{{ it.body|safe }}</div>
         </div>
-        <div class="niche-stats">
-          <div>
-            <div class="niche-stat-label">Sent</div>
-            <div class="niche-stat-val">{{ n.sent }}</div>
-          </div>
-          <div>
-            <div class="niche-stat-label">Delivery</div>
-            <div class="niche-stat-val {% if n.delivery_rate < 50 %}warn{% elif n.delivery_rate >= 80 %}good{% endif %}">{{ n.delivery_rate }}%</div>
-          </div>
-          <div>
-            <div class="niche-stat-label">Replied</div>
-            <div class="niche-stat-val {% if not n.replied %}dim{% endif %}">{{ n.replied }}</div>
-          </div>
-        </div>
-        {% if n.delivery_rate < 50 and n.sent > 0 %}
-        <div style="margin-top:14px;font-size:11px;color:var(--warn);">
-          {{ n.failed }} of {{ n.sent }} failed · check Resend domain auth + recipient validity
-        </div>
-        {% elif n.last_send %}
-        <div style="margin-top:14px;font-size:11px;color:var(--ink-mute);">
-          Last send {{ n.last_send[:16].replace('T', ' ') }}
-        </div>
-        {% endif %}
       </div>
       {% endfor %}
-    </div>
-  </div>
-</section>
-{% endif %}
-
-{# ---------- Recent activity grouped ---------- #}
-<section class="dash-block mb-6">
-  <div class="dash-block-head">
-    <div>
-      <div class="dash-block-title">Recent activity</div>
-      <div class="dash-block-sub">Last 50 sends · grouped by outcome</div>
-    </div>
-    <div class="block-actions"><a href="/outreach" class="alert-btn">View all</a></div>
-  </div>
-  {% if activity_groups %}
-  <table class="act-table">
-    <thead>
-      <tr>
-        <th style="width:170px">Timestamp</th>
-        <th>Lead</th>
-        <th>Subject</th>
-        <th style="width:100px">Status</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for g in activity_groups %}
-      <tr><td colspan="4" style="padding:0">
-        <div class="group-head">
-          <span>{{ g.icon }} {{ g.label }} · {{ g.rows|length }}</span>
+      {% if copy_top %}
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line-soft);">
+        <div style="font-size:11px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Copy telemetry · {{ window_label }} · {{ copy_summary.distinct_subjects }} distinct subject{{ '' if copy_summary.distinct_subjects == 1 else 's' }} tested · {{ copy_summary.proven_winners }} proven winner{{ '' if copy_summary.proven_winners == 1 else 's' }}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="text-align:left;color:var(--ink-mute);border-bottom:1px solid var(--line);">
+              <th style="padding:6px 4px;">Subject</th>
+              <th style="padding:6px 4px;text-align:right;">Sent</th>
+              <th style="padding:6px 4px;text-align:right;">Open rate</th>
+              <th style="padding:6px 4px;text-align:right;">Reply</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in copy_top %}
+            <tr style="border-bottom:1px solid var(--line);">
+              <td style="padding:6px 4px;font-weight:500;max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ s.subject }}</td>
+              <td style="padding:6px 4px;text-align:right;">{{ s.sent }}</td>
+              <td style="padding:6px 4px;text-align:right;color:{% if s.open_rate >= 30 %}var(--accent){% elif s.open_rate >= 15 %}var(--ink){% else %}var(--ink-mute){% endif %};font-weight:500;">{{ s.open_rate }}%</td>
+              <td style="padding:6px 4px;text-align:right;color:var(--ink-mute);">{{ s.replied }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div style="margin-top:8px;font-size:11px;color:var(--ink-mute);">
+          Top subject lines (≥2 sends) ranked by open rate. The AI prompt automatically pulls winners (≥20% open) as positive examples on every new draft so future copy improves.
+          Full data: <a href="/api/copy-performance" style="color:var(--accent);">/api/copy-performance</a>
         </div>
-      </td></tr>
-      {% for r in g.rows %}
-      <tr>
-        <td class="when">{{ r.sent_at|ist }}</td>
-        <td>
-          <div class="biz">{{ r.business_name or '—' }}</div>
-          <div class="email">{{ r.lead_email }}</div>
-        </td>
-        <td class="subj">{{ r.subject or '' }}</td>
-        <td>
-          {% set s = r.status or 'sent' %}
-          {% set chip = 'failed' if s == 'failed' else
-                        'bounced' if s == 'bounced' else
-                        'replied' if s == 'replied' else
-                        'opened' if (s == 'opened' or (s in ('sent','delivered') and (r.opens or 0) > 0)) else
-                        'sent' %}
-          <span class="chip-status chip-{{ chip }}">{{ chip }}</span>
-        </td>
-      </tr>
-      {% endfor %}
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div style="padding:40px 24px;text-align:center;">
-    <div style="font-family:var(--font-serif);font-size:18px;color:var(--ink);margin-bottom:4px;">No outreach yet</div>
-    <p class="text-xs" style="color:var(--ink-mute);margin:0 0 14px;">Pick a CSV in Outreach and send the first batch.</p>
-    <a href="/outreach" class="btn btn-primary btn-sm">Go to Outreach</a>
-  </div>
-  {% endif %}
-</section>
-
-{# ---------- Per-CSV breakdown (collapsed) ---------- #}
-<section>
-  <details class="disclosure n-card" style="padding: 14px 20px;">
-    <summary>Per-CSV breakdown <span style="color: var(--ink-mute); margin-left: 6px;">{{ summary.per_csv | length }} files</span></summary>
-    <div style="margin-top: 8px; margin-left: -20px; margin-right: -20px;">
-      <table class="n-table">
-        <thead>
-          <tr>
-            <th>CSV</th>
-            <th class="text-right">Rows</th>
-            <th class="text-right">Avg score</th>
-            <th class="text-right">Qualified</th>
-            <th class="text-right">w/ email</th>
-            <th class="text-right">w/ phone</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for c in summary.per_csv %}
-          <tr>
-            <td><a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">{{ c.name }}</a></td>
-            <td class="text-right">{{ c.rows }}</td>
-            <td class="text-right">{{ c.avg_score }}</td>
-            <td class="text-right">{{ c.qualified }}</td>
-            <td class="text-right">{{ c.with_email }}</td>
-            <td class="text-right">{{ c.with_phone }}</td>
-            <td class="text-right text-xs"><a href="/outreach?csv={{ c.name }}" style="color: var(--accent);" class="hover:underline">outreach →</a></td>
-          </tr>
-          {% else %}
-          <tr><td colspan="7" class="text-center" style="padding: 32px; color: var(--ink-mute);">No CSVs yet — go to <a href="/scrape" style="color: var(--accent);">Scrape</a>.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      </div>
+      {% endif %}
+      {% if bounce_reasons %}
+      <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line-soft);">
+        <div style="font-size:11px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Bounce reasons · {{ window_label }}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead>
+            <tr style="text-align:left;color:var(--ink-mute);border-bottom:1px solid var(--line);">
+              <th style="padding:6px 4px;">Reason</th>
+              <th style="padding:6px 4px;">Count</th>
+              <th style="padding:6px 4px;">Sample diagnostic</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for b in bounce_reasons %}
+            <tr style="border-bottom:1px solid var(--line);">
+              <td style="padding:6px 4px;font-weight:500;">{{ b.label }}</td>
+              <td style="padding:6px 4px;">{{ b.n }}</td>
+              <td style="padding:6px 4px;color:var(--ink-mute);">{{ (b.sample_diag or '—')[:120] }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div style="margin-top:8px;font-size:11px;color:var(--ink-mute);">
+          Suppression list size: <strong>{{ suppression_total }}</strong>. Permanent bounces and complaints auto-skip on future sends.
+        </div>
+      </div>
+      {% endif %}
     </div>
-  </details>
-</section>
+  </div>
+</div>
+
+<script>
+  // Inner-tab switcher
+  document.addEventListener('click', function(ev) {
+    var t = ev.target.closest('.inner-tab');
+    if (!t) return;
+    var panel = t.getAttribute('data-panel');
+    if (!panel) return;
+    document.querySelectorAll('.inner-tab').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.inner-panel').forEach(function(p) { p.classList.remove('active'); });
+    t.classList.add('active');
+    var p = document.getElementById('panel-' + panel);
+    if (p) p.classList.add('active');
+  });
+</script>
+
 {% endblock %}

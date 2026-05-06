@@ -91,19 +91,17 @@
 {% set _camp_delivered = _camp_sent - _camp_failed %}
 {% set _camp_opened    = campaign.unique_opened or 0 %}
 {% set _camp_replied   = campaign.replied or 0 %}
-{% set _daily          = daily_sends(range_days or 90) %}
-{% set _max_daily      = (_daily | map(attribute='count') | max) or 1 %}
-<section id="campaign-banner" class="grid-2 mb-5">
+<section id="campaign-banner" class="mb-5" style="max-width: 560px;">
   <div class="dash-block">
-    <div class="dash-block-head">
+    <div class="dash-block-head" style="padding:12px 18px;">
       <div>
-        <div class="dash-block-title">Funnel</div>
+        <div class="dash-block-title" style="font-size:15px;">Funnel</div>
         <div class="dash-block-sub" style="color: var(--ink-faint);">
           <span id="live-status">● live</span> · refreshed <span id="live-tick">just now</span>
         </div>
       </div>
     </div>
-    <div class="dash-block-body">
+    <div class="dash-block-body" style="padding:14px 18px;">
       {% set _bar_delivered = ((100 * _camp_delivered // _camp_sent) if _camp_sent else 0) %}
       {% set _bar_opened    = ((100 * _camp_opened    // _camp_sent) if _camp_sent else 0) %}
       {% set _bar_replied   = ((100 * _camp_replied   // _camp_sent) if _camp_sent else 0) %}
@@ -134,11 +132,11 @@
           <div class="funnel-pct"><span id="cm-reply-rate">{{ campaign.reply_rate }}</span>%</div>
         </div>
       </div>
-      <div class="text-xs mt-3" style="color: var(--ink-mute); display:none;">
+      <div class="text-xs mt-3" style="color: var(--ink-mute);">
         <span id="cm-clicked">{{ campaign.unique_clicked }}</span> clicks ·
         <span id="cm-click-rate">{{ campaign.click_rate }}</span>% click rate ·
-        <span id="cm-bounced">{{ campaign.bounced }}</span> bounced ·
-        <span id="cm-bounce-rate">{{ campaign.bounce_rate }}</span>% bounce rate
+        <span id="cm-bounced" style="{% if campaign.bounced %}color:var(--warn);font-weight:600;{% endif %}">{{ campaign.bounced }}</span> bounced ·
+        <span id="cm-bounce-rate" style="{% if campaign.bounce_rate >= 5 %}color:var(--warn);font-weight:600;{% endif %}">{{ campaign.bounce_rate }}</span>% bounce rate
         <span id="cm-failed-wrap" {% if not campaign.failed %}style="display:none;"{% endif %}>·
           <span id="cm-failed">{{ campaign.failed }}</span> failed
         </span>
@@ -146,28 +144,6 @@
     </div>
   </div>
 
-  <div class="dash-block">
-    <div class="dash-block-head">
-      <div>
-        <div class="dash-block-title">Daily volume</div>
-        <div class="dash-block-sub">Last 14 days · today highlighted</div>
-      </div>
-    </div>
-    <div class="dash-block-body">
-      <svg viewBox="0 0 400 120" preserveAspectRatio="none" style="width:100%;height:120px">
-        <line x1="0" y1="100" x2="400" y2="100" stroke="var(--line)" stroke-width="1"/>
-        {% for d in _daily %}
-          {% set _bx = 6 + loop.index0 * 28 %}
-          {% set _bh = (98 * d.count / _max_daily) %}
-          {% set _by = 100 - _bh %}
-          <rect x="{{ _bx }}" y="{{ _by }}" width="20" height="{{ _bh }}"
-                fill="{% if loop.last %}var(--warn){% else %}var(--accent){% endif %}"></rect>
-        {% endfor %}
-        <text x="6"   y="118" font-family="var(--font-mono)" font-size="9" fill="var(--ink-mute)">14d</text>
-        <text x="394" y="118" font-family="var(--font-mono)" font-size="9" fill="var(--warn)" text-anchor="end">today</text>
-      </svg>
-    </div>
-  </div>
 </section>
 {% endif %}
 
@@ -183,6 +159,8 @@
       <label class="text-xs flex items-center gap-1.5" style="color: var(--ink-soft);">
         <input type="checkbox" id="select-all" onchange="toggleAll(this)"> select all
       </label>
+      <button type="button" onclick="selectUnsent()" id="select-unsent-btn" class="btn btn-ghost btn-sm" title="Tick checkboxes only for leads with no outreach yet">Select unsent</button>
+      <button type="button" onclick="clearSelection()" class="btn btn-ghost btn-sm" title="Untick every row">Clear</button>
       <button type="button" onclick="generateDrafts(false)" class="btn btn-primary btn-sm" id="gen-btn">Generate drafts</button>
       <button type="button" onclick="generateDrafts(true)" class="btn btn-ghost btn-sm" id="regen-btn" title="Re-run Claude on every selected lead even if a draft is saved">Re-generate</button>
       <button type="button" onclick="retryFailed()" id="retry-btn" class="btn btn-sm" title="Re-send to every row currently showing 'failed' status, using its saved draft" {% if not resend_enabled %}disabled{% endif %}>Retry failed</button>
@@ -202,7 +180,7 @@
       <thead>
         <tr>
           <th></th>
-          <th class="text-right">Score</th>
+          <th class="text-right" title="Claude-scored 0-100. How likely this lead becomes a customer based on rating, reviews, contact info, niche fit. See Leads page for full rubric.">AI Score</th>
           <th>Business</th>
           <th>Email</th>
           <th>City</th>
@@ -217,7 +195,7 @@
         {% set n = r._normalized %}
         {% set d = drafts_by_email.get(n.email|lower) %}
         {% set st = status_by_email.get(n.email|lower) %}
-        <tr data-row-email="{{ n.email|lower }}" data-row-business="{{ n.business_name }}">
+        <tr data-row-email="{{ n.email|lower }}" data-row-business="{{ n.business_name }}" data-row-status="{{ 'notsent' if not st else st.status }}">
           <td>
             <input type="checkbox" class="lead-cb"
               data-business="{{ n.business_name }}"
@@ -230,7 +208,12 @@
               data-website="{{ n.website }}">
           </td>
           <td class="text-right">
-            <span class="chip {% if r._score >= 75 %}chip-green{% elif r._score >= 60 %}chip-amber{% else %}chip-gray{% endif %}">{{ r._score }}</span>
+            {% set _ai = r.get('ai_lead_score') %}
+            {% if _ai %}
+              <span class="chip {% if _ai|float >= 75 %}chip-purple{% elif _ai|float >= 55 %}chip-amber{% else %}chip-gray{% endif %}" title="{{ r.get('ai_score_reason', '') }}">{{ _ai }}</span>
+            {% else %}
+              <span style="color: var(--ink-faint);" title="Not yet scored — run AI scoring from the Leads page.">—</span>
+            {% endif %}
           </td>
           <td>
             {{ n.business_name }}
@@ -348,7 +331,7 @@
           {% elif r.status == 'opened' %}<span class="chip chip-status chip-status-opened">opened</span>
           {% elif r.status == 'delivered' or r.status == 'sent' %}<span class="chip chip-status chip-status-delivered">delivered</span>
           {% elif r.status == 'delayed' %}<span class="chip chip-status chip-status-delayed">delayed</span>
-          {% elif r.status == 'bounced' %}<span class="chip chip-status chip-status-bounced">bounced</span>
+          {% elif r.status == 'bounced' %}<span class="chip chip-status chip-status-bounced" title="{{ r.bounce_subtype or r.bounce_type or '' }}{% if r.bounce_diagnostic %} — {{ r.bounce_diagnostic }}{% endif %}">bounced{% if r.bounce_subtype %} · {{ r.bounce_subtype }}{% elif r.bounce_type %} · {{ r.bounce_type }}{% endif %}</span>
           {% elif r.status == 'failed' %}<span class="chip chip-status chip-status-failed">failed</span>
           {% else %}<span class="chip chip-status chip-status-sent">{{ r.status }}</span>
           {% endif %}
@@ -386,6 +369,33 @@ const CSV_PATH = "{{ selected }}";
 
 function toggleAll(cb) {
   document.querySelectorAll('.lead-cb').forEach(x => x.checked = cb.checked);
+  updateSendButtonLabel();
+}
+
+function selectUnsent() {
+  let n = 0;
+  document.querySelectorAll('tr[data-row-email]').forEach(tr => {
+    const cb = tr.querySelector('.lead-cb');
+    if (!cb) return;
+    const isUnsent = (tr.dataset.rowStatus || 'notsent') === 'notsent';
+    cb.checked = isUnsent;
+    if (isUnsent) n++;
+  });
+  const sa = document.getElementById('select-all');
+  if (sa) sa.checked = false;
+  updateSendButtonLabel();
+  const btn = document.getElementById('select-unsent-btn');
+  if (btn) {
+    const orig = btn.textContent;
+    btn.textContent = n ? `${n} unsent ticked` : 'No unsent leads';
+    setTimeout(() => { btn.textContent = 'Select unsent'; }, 1800);
+  }
+}
+
+function clearSelection() {
+  document.querySelectorAll('.lead-cb').forEach(x => x.checked = false);
+  const sa = document.getElementById('select-all');
+  if (sa) sa.checked = false;
   updateSendButtonLabel();
 }
 

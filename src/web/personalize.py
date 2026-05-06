@@ -31,7 +31,7 @@ Output format (STRICT — every email follows the same shape):
 - Plain text only. No markdown, no HTML, no emojis, no asterisks, no hyphen-bullets, no numbered lists.
 - 80 to 120 words. No more.
 - Exactly 3 short paragraphs separated by ONE blank line:
-    1. Greeting on its own line: "Hi {first_name}," or "Hi there," — followed by a one-sentence specific observation about THIS business.
+    1. Greeting on its own line. Use "Hi there," ALWAYS — never invent a first name. Only use "Hi {first_name}," if a `first_name:` field is explicitly present in the facts. Follow with a one-sentence specific observation about THIS business.
     2. Pain point + how it costs them (use the localized stat from the niche playbook when present).
     3. The offer in plain language. Lead with the risk-reversal: "you don't pay until we book a job" + "if we don't book one in 30 days I send you $100 back". End with ONE soft CTA (short reply or 10-min call).
 - DO NOT include a signoff, sign-off, "Best,", "Cheers,", sender name, or company name. The email pipeline appends the structured signature from the user's settings (name, title, company, website, booking link). Anything you add will create a duplicate signature.
@@ -39,18 +39,26 @@ Output format (STRICT — every email follows the same shape):
 - Never use em dashes. Use commas, periods, or parentheses instead.
 - Never use buzzwords: synergy, leverage, revolutionary, game-changing, unlock, supercharge, transform.
 - One concrete observation in the opener (rating, review count, or local area). Never invent facts.
-Subject-line rules (CRITICAL — make them open the email):
-- Under 50 chars. Lowercase preferred (feels human, not corporate).
-- Quirky, curious, pattern-interrupt. Make the recipient stop scrolling.
-- Use ONE of these angles, picked to fit THIS prospect:
-    a) Specific number framed as a question: "335 reviews and still missing calls?"
-    b) Surprising stat: "27% of your phone is voicemail"
-    c) Curiosity gap: "the after-hours problem at {business_name}"
-    d) Direct micro-ask: "10 mins, then I leave you alone"
-    e) Scenario: "what your competitor 3 suburbs over just did"
-    f) Self-aware: "still on a roof?"
-- NEVER use stock subjects: "Quick idea for X", "Re: X", "Following up", "Just checking in", "Touching base", "Idea for {business_name}".
-- No exclamation marks. No ALL CAPS. No emoji. No words like "free", "guaranteed", "win".
+Subject-line rules (CRITICAL — these decide whether the email gets opened):
+- Under 45 chars. Lowercase preferred (feels human, not corporate). Title Case is acceptable for proper nouns only.
+- Quirky, curious, pattern-interrupting. Read it aloud — if it sounds like every other cold email, rewrite.
+- Anchor it in ONE concrete fact from THIS lead (rating, review_count, suburb, niche-specific noun). Generic = trash.
+- Pick one angle that fits the lead. Rotate angles across leads — never use the same template twice in a batch:
+    a) Specific number as a question — "335 reviews and still missing calls?", "{rating}★ but a missed listing every Tuesday?"
+    b) Surprising stat the brief gave you — pull a real number from Section 4 of the playbook, never invent.
+    c) Curiosity gap — "the after-hours problem at {business_name}", "what {city} buyers see at 11pm"
+    d) Micro-ask — "10 mins, then I disappear", "one screenshot, no pitch"
+    e) Scenario / competitor framing — "what the agency 2 suburbs over just stopped doing"
+    f) Self-aware / industry insider — "still on the roof?", "another voicemail Saturday?"
+    g) Number-as-cost framing — "$8k of plumbing leaks past 9pm"
+    h) Confessional one-liner — "we tried this on three plumbers in {city}"
+    i) The-but flip — "73 listings, no chatbot, why?"
+    j) Tiny imperative — "open this if Mondays bury you"
+- Subjects MUST vary in shape across a batch. If you wrote a question last time, try a stat or scenario this time.
+- BANNED subjects (do not paraphrase either): "Quick idea for X", "Re: X", "Following up", "Just checking in", "Touching base", "Idea for {business_name}", "Question about {business_name}", "Helping {business_name} grow", "{business_name} + AI", anything starting with "Hi" or "Hey".
+- BANNED words anywhere in subject: free, guaranteed, win, exclusive, opportunity, ROI, scale, growth, partnership.
+- No exclamation marks. No ALL CAPS. No emoji. No quotation marks around the whole subject. Don't end with a period.
+- If the playbook has example subject lines (Section 6), treat them as inspiration only — DO NOT copy them verbatim.
 
 Output a JSON object only: {"subject": "...", "body": "..."}.
 Inside `body`, separate paragraphs with "\\n\\n" exactly (one blank line). No trailing whitespace, no signoff lines.
@@ -113,11 +121,32 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
         f"sender_name: {sender_name}\n"
     )
 
+    # Deterministic angle rotation per-lead so a batch run produces varied
+    # subject lines (Haiku calls are independent — without a hint they
+    # converge on a single favorite template).
+    _angles = [
+        ("number-as-question",   "lead with a specific number from this lead's facts (rating or review_count) framed as a question"),
+        ("surprising-stat",      "open with a localized stat pulled from Section 4 of the niche playbook for this country"),
+        ("curiosity-gap",        "tease a problem at this business without naming the solution"),
+        ("micro-ask",            "ask for a tiny, low-commitment unit of time or attention"),
+        ("competitor-scenario",  "name a hypothetical local competitor doing the thing they aren't"),
+        ("industry-insider",     "self-aware one-liner only someone in their trade would say"),
+        ("number-as-cost",       "quantify the pain in dollars/pounds/etc. using a believable range"),
+        ("confessional",         "first-person observation about what we've seen in this niche"),
+        ("but-flip",             "pair two facts with a contradiction (X but Y, why?)"),
+        ("tiny-imperative",      "two-to-four-word command that sets up the body"),
+    ]
+    angle_idx = (hash((lead.get("business_name", ""), lead.get("email", ""))) & 0xffff) % len(_angles)
+    angle_label, angle_desc = _angles[angle_idx]
+
     user_msg = (
         "Write a personalized cold outreach email pitching our AI services "
         "(voice agent, chatbot, missed-call recovery) to this business. "
         "Use only the facts below. Output JSON only.\n\n"
-        f"{facts}"
+        f"{facts}\n"
+        f"Subject angle for THIS lead: {angle_label} — {angle_desc}. "
+        f"Apply that angle in the subject line; the body still follows the "
+        f"3-paragraph framework.\n"
     )
 
     brief = niche_briefs.get_brief_for_lead(lead)
@@ -131,6 +160,25 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
     if brief:
         system_blocks.extend(niche_briefs.system_blocks(brief))
         user_msg += niche_briefs.user_directive(brief, lead)
+
+    # Self-improvement loop: inject our own top-performing subject lines
+    # from past sends so the AI converges on style + tone that is getting
+    # opened. Data sourced from outreach_log via copy_performance_by_subject.
+    try:
+        from . import db as _db
+        winners = _db.top_performing_subjects(min_sends=2, min_open_rate=20, limit=8)
+    except Exception:
+        winners = []
+    if winners:
+        examples = "\n".join(
+            f"- {w['subject']}  (opens {w['unique_opens']}/{w['delivered']} = {w['open_rate']}%)"
+            for w in winners if w.get("subject")
+        )
+        user_msg += (
+            "\n\nPROVEN WINNERS - these subject lines from our own sends "
+            "have above-average open rates. Match the style + tone, do NOT "
+            "copy the exact phrasing:\n" + examples + "\n"
+        )
 
     try:
         resp = client.messages.create(
