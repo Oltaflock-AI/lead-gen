@@ -99,6 +99,17 @@ if _orphans:
 if os.getenv("LEADGEN_SCHEDULER", "1") not in ("0", "false", "no"):
     sequencer.start_scheduler()
 
+# Reconcile any Supabase events that arrived BEFORE a backfill / schema change
+# could match them to outreach_log rows. Idempotent — safe on every restart.
+try:
+    from . import supabase_sync as _ss
+    if _ss.is_configured():
+        _r = _ss.reconcile_processed()
+        if _r.get("applied"):
+            log.info("startup reconcile applied %s past events", _r["applied"])
+except Exception:
+    log.exception("startup supabase reconcile failed")
+
 
 # ─────────────────────────── helpers ───────────────────────────
 
@@ -229,6 +240,43 @@ def _safe_csv_path(name):
     return None
 
 
+def _load_leads_by_email(csv_name):
+    """Index a CSV by lowercased email so /api/outreach/send can pull
+    rating, review count, city, and business type for the sequencer."""
+    p = _safe_csv_path(csv_name)
+    if not p:
+        return {}
+    out = {}
+    try:
+        with open(p, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                em = (row.get("Email") or row.get("email") or "").strip().lower()
+                if not em:
+                    continue
+                try:
+                    rating = float(row.get("Rating") or 0)
+                except (TypeError, ValueError):
+                    rating = 0.0
+                try:
+                    reviews = int(float(row.get("Reviews") or row.get("Review Count") or 0))
+                except (TypeError, ValueError):
+                    reviews = 0
+                btype = row.get("Business Type") or row.get("Niche") or ""
+                out[em] = {
+                    "email": em,
+                    "business_name": row.get("Business Name", ""),
+                    "city": row.get("City", ""),
+                    "business_type": btype,
+                    "niche": row.get("Niche") or btype,
+                    "rating": rating,
+                    "review_count": reviews,
+                    "website": row.get("Website", ""),
+                }
+    except Exception as e:
+        log.warning("_load_leads_by_email csv=%s failed: %s", csv_name, e)
+    return out
+
+
 def _ctx():
     """Common template context — available to every page."""
     return {
@@ -266,7 +314,8 @@ def dashboard():
     horizon = now + _td(hours=24)
     active_seq = db.list_sequences(status="active", limit=500)
     today_queue = []
-    step_labels = {1: "Cold", 2: "Bump", 3: "Loom", 4: "Breakup"}
+    step_labels = {1: "Cold", 2: "Bump", 3: "FOMO",
+                   4: "Loom", 5: "Math", 6: "Quirky", 7: "Breakup"}
     for s in active_seq:
         nxt = (s.get("next_send_at") or "").strip()
         if not nxt:
@@ -336,6 +385,9 @@ def leads_detail(name):
     for r in rows:
         bn = r["_normalized"]["business_name"]
         r["_asana_url"] = asana_for_rows.get(bn, "")
+    # Outreach status per email so the leads table mirrors the outreach board.
+    outreach_status = db.outreach_status_by_email(name)
+    campaign = db.outreach_campaign_summary(name)
     return render_template(
         "leads_detail.html",
         name=name,
@@ -343,6 +395,8 @@ def leads_detail(name):
         fieldnames=fieldnames,
         rows=rows,
         summary=summary,
+        outreach_status=outreach_status,
+        campaign=campaign,
         sheet=db.get_sheet_for_csv(name),
         **_ctx(),
     )
@@ -1022,7 +1076,13 @@ def api_outreach_check_replies():
 
 @app.route("/api/outreach/send", methods=["POST"])
 def api_outreach_send():
-    """All sending goes through Resend. Gmail is read-only (reply detection)."""
+    """Send step 1 AND auto-enrol every lead in a 7-step drip sequence.
+
+    Replaces the old one-shot send path. The operator's edited subject/body
+    is used for step 1 verbatim; steps 2-7 are LLM-drafted from CSV facts
+    (rating, review count, city, business type, niche). Already-active
+    leads are skipped so duplicate clicks of "Send all" are idempotent.
+    """
     if not resend_send.is_configured():
         return jsonify({"error": "Resend not configured. Set RESEND_API_KEY and RESEND_FROM in .env"}), 400
 
@@ -1030,6 +1090,44 @@ def api_outreach_send():
     sends = data.get("sends", [])
     csv_path = data.get("csv_path", "")
     settings = db.get_settings()
+    sender = settings.get("sender_name", "")
+
+    # Resend free-tier guard: 100/day, 3000/month. Refuse the whole batch
+    # rather than half-send and silently drop the rest.
+    quota = db.send_quota_status(
+        daily_cap=int(os.getenv("LEADGEN_DAILY_CAP", "100")),
+        monthly_cap=int(os.getenv("LEADGEN_MONTHLY_CAP", "3000")),
+    )
+    if quota["daily_blocked"]:
+        return jsonify({
+            "error": f"Daily cap reached ({quota['today']}/{quota['today_cap']}). "
+                     "Try again tomorrow or raise LEADGEN_DAILY_CAP.",
+            "quota": quota,
+        }), 429
+    if quota["monthly_blocked"]:
+        return jsonify({
+            "error": f"Monthly cap reached ({quota['month']}/{quota['month_cap']}).",
+            "quota": quota,
+        }), 429
+    if len(sends) > quota["today_remaining"]:
+        return jsonify({
+            "error": f"Batch of {len(sends)} would exceed today's cap. "
+                     f"Only {quota['today_remaining']} sends remain. "
+                     "Trim the selection and try again.",
+            "quota": quota,
+        }), 429
+
+    # Load the CSV once so the sequencer can personalize steps 2-7.
+    leads_by_email = _load_leads_by_email(csv_path) if csv_path else {}
+
+    # Collapse duplicate failed-history: if any of these recipients already
+    # have a 'failed' row in outreach_log for this CSV, drop those before
+    # we attempt the new send. That way each lead has at most ONE row in
+    # the log no matter how many times the user clicks Retry.
+    if csv_path:
+        retry_emails = [s.get("to") or s.get("email") for s in sends if s.get("to") or s.get("email")]
+        if retry_emails:
+            db.delete_failed_outreach(csv_path=csv_path, lead_emails=retry_emails)
 
     results = []
     for s in sends:
@@ -1040,28 +1138,106 @@ def api_outreach_send():
         if not (to_addr and subject and body):
             results.append({"to": to_addr, "ok": False, "error": "missing fields"})
             continue
-        text_body, html_body = compose_email(body, settings)
-        try:
-            mid = resend_send.send_email(to_addr, subject, text_body, html_body)
-            db.log_outreach(
-                to_addr, business_name, csv_path, subject, body,
-                gmail_message_id=f"resend:{mid}", status="sent",
-                resend_id=mid,
-            )
-            results.append({"to": to_addr, "ok": True, "message_id": mid})
-        except Exception as e:
+
+        csv_lead = leads_by_email.get(to_addr.strip().lower(), {})
+        lead = {
+            **csv_lead,
+            "email": to_addr,
+            "business_name": business_name or csv_lead.get("business_name", ""),
+            "niche": csv_lead.get("niche") or csv_lead.get("business_type", ""),
+            "city": csv_lead.get("city", ""),
+            "rating": csv_lead.get("rating", 0),
+            "review_count": csv_lead.get("review_count", 0),
+            "website": csv_lead.get("website", ""),
+        }
+
+        result = sequencer.enqueue_lead_with_first_send(
+            lead, csv_name=csv_path, sender_name=sender,
+            override_subject=subject, override_body=body,
+        )
+
+        if result["status"] == "queued":
+            if result["resend_id"]:
+                db.log_outreach(
+                    to_addr, business_name, csv_path, subject, body,
+                    gmail_message_id=f"resend:{result['resend_id']}",
+                    status="sent", resend_id=result["resend_id"],
+                )
+            results.append({
+                "to": to_addr, "ok": True,
+                "message_id": result["resend_id"],
+                "sequence_id": result["sequence_id"],
+                "note": "enrolled in 7-step sequence",
+            })
+        elif result["status"] == "already_active":
+            results.append({
+                "to": to_addr, "ok": True,
+                "message_id": None,
+                "sequence_id": result["sequence_id"],
+                "note": "already in active sequence",
+            })
+        else:
             db.log_outreach(to_addr, business_name, csv_path, subject, body,
                             gmail_message_id=None, status="failed")
-            results.append({"to": to_addr, "ok": False, "error": str(e)})
+            results.append({"to": to_addr, "ok": False,
+                            "error": result["error"]})
     return jsonify({"results": results})
+
+
+@app.route("/api/outreach/clear-failed", methods=["POST"])
+def api_outreach_clear_failed():
+    """One-shot cleanup of accumulated failed log entries. Optional
+    csv_name in body restricts to a single CSV; absent = clear globally."""
+    data = request.json or {}
+    csv_name = (data.get("csv_name") or "").strip() or None
+    n = db.delete_failed_outreach(csv_path=csv_name)
+    return jsonify({"ok": True, "deleted": n, "csv_name": csv_name})
 
 
 @app.route("/api/outreach/mark-replied/<int:log_id>", methods=["POST"])
 def api_mark_replied(log_id):
     import sqlite3
+    now = datetime.utcnow().isoformat()
     with sqlite3.connect(db.DB_PATH) as c:
-        c.execute("UPDATE outreach_log SET status = 'replied' WHERE id = ?", (log_id,))
+        c.execute(
+            "UPDATE outreach_log SET status = 'replied', "
+            "replied_at = COALESCE(replied_at, ?), "
+            "last_event_at = ?, last_event_type = 'manual.mark_replied' "
+            "WHERE id = ?",
+            (now, now, log_id),
+        )
     return jsonify({"ok": True})
+
+
+@app.route("/api/outreach/unmark-replied/<int:log_id>", methods=["POST"])
+def api_unmark_replied(log_id):
+    """Revert a manually-marked reply. Falls back to the highest signal we
+    have from webhook events: clicked > opened > delivered > sent."""
+    import sqlite3
+    with sqlite3.connect(db.DB_PATH) as c:
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT clicks, opens, bounced FROM outreach_log WHERE id = ?",
+            (log_id,),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "row not found"}), 404
+        if row["bounced"]:
+            new_status = "bounced"
+        elif row["clicks"]:
+            new_status = "clicked"
+        elif row["opens"]:
+            new_status = "opened"
+        else:
+            new_status = "delivered"
+        now = datetime.utcnow().isoformat()
+        c.execute(
+            "UPDATE outreach_log SET status = ?, replied_at = NULL, "
+            "last_event_at = ?, last_event_type = 'manual.unmark_replied' "
+            "WHERE id = ?",
+            (new_status, now, log_id),
+        )
+    return jsonify({"ok": True, "status": new_status})
 
 
 # ─────────────────────────── api: sheets ───────────────────────────
@@ -1478,6 +1654,19 @@ def api_scrapes_list():
     return jsonify({"scrapes": db.list_scrapes(status=status)})
 
 
+@app.route("/api/scrapes/<int:sid>", methods=["DELETE"])
+def api_scrape_delete(sid):
+    """Remove a scrape_history row. The underlying CSV file is preserved —
+    only the audit log entry is removed."""
+    s = db.get_scrape(sid)
+    if not s:
+        return jsonify({"error": "not found"}), 404
+    if s.get("status") == "running":
+        return jsonify({"error": "scrape still running — cancel from /scrape first"}), 400
+    n = db.delete_scrape(sid)
+    return jsonify({"ok": True, "deleted": n})
+
+
 @app.route("/api/scrapes/<int:sid>")
 def api_scrape_detail(sid):
     """Return a scrape row + its event log. Live scrapes are stitched from
@@ -1514,13 +1703,17 @@ def offers_page():
         o["brief_chars"] = len(md)
         o["has_brief"] = bool(md)
     disk_briefs = []
-    home_md = (PROJECT_ROOT / "home-services-offer.md")
-    if home_md.exists():
-        disk_briefs.append({
-            "filename": home_md.name,
-            "suggested_niche": "Home Services",
-            "size": home_md.stat().st_size,
-        })
+    for fname, niche in (
+        ("home-services-offer.md", "Home Services"),
+        ("real-estate-offer.md",   "Real Estate"),
+    ):
+        p = PROJECT_ROOT / fname
+        if p.exists():
+            disk_briefs.append({
+                "filename": p.name,
+                "suggested_niche": niche,
+                "size": p.stat().st_size,
+            })
     return render_template(
         "offers.html",
         offers=offers,
@@ -1530,12 +1723,33 @@ def offers_page():
     )
 
 
-@app.route("/api/offers/brief-file/<path:filename>")
+@app.route("/api/offers/brief-file/<path:filename>", methods=["GET", "POST"])
 def api_offer_brief_file(filename):
-    """Return contents of an on-disk brief markdown for the offers UI to load."""
+    """GET: return on-disk brief markdown. POST: overwrite it from UI edits.
+
+    Whitelisted to flat .md filenames in the project root so the offers page
+    can save edits back to e.g. home-services-offer.md, and so the same file
+    is then served fresh to the AI writer (the niche_briefs cache is keyed
+    on mtime so it reloads automatically).
+    """
     if "/" in filename or ".." in filename or not filename.endswith(".md"):
         return jsonify({"error": "invalid filename"}), 400
     p = PROJECT_ROOT / filename
+    if request.method == "POST":
+        if not p.exists() or not p.is_file():
+            return jsonify({"error": "not found"}), 404
+        data = request.json or {}
+        md = data.get("markdown", "")
+        if not isinstance(md, str):
+            return jsonify({"error": "markdown must be a string"}), 400
+        if len(md) > 1_000_000:
+            return jsonify({"error": "brief too large (>1 MB)"}), 400
+        try:
+            p.write_text(md, encoding="utf-8")
+        except OSError as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({"ok": True, "filename": filename, "chars": len(md)})
+
     if not p.exists() or not p.is_file():
         return jsonify({"error": "not found"}), 404
     try:
@@ -1575,6 +1789,7 @@ def sequences_page():
         sequences=db.list_sequences(status=status),
         stats=db.sequence_stats(),
         active_filter=status or "all",
+        all_csvs=metrics.list_csvs(),
         **_ctx(),
     )
 
@@ -1673,6 +1888,50 @@ def api_sequences_start_from_csv():
     return jsonify({"job_id": jid, "label": label})
 
 
+@app.route("/api/sequences/add-lead", methods=["POST"])
+def api_sequences_add_lead():
+    """Manually enrol a single lead into the 7-step sequence — bypasses CSV.
+    Required: email + business_name + niche.  Optional: city, rating,
+    review_count, website."""
+    data = request.json or {}
+    email = (data.get("email") or "").strip().lower()
+    business = (data.get("business_name") or "").strip()
+    niche = (data.get("niche") or "").strip()
+    if not email or "@" not in email:
+        return jsonify({"error": "valid email required"}), 400
+    if not business:
+        return jsonify({"error": "business_name required"}), 400
+    if not niche:
+        return jsonify({"error": "niche required (so the AI writer knows the playbook)"}), 400
+
+    lead = {
+        "email": email,
+        "business_name": business,
+        "niche": niche,
+        "city": (data.get("city") or "").strip(),
+        "rating": float(data.get("rating") or 0),
+        "review_count": int(data.get("review_count") or 0),
+        "website": (data.get("website") or "").strip(),
+    }
+    sender_name = db.get_setting("sender_name", "")
+    sid, msg = sequencer.enqueue_lead(
+        lead,
+        csv_name=(data.get("csv_name") or "manual"),
+        sender_name=sender_name,
+    )
+    if sid is None:
+        return jsonify({"error": msg}), 400
+    return jsonify({"ok": True, "sequence_id": sid, "message": msg})
+
+
+@app.route("/api/quota")
+def api_quota():
+    return jsonify(db.send_quota_status(
+        daily_cap=int(os.getenv("LEADGEN_DAILY_CAP", "100")),
+        monthly_cap=int(os.getenv("LEADGEN_MONTHLY_CAP", "3000")),
+    ))
+
+
 @app.route("/api/sequences/tick", methods=["POST"])
 def api_sequences_tick():
     """Manual tick — useful when the scheduler is disabled."""
@@ -1688,6 +1947,35 @@ def api_sequences_check_replies():
 
 
 # ─────────────────────────── resend webhook ───────────────────────────
+
+
+@app.route("/api/outreach/live-status")
+def api_outreach_live_status():
+    """Live polling endpoint for the outreach page. Returns:
+      - campaign summary (sent/opens/clicks/replies/bounced + rates)
+      - per-email status map for chip updates
+      - timestamp of latest webhook event we've applied (for change detection)
+    Pulls fresh from Supabase first so the table reflects events that
+    arrived since the last 60-second scheduler tick.
+    """
+    csv_name = (request.args.get("csv") or "").strip()
+    pulled = 0
+    try:
+        from . import supabase_sync
+        if supabase_sync.is_configured():
+            r = supabase_sync.sync_once()
+            pulled = r.get("applied", 0)
+    except Exception:
+        log.exception("live-status sync_once failed")
+
+    summary = (db.outreach_campaign_summary(csv_name)
+               if csv_name else db.outreach_campaign_summary())
+    status_map = db.outreach_status_by_email(csv_name) if csv_name else {}
+    return jsonify({
+        "campaign": summary,
+        "status_by_email": status_map,
+        "pulled_now": pulled,
+    })
 
 
 @app.route("/api/webhook-status")

@@ -2,9 +2,21 @@
 {% block title %}Sequences — lead-gen{% endblock %}
 {% block breadcrumb %}workspace / sequences{% endblock %}
 {% block heading %}Email sequences{% endblock %}
-{% block subheading %}4-step cadence: cold → bump → Loom → breakup. Sent via Resend, replies caught by Gmail.{% endblock %}
+{% block subheading %}7-step nurture over 28 days: cold → bump → FOMO → Loom → math → quirky → pizza breakup. Sent via Resend, replies caught by Gmail.{% endblock %}
 
 {% block content %}
+
+{# ---------- Plain-English explainer ---------- #}
+<section class="n-card mb-5" style="padding: 16px 20px; background: var(--bg-elev);">
+  <div class="n-block-title mb-2">How sequences work</div>
+  <ol class="text-xs" style="color: var(--ink-soft); padding-left: 18px; margin: 0; line-height: 1.7;">
+    <li><strong>Enqueue a CSV</strong> — every lead with an email gets enrolled in a 7-step nurture (one per row). Claude drafts all 7 emails up-front using the lead's business + niche so each is hyper-personalized.</li>
+    <li><strong>Background scheduler</strong> wakes every 60 seconds and sends any step whose <code>scheduled_for</code> time has elapsed. You don't have to do anything once enrolled.</li>
+    <li><strong>Cadence (28 days):</strong> day 0 cold → day 3 bump → day 7 FOMO → day 11 Loom → day 16 math → day 21 quirky → day 28 pizza breakup.</li>
+    <li><strong>Replies pause the sequence automatically</strong> via the Gmail scan + Resend webhook. No more emails go to anyone who's already engaged.</li>
+    <li><strong>"Send due steps now"</strong> manually triggers a tick if you don't want to wait the 60 seconds for the next scheduled run.</li>
+  </ol>
+</section>
 
 <div class="flex justify-end mb-4">
   <button type="button" onclick="checkReplies()" class="btn btn-sm">Check replies</button>
@@ -52,18 +64,86 @@
   <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
     <div>
       <label class="n-label" for="csv_name">CSV</label>
-      <input id="csv_name" class="n-input" placeholder="filename.csv">
+      <select id="csv_name" class="n-select">
+        <option value="">— select a scraped CSV —</option>
+        {% for c in all_csvs %}
+          <option value="{{ c.name }}">{{ c.name }} ({{ c.rows }} rows{% if c.with_email is defined %}, {{ c.with_email }} w/ email{% endif %})</option>
+        {% endfor %}
+      </select>
     </div>
     <div>
       <label class="n-label" for="niche_override">Niche override <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— optional</span></label>
       <input id="niche_override" class="n-input" placeholder="leave blank to use Business Type column">
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-primary" onclick="enqueueCsv()">Enqueue → sequence</button>
-      <button class="btn" onclick="manualTick()">Force tick</button>
+      <button class="btn btn-primary" onclick="enqueueCsv()" title="Enrol every emailable lead in a 7-step nurture. Claude drafts all 7 emails up-front. Step 1 sends today, the rest on schedule.">Enrol leads in 7-step sequence</button>
+      <button class="btn" onclick="manualTick()" title="Manually trigger the background scheduler to send any due steps now (it normally runs every 60 seconds).">Send due steps now</button>
     </div>
   </div>
   <div id="enq-status" class="text-xs mt-3" style="color: var(--ink-mute);"></div>
+  <pre id="enq-log" class="text-xs mt-2" style="display: none; max-height: 240px; overflow: auto; background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0; font-family: var(--font-mono);"></pre>
+</section>
+
+{# ---------- Manual single-lead add ---------- #}
+<section class="n-card mb-6" style="padding: 18px 22px;">
+  <div class="n-block-title mb-3">Add a single lead manually</div>
+  <p class="text-xs mb-3" style="color: var(--ink-mute);">For one-off prospects you didn't scrape. Same 7-step sequence, drafted by Claude using the niche + business name.</p>
+  <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+    <div>
+      <label class="n-label" for="m_email">Email</label>
+      <input id="m_email" type="email" class="n-input" placeholder="dave@daveplumbing.com">
+    </div>
+    <div>
+      <label class="n-label" for="m_business">Business name</label>
+      <input id="m_business" class="n-input" placeholder="Dave's Plumbing">
+    </div>
+    <div>
+      <label class="n-label" for="m_niche">Niche</label>
+      <input id="m_niche" class="n-input" list="niche-presets-manual" placeholder="Home Services, plumber, ...">
+      <datalist id="niche-presets-manual">
+        <option value="Home Services"><option value="plumber"><option value="electrician">
+        <option value="HVAC"><option value="roofing contractor"><option value="cleaning service">
+        <option value="Real Estate"><option value="Law Firms"><option value="Restaurants & Food">
+      </datalist>
+    </div>
+    <div>
+      <label class="n-label" for="m_city">City <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— optional</span></label>
+      <input id="m_city" class="n-input" placeholder="Sydney">
+    </div>
+  </div>
+  <div class="flex gap-2 mt-3">
+    <button class="btn btn-primary" onclick="addManualLead()">Enrol this lead</button>
+  </div>
+  <div id="manual-status" class="text-xs mt-3" style="color: var(--ink-mute);"></div>
+</section>
+
+{# ---------- Send quota ---------- #}
+<section class="n-card mb-6" style="padding: 16px 22px;">
+  <div class="flex items-baseline justify-between mb-3">
+    <div class="n-block-title" style="margin: 0;">Send quota (Resend free tier)</div>
+    <div class="text-xs" style="color: var(--ink-mute);">Caps configurable via <code>LEADGEN_DAILY_CAP</code> / <code>LEADGEN_MONTHLY_CAP</code></div>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div>
+      <div class="text-xs flex items-baseline justify-between mb-1">
+        <span style="color: var(--ink-soft);"><strong id="q-today">—</strong> / <span id="q-today-cap">100</span> sent today</span>
+        <span style="color: var(--ink-faint);"><span id="q-today-remaining">—</span> remaining</span>
+      </div>
+      <div style="height: 8px; background: var(--bg-sunken); border-radius: 999px; overflow: hidden;">
+        <div id="q-today-bar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.3s;"></div>
+      </div>
+    </div>
+    <div>
+      <div class="text-xs flex items-baseline justify-between mb-1">
+        <span style="color: var(--ink-soft);"><strong id="q-month">—</strong> / <span id="q-month-cap">3000</span> sent this month</span>
+        <span style="color: var(--ink-faint);"><span id="q-month-remaining">—</span> remaining</span>
+      </div>
+      <div style="height: 8px; background: var(--bg-sunken); border-radius: 999px; overflow: hidden;">
+        <div id="q-month-bar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.3s;"></div>
+      </div>
+    </div>
+  </div>
+  <div id="q-warning" class="text-xs mt-3" style="display: none; color: var(--warn);"></div>
 </section>
 
 {# ---------- Filter tabs ---------- #}
@@ -98,8 +178,15 @@
         <td class="text-xs">{{ s.niche or '—' }}</td>
         <td class="text-xs">{{ s.city or '—' }}</td>
         <td>
-          <div class="dot-progress">
-            {% for i in range(1, 5) %}<span class="d {% if i <= s.current_step %}on{% endif %}"></span>{% endfor %}
+          {% set step_names = ['cold', 'bump', 'FOMO', 'Loom', 'math', 'quirky', 'pizza'] %}
+          {% set sent = s.current_step or 0 %}
+          <div class="text-xs" style="font-weight: 500;">
+            {% if sent >= 7 %}all 7 sent
+            {% elif sent == 0 %}queued · step 1 next
+            {% else %}step {{ sent }}/7 sent · {{ step_names[sent] if sent < 7 else 'done' }}{% endif %}
+          </div>
+          <div class="dot-progress mt-1">
+            {% for i in range(1, 8) %}<span class="d {% if i <= sent %}on{% endif %}" title="step {{ i }}: {{ step_names[i-1] }}"></span>{% endfor %}
           </div>
         </td>
         <td>
@@ -141,23 +228,121 @@
 async function enqueueCsv(){
   const csv = document.getElementById('csv_name').value.trim();
   const niche = document.getElementById('niche_override').value.trim();
-  if (!csv){ alert('csv name required'); return; }
-  const r = await fetch('/api/sequences/start-from-csv',{
-    method:'POST', headers:{'Content-Type':'application/json'},
+  if (!csv){ alert('Pick a CSV from the dropdown first.'); return; }
+  const status = document.getElementById('enq-status');
+  const logEl = document.getElementById('enq-log');
+  status.textContent = `Drafting 7 emails per lead in ${csv} (this can take 30-60s for a big CSV)…`;
+  logEl.style.display = 'block';
+  logEl.textContent = '';
+  const r = await fetch('/api/sequences/start-from-csv', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({csv_name: csv, niche}),
   });
   const d = await r.json();
-  document.getElementById('enq-status').textContent = `job ${d.job_id || d.error}`;
+  if (d.error) { status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(d.error)}</span>`; return; }
+
+  // Poll the job until done — surface every "  ✓ business → seq#N" line.
+  let cursor = 0;
+  let queued = 0, skipped = 0;
+  while (true) {
+    await new Promise(r => setTimeout(r, 1500));
+    const er = await fetch(`/api/jobs/${d.job_id}/events?cursor=${cursor}`);
+    if (!er.ok) break;
+    const ed = await er.json();
+    cursor = ed.cursor;
+    for (const ev of (ed.events || [])) {
+      if (ev.type === 'log') {
+        logEl.textContent += ev.line + '\n';
+        logEl.scrollTop = logEl.scrollHeight;
+      } else if (ev.type === 'done') {
+        queued = ev.queued || 0;
+        skipped = ev.skipped || 0;
+        const reasons = ev.reasons ? Object.entries(ev.reasons).map(([k,v]) => `${v} ${k}`).join(', ') : '';
+        status.innerHTML = `<strong>✓ ${queued}</strong> lead${queued===1?'':'s'} enrolled in 7-step sequence` +
+          (skipped ? ` · ${skipped} skipped (${escapeHtml(reasons)})` : '') +
+          ` · <a href="javascript:location.reload()" style="color: var(--accent);">reload page to see them</a>`;
+        return;
+      }
+    }
+    if (ed.status === 'done' || ed.status === 'failed') break;
+  }
 }
+
 async function manualTick(){
+  const status = document.getElementById('enq-status');
+  status.textContent = 'Triggering scheduler…';
   const r = await fetch('/api/sequences/tick',{method:'POST'});
-  document.getElementById('enq-status').textContent = JSON.stringify(await r.json());
+  const d = await r.json();
+  if (d.due === 0) {
+    status.textContent = `No steps were due to send. The next scheduled run is in ≤60s.`;
+  } else {
+    status.innerHTML = `Sent <strong>${d.sent || 0}</strong> step${d.sent === 1 ? '' : 's'}` +
+      (d.failed ? ` · ${d.failed} failed` : '') +
+      ` · checked ${d.due} due. <a href="javascript:location.reload()" style="color: var(--accent);">reload</a>`;
+  }
 }
 async function checkReplies(){
   const r = await fetch('/api/sequences/check-replies',{method:'POST'});
   const d = await r.json();
   document.getElementById('enq-status').textContent = JSON.stringify(d);
 }
+
+async function addManualLead(){
+  const email    = document.getElementById('m_email').value.trim();
+  const business = document.getElementById('m_business').value.trim();
+  const niche    = document.getElementById('m_niche').value.trim();
+  const city     = document.getElementById('m_city').value.trim();
+  const status   = document.getElementById('manual-status');
+  if (!email || !business || !niche) {
+    status.innerHTML = '<span style="color: var(--warn);">Email, business, and niche are required.</span>';
+    return;
+  }
+  status.textContent = 'Drafting 7 emails for this lead…';
+  const r = await fetch('/api/sequences/add-lead', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({email, business_name: business, niche, city}),
+  });
+  const d = await r.json();
+  if (!r.ok) {
+    status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(d.error || ('failed: ' + r.status))}</span>`;
+    return;
+  }
+  status.innerHTML = `<strong>✓</strong> Enrolled · sequence #${d.sequence_id} · `
+    + `<a href="javascript:location.reload()" style="color: var(--accent);">reload to see it</a>`;
+  ['m_email','m_business','m_city'].forEach(id => document.getElementById(id).value = '');
+  refreshQuota();
+}
+
+async function refreshQuota(){
+  try {
+    const r = await fetch('/api/quota');
+    const q = await r.json();
+    document.getElementById('q-today').textContent = q.today;
+    document.getElementById('q-today-cap').textContent = q.today_cap;
+    document.getElementById('q-today-remaining').textContent = q.today_remaining;
+    document.getElementById('q-today-bar').style.width = Math.min(100, q.today_pct) + '%';
+    document.getElementById('q-month').textContent = q.month;
+    document.getElementById('q-month-cap').textContent = q.month_cap;
+    document.getElementById('q-month-remaining').textContent = q.month_remaining;
+    document.getElementById('q-month-bar').style.width = Math.min(100, q.month_pct) + '%';
+    // Color the bars red as you approach the cap.
+    const colorOf = pct => pct >= 90 ? '#d44' : pct >= 70 ? '#e6a200' : 'var(--accent)';
+    document.getElementById('q-today-bar').style.background = colorOf(q.today_pct);
+    document.getElementById('q-month-bar').style.background = colorOf(q.month_pct);
+    const warn = document.getElementById('q-warning');
+    if (q.daily_blocked) {
+      warn.style.display = 'block';
+      warn.textContent = `Daily cap hit (${q.today}/${q.today_cap}). New sends will be queued until tomorrow.`;
+    } else if (q.monthly_blocked) {
+      warn.style.display = 'block';
+      warn.textContent = `Monthly cap hit (${q.month}/${q.month_cap}). New sends paused until next month.`;
+    } else {
+      warn.style.display = 'none';
+    }
+  } catch (e) { console.warn('quota refresh failed', e); }
+}
+refreshQuota();
+setInterval(refreshQuota, 60000);
 async function pauseSeq(id){ await fetch(`/api/sequences/${id}/pause`,{method:'POST'}); location.reload(); }
 async function resumeSeq(id){ await fetch(`/api/sequences/${id}/resume`,{method:'POST'}); location.reload(); }
 async function cancelSeq(id){ if(!confirm('cancel?')) return; await fetch(`/api/sequences/${id}/cancel`,{method:'POST'}); location.reload(); }

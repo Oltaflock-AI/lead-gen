@@ -72,7 +72,7 @@
             <td style="color: var(--ink-soft);">{{ q.niche or '—' }}</td>
             <td>
               <div class="dot-progress">
-                {% for i in range(1, 5) %}<span class="d {% if i <= q.step %}on{% endif %}"></span>{% endfor %}
+                {% for i in range(1, 8) %}<span class="d {% if i <= q.step %}on{% endif %}"></span>{% endfor %}
               </div>
               <span class="text-xs ml-2" style="color: var(--ink-mute);">{{ q.step_label }}</span>
             </td>

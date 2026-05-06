@@ -33,6 +33,18 @@ _BRIEFS = [
         },
         "filename": "home-services-offer.md",
     },
+    {
+        "label": "real_estate",
+        "niche_keywords": {"real estate", "real-estate", "realtor", "realty"},
+        "biz_type_keywords": {
+            "real estate agent", "realtor", "realty",
+            "real estate broker", "real estate brokerage",
+            "property management", "property manager",
+            "property dealer", "estate agent",
+            "real estate consultant", "land developer",
+        },
+        "filename": "real-estate-offer.md",
+    },
 ]
 
 _CACHE: dict[str, str] = {}

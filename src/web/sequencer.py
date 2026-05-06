@@ -1,21 +1,24 @@
-"""5-step hyper-personalized email sequence engine.
+"""7-step hyper-personalized email sequence engine.
 
-Cadence (offsets from step 1 send time, span ~14 days):
+Cadence (offsets from step 1 send time, span ~28 days):
   step 1  ·  day 0   — cold open with risk-reversal offer
   step 2  ·  day 3   — bump + single outcome line
-  step 3  ·  day 6   — competitor / FOMO angle
-  step 4  ·  day 10  — Loom value drop
-  step 5  ·  day 14  — breakup with one final proof hook
+  step 3  ·  day 7   — competitor / FOMO angle
+  step 4  ·  day 11  — Loom value drop
+  step 5  ·  day 16  — grand-slam offer recap (the math email)
+  step 6  ·  day 21  — quirky pattern interrupt
+  step 7  ·  day 28  — pizza breakup (PIZZA / CALL / LATER)
 
 Drafting is done up-front by Claude using the lead facts + per-niche offer
 record (offer copy + tone notes + Loom URL). Sending is via Resend. Reply
 detection (Gmail) flips status='paused' with reason='replied'.
 
 This module owns:
-  • `enqueue_lead(...)`     — bulk start from a CSV
-  • `start_scheduler(...)`  — daemon thread polling for due steps
-  • `process_replies(...)`  — Gmail reply detector → pause sequences
-  • `/webhook/resend`       — handled by app.py, calls record_event()
+  • `enqueue_lead(...)`                      — bulk start from a CSV
+  • `enqueue_lead_with_first_send(...)`      — auto-enrol from /api/outreach/send
+  • `start_scheduler(...)`                   — daemon thread polling for due steps
+  • `process_replies(...)`                   — Gmail reply detector → pause sequences
+  • `/webhook/resend`                        — handled by app.py, calls record_event()
 """
 import json
 import logging
@@ -28,12 +31,13 @@ from datetime import datetime, timedelta, timezone
 from . import db
 from . import niche_briefs
 from . import resend_send
+from . import send_timing
 
 log = logging.getLogger(__name__)
 
 # Step day offsets from step 1 send.
-STEP_OFFSETS_DAYS = {1: 0, 2: 3, 3: 6, 4: 10, 5: 14}
-NUM_STEPS = 5
+STEP_OFFSETS_DAYS = {1: 0, 2: 3, 3: 7, 4: 11, 5: 16, 6: 21, 7: 28}
+NUM_STEPS = 7
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -41,11 +45,11 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # ─────────────────────────── drafting ───────────────────────────
 
-_SYSTEM = """You write hyper-personalized cold-outreach emails as part of a 5-step drip sequence. Each email feels hand-written for ONE specific business, not a template.
+_SYSTEM = """You write hyper-personalized cold-outreach emails as part of a 7-step drip sequence. Each email feels hand-written for ONE specific business, not a template.
 
 Hard rules:
 - Plain text only. No markdown, no HTML, no emojis, no asterisks, no bullets, no numbered lists.
-- Step 1 + step 3: 90 to 140 words. Step 4 (Loom): 70 to 110 words. Step 2 (bump) + step 5 (breakup): 35 to 70 words.
+- Word counts: steps 1, 3, 5 are 90 to 140 words. Step 4 (Loom) is 70 to 110 words. Step 6 (quirky) is 60 to 100 words. Steps 2 (bump) and 7 (pizza breakup) are 35 to 70 words.
 - Open with one specific observation about THIS business (use rating, review count, city, niche — never invent facts).
 - Make the offer feel inevitable: clear outcome, low friction, reversible. Lead with the risk-reversal: "you don't pay until we book a job" + "if we don't book one in 30 days I send you $100 back". Steal the structure, don't quote it.
 - Social-proof framing IS allowed and encouraged: "another {business_type} two suburbs over", "the tradies we work with in {city}", "a {business_type} with a similar review count". DO NOT invent specific company names, dollar figures, or precise client counts. Use only the localized stat from the niche playbook for any hard numbers.
@@ -58,7 +62,7 @@ Hard rules:
 Subject-line rules (CRITICAL — make them open the email):
 - Under 50 chars. Lowercase preferred (feels human, not corporate).
 - Quirky, curious, pattern-interrupt. Make the recipient stop scrolling.
-- Use ONE of these angles per email, vary across the 5 steps so the inbox view feels different each time:
+- Use ONE of these angles per email, vary across the 7 steps so the inbox view feels different each time:
     a) A specific observation framed as a question: "335 reviews and still missing calls?"
     b) A surprising number or comparison: "27% of your phone is voicemail"
     c) An incomplete thought / curiosity gap: "the after-hours problem at {business_name}"
@@ -73,12 +77,12 @@ Output JSON: {"subject": "...", "body": "..."}. Nothing else.
 
 _STEP_INSTRUCTIONS = {
     1: (
-        "Step 1 — first cold email (day 0). Lead with a SPECIFIC observation "
-        "pulled from the lead facts (rating + review count + city + niche). "
-        "One short paragraph naming the missed-call pain. Deliver the offer "
-        "with the risk-reversal verbatim ('you don't pay until we book a job, "
-        "$100 back if we don't book one in 30 days'). Soft CTA: short reply "
-        "or 10-minute call."
+        "Step 1 — first cold email (day 0, 90-140 words). Lead with a "
+        "SPECIFIC observation pulled from the lead facts (rating + review "
+        "count + city + niche). One short paragraph naming the missed-call "
+        "pain. Deliver the offer with the risk-reversal verbatim ('you "
+        "don't pay until we book a job, $100 back if we don't book one in "
+        "30 days'). Soft CTA: short reply or 10-minute call."
     ),
     2: (
         "Step 2 — bump (day 3, 35-70 words). Acknowledge no reply in ONE "
@@ -88,7 +92,7 @@ _STEP_INSTRUCTIONS = {
         "one-line question. No re-pitch of the offer."
     ),
     3: (
-        "Step 3 — competitor / FOMO angle (day 6, 90-140 words). Open with "
+        "Step 3 — competitor / FOMO angle (day 7, 90-140 words). Open with "
         "the observation that another {business_type} in the same region "
         "(do not name them) is already running an AI agent and capturing "
         "the after-hours jobs that used to slip past phones like "
@@ -97,18 +101,39 @@ _STEP_INSTRUCTIONS = {
         "CTA: 'want me to send you the 90-second walkthrough?'"
     ),
     4: (
-        "Step 4 — Loom value drop (day 10, 70-110 words). Paste the Loom "
+        "Step 4 — Loom value drop (day 11, 70-110 words). Paste the Loom "
         "URL on its own line. Tease ONE concrete thing the video shows for "
-        "THIS niche / business type (e.g. how the agent triages a burst "
-        "pipe vs. a slow drip for a plumber). Suggest watching when "
-        "convenient. CTA: reply 'yes' to talk after watching."
+        "THIS niche (e.g. how the agent triages a burst pipe vs. a slow "
+        "drip for a plumber). CTA: reply 'yes' to talk after watching."
     ),
     5: (
-        "Step 5 — breakup (day 14, 35-70 words). Polite close, leave the "
-        "door open. Include ONE final reason to reconsider before they "
-        "close the email: a stat from the playbook OR a generic outcome "
-        "line. Make it easy to say 'not now' without guilt. No re-pitch of "
-        "the offer details."
+        "Step 5 — grand-slam offer recap (day 16, 90-140 words). Frame the "
+        "math so plainly that NOT trying it looks like the riskier choice. "
+        "Structure: (1) one line naming what they're losing per week in "
+        "raw money terms using the localized job-value range. (2) the "
+        "offer restated in three short lines, $0 setup, $0 monthly, "
+        "$100-back guarantee. (3) one line: 'the only way you lose money "
+        "is if it works and you stop us.' CTA: ten minutes this week, "
+        "their pick of day. NO buzzwords. NO hype words. Just arithmetic."
+    ),
+    6: (
+        "Step 6 — quirky pattern interrupt (day 21, 60-100 words). Drop "
+        "tone. Open with a self-aware one-liner that admits they've been "
+        "ignoring the thread, e.g. 'either my emails are landing in spam "
+        "or {business_name} doesn't actually want more booked jobs, and I "
+        "genuinely can't tell which.' Then ONE crisp benefit line tied to "
+        "the niche. CTA must be a binary low-effort reply: 'reply yes if "
+        "you want a 5-min walkthrough, reply no and I close the loop'. "
+        "This is the email the operator may attach a meme image to "
+        "(handled at send time, not in this draft)."
+    ),
+    7: (
+        "Step 7 — pizza breakup (day 28, 35-70 words). Last note. Polite, "
+        "short, leaves the door open. Include this exact mechanic verbatim: "
+        "'Reply with one word and I'll act on it: PIZZA means stop, I won't "
+        "email again. CALL means book a 10-minute slot. LATER means I "
+        "circle back in 90 days.' One stat-free sentence above it framing "
+        "why it still matters. Nothing else."
     ),
 }
 
@@ -161,19 +186,81 @@ def _fallback_draft(step, lead, offer, loom_url, sender_name):
             "Reply 'yes' if you want to chat after watching."
         )
         subj = "90 seconds, then you decide"
+    elif step == 5:
+        body = (
+            f"Quick math for {name}. A handful of missed after-hours calls "
+            "a week, at typical job value, is the part of the P&L nobody "
+            "writes down.\n\n"
+            "$0 setup.\n"
+            "$0 monthly.\n"
+            "$100 back if we don't book a job in 30 days.\n\n"
+            "The only way you lose money is if it works and you stop us. "
+            "Ten minutes this week, your pick of day?"
+        )
+        subj = "the math on the missed calls"
+    elif step == 6:
+        body = (
+            f"Either my emails are landing in spam or {name} doesn't "
+            f"actually want more booked jobs, and I genuinely can't tell "
+            "which. The agent picks up the after-hours calls so the "
+            "voicemail box stops being your sales funnel.\n\n"
+            "Reply yes if you want a 5-min walkthrough, reply no and I "
+            "close the loop."
+        )
+        subj = "spam folder or not interested?"
     else:
         body = (
-            "Last note from me. Happy to circle back later if timing isn't "
-            "right. Worth remembering: most callers who hit voicemail dial "
-            "the next number on Google within 90 seconds. Reply 'not now' "
-            "and I'll close the loop."
+            "Worth remembering: most callers who hit voicemail dial the "
+            "next number on Google within 90 seconds.\n\n"
+            "Reply with one word and I'll act on it: PIZZA means stop, I "
+            "won't email again. CALL means book a 10-minute slot. LATER "
+            "means I circle back in 90 days."
         )
-        subj = "third and final"
+        subj = "one word: pizza"
     return {"subject": subj, "body": body}
 
 
-def _draft_one(step, lead, offer_record, sender_name):
-    """Returns {subject, body}. Falls back to template on any LLM error."""
+def _engagement_block(prior_msgs):
+    """Compact summary of opens/clicks across previously-sent steps.
+    Returned as a string the LLM can use to calibrate this step's angle."""
+    if not prior_msgs:
+        return ""
+    sent = [m for m in prior_msgs if m.get("sent_at")]
+    if not sent:
+        return ""
+    total_opens = sum((m.get("opens") or 0) for m in sent)
+    total_clicks = sum((m.get("clicks") or 0) for m in sent)
+    open_steps = [m["step"] for m in sent if (m.get("opens") or 0) > 0]
+    click_steps = [m["step"] for m in sent if (m.get("clicks") or 0) > 0]
+    if not (total_opens or total_clicks):
+        return (f"Already sent {len(sent)} email(s) "
+                f"(steps {[m['step'] for m in sent]}). NO opens, NO clicks. "
+                "They are ignoring you. Change the angle this email — try a "
+                "stronger pattern interrupt, a different hook, or a more "
+                "personal observation. DO NOT rehash the offer the same way.")
+    bits = [
+        f"Already sent {len(sent)} email(s) (steps {[m['step'] for m in sent]}).",
+        f"opens: {total_opens} across step(s) {open_steps or 'none'}",
+        f"clicks: {total_clicks} across step(s) {click_steps or 'none'}",
+    ]
+    if total_clicks:
+        bits.append("They've engaged with a link. They're warm. This email "
+                    "should acknowledge their interest subtly and propose a "
+                    "concrete, low-friction next step (a 10-min slot, a "
+                    "specific time). Do NOT re-pitch from scratch — they've "
+                    "already heard the offer.")
+    elif total_opens:
+        bits.append("They open but don't reply. They're curious but unconvinced. "
+                    "This email should narrow the question, drop a specific "
+                    "data point or outcome, and ask a yes/no question that "
+                    "is easier to answer than the prior CTAs.")
+    return " ".join(bits)
+
+
+def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
+    """Returns {subject, body}. Falls back to template on any LLM error.
+    `prior_msgs` is a list of already-sent steps' rows (with opens/clicks)
+    used to bake engagement context into the LLM prompt."""
     offer_text = (offer_record or {}).get("offer", "") or ""
     tone = (offer_record or {}).get("tone", "") or ""
     loom_url = (offer_record or {}).get("loom_url", "") or ""
@@ -186,6 +273,8 @@ def _draft_one(step, lead, offer_record, sender_name):
     except ImportError:
         return _fallback_draft(step, lead, offer_text, loom_url, sender_name)
 
+    engagement = _engagement_block(prior_msgs or [])
+
     user_msg = (
         f"{_STEP_INSTRUCTIONS[step]}\n\n"
         f"sender_name: {sender_name}\n"
@@ -193,7 +282,9 @@ def _draft_one(step, lead, offer_record, sender_name):
         f"--- offer (rewrite naturally; never quote verbatim) ---\n{offer_text}\n\n"
         f"--- tone notes ---\n{tone}\n\n"
         f"--- loom_url (only used in step 3) ---\n{loom_url}\n\n"
-        "Output JSON only."
+        + (f"--- prior engagement on this prospect ---\n{engagement}\n\n"
+           if engagement else "")
+        + "Output JSON only."
     )
 
     brief = niche_briefs.get_brief_for_lead(lead, niche=lead.get("niche", ""))
@@ -230,12 +321,69 @@ def _draft_one(step, lead, offer_record, sender_name):
 
 
 def draft_all_steps(lead, niche, sender_name=""):
-    """Pull niche offer record and draft 4 steps. Returns list[{subject, body}]."""
+    """Pull niche offer record and draft all 7 steps. Returns list[{subject, body}]."""
     offer_record = db.get_niche_offer(niche)
     out = []
     for step in range(1, NUM_STEPS + 1):
         out.append(_draft_one(step, lead, offer_record, sender_name))
     return out
+
+
+def _has_offer_or_brief(lead, niche):
+    """A lead is sendable if EITHER a DB niche_offer row exists OR an on-disk
+    brief matches its niche/business_type. Disk briefs include offer copy +
+    tone + templates so they're a complete substitute for the DB record."""
+    if niche and db.get_niche_offer(niche):
+        return True
+    try:
+        return bool(niche_briefs.get_brief_for_lead(lead, niche=niche))
+    except Exception:
+        return False
+
+
+def _lead_snapshot(lead):
+    """Slim dict persisted on the sequence row so each step can be redrafted
+    later with the same lead facts the original draft used."""
+    return {
+        "email": lead.get("email", ""),
+        "business_name": lead.get("business_name", ""),
+        "city": lead.get("city", ""),
+        "niche": lead.get("niche", ""),
+        "rating": lead.get("rating", 0),
+        "review_count": lead.get("review_count", 0),
+        "website": lead.get("website", ""),
+        "business_type": lead.get("business_type", ""),
+    }
+
+
+def _refresh_step_with_engagement(seq, step):
+    """Just before sending step N (where N > 1), redraft it using the latest
+    open/click signals from prior sent steps. No-op for step 1 or when the
+    sequence has no stored lead facts (legacy enrollments)."""
+    if step <= 1:
+        return None
+    facts_json = seq.get("lead_facts_json") or ""
+    if not facts_json:
+        return None
+    try:
+        lead = json.loads(facts_json)
+    except Exception:
+        return None
+    prior = db.list_sent_sequence_messages(seq["id"], before_step=step)
+    if not prior:
+        return None  # nothing to learn from yet
+    offer_record = db.get_niche_offer(lead.get("niche", "") or seq.get("niche", ""))
+    sender_name = db.get_setting("sender_name", "") or ""
+    redraft = _draft_one(step, lead, offer_record, sender_name, prior_msgs=prior)
+    pending = db.get_pending_message(seq["id"], step)
+    if pending and redraft.get("body"):
+        db.update_sequence_message(pending["id"], redraft["subject"], redraft["body"])
+        log.info("seq %s step %s redrafted with engagement context "
+                 "(opens=%s clicks=%s on prior steps)",
+                 seq["id"], step,
+                 sum((m.get("opens") or 0) for m in prior),
+                 sum((m.get("clicks") or 0) for m in prior))
+    return redraft
 
 
 # ─────────────────────────── enqueue ───────────────────────────
@@ -250,8 +398,29 @@ def _add_days_iso(days, base=None):
     return (base + timedelta(days=days)).isoformat()
 
 
+def _schedule_for_step(step, lead, base):
+    """Compute the scheduled-for ISO timestamp for a sequence step.
+
+    Step 1 fires immediately (the operator just clicked Send).
+    Steps 2-7 are snapped to the next preferred-hour weekday in the
+    PROSPECT'S local timezone via send_timing.next_send_at(), so a
+    Sydney plumber gets step 2 at Tue 10am Sydney regardless of when
+    the operator (in IST) clicked Send.
+    """
+    day_offset = STEP_OFFSETS_DAYS[step]
+    earliest = (base or datetime.now(timezone.utc)) + timedelta(days=day_offset)
+    if step == 1:
+        return earliest.isoformat()
+    country = ""
+    try:
+        country = niche_briefs.infer_country(lead) or ""
+    except Exception:
+        pass
+    return send_timing.next_send_at(country, earliest).isoformat()
+
+
 def enqueue_lead(lead, csv_name="", sender_name="", start_at=None):
-    """Create sequence + draft all 4 steps + schedule step 1.
+    """Create sequence + draft all 7 steps + schedule step 1.
 
     `lead` must contain at least: email, business_name, niche.
     Returns (sequence_id, status_message).
@@ -261,9 +430,9 @@ def enqueue_lead(lead, csv_name="", sender_name="", start_at=None):
         return None, "invalid email"
 
     niche = lead.get("niche", "")
-    offer = db.get_niche_offer(niche)
-    if not offer:
-        return None, f"no offer for niche '{niche}' — set one in /offers"
+    if not _has_offer_or_brief(lead, niche):
+        return None, (f"no offer for niche '{niche}' — set one in /offers "
+                      "or drop a matching .md brief in the project root")
 
     sid = db.create_sequence(
         lead_email=email,
@@ -271,6 +440,7 @@ def enqueue_lead(lead, csv_name="", sender_name="", start_at=None):
         niche=niche,
         csv_name=csv_name,
         city=lead.get("city", ""),
+        lead_facts=_lead_snapshot(lead),
     )
     seq = db.get_sequence(sid)
     if seq["current_step"] > 0 or seq["status"] != "active":
@@ -280,13 +450,85 @@ def enqueue_lead(lead, csv_name="", sender_name="", start_at=None):
     base = start_at or datetime.now(timezone.utc)
     for step in range(1, NUM_STEPS + 1):
         d = drafts[step - 1]
-        scheduled = _add_days_iso(STEP_OFFSETS_DAYS[step], base)
+        scheduled = _schedule_for_step(step, lead, base)
         db.upsert_sequence_message(sid, step, d["subject"], d["body"], scheduled)
 
     # Schedule step 1 immediately.
     db.update_sequence(sid, next_send_at=base.isoformat())
     log.info("enqueued sequence %s for %s (niche=%s)", sid, email, niche)
     return sid, "queued"
+
+
+def enqueue_lead_with_first_send(lead, csv_name="", sender_name="",
+                                 override_subject=None, override_body=None):
+    """Auto-enrol path used by /api/outreach/send.
+
+    Creates the sequence row, drafts all 7 steps up-front, sends step 1
+    SYNCHRONOUSLY via Resend, schedules steps 2-7. If override_subject and
+    override_body are provided (operator edited the draft on the Outreach
+    page), step 1 uses those instead of the auto-drafted copy. Steps 2-7
+    are still LLM-drafted from the lead facts.
+
+    Returns dict:
+      {
+        "sequence_id": int | None,
+        "resend_id":  str | None,
+        "status":     "queued" | "already_active" | "error",
+        "error":      str | None,
+      }
+    """
+    email = (lead.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return {"status": "error", "error": "invalid email",
+                "sequence_id": None, "resend_id": None}
+
+    # Idempotency: if an active sequence already exists, do not re-enrol.
+    existing = db.get_active_sequence_by_email(email)
+    if existing:
+        return {"status": "already_active",
+                "sequence_id": existing["id"], "resend_id": None,
+                "error": None}
+
+    niche = lead.get("niche", "")
+    if not _has_offer_or_brief(lead, niche):
+        return {"status": "error",
+                "error": (f"no offer for niche '{niche}' — set one in /offers "
+                          "or drop a matching .md brief in the project root"),
+                "sequence_id": None, "resend_id": None}
+
+    sid = db.create_sequence(
+        lead_email=email, business_name=lead.get("business_name", ""),
+        niche=niche, csv_name=csv_name, city=lead.get("city", ""),
+        lead_facts=_lead_snapshot(lead),
+    )
+    # If create_sequence returned a stale (done/paused/cancelled) row for
+    # this email, reset it to a fresh active enrollment.
+    db.update_sequence(sid, status="active", current_step=0,
+                       paused_reason=None, next_send_at=None)
+
+    drafts = draft_all_steps(lead, niche, sender_name=sender_name)
+    if override_subject and override_body:
+        drafts[0] = {"subject": override_subject, "body": override_body}
+
+    base = datetime.now(timezone.utc)
+    for step in range(1, NUM_STEPS + 1):
+        d = drafts[step - 1]
+        scheduled = _schedule_for_step(step, lead, base)
+        db.upsert_sequence_message(sid, step, d["subject"], d["body"], scheduled)
+
+    # Send step 1 synchronously so the operator sees instant feedback.
+    seq = db.get_sequence(sid)
+    ok, err = _send_step(seq, 1)
+    if not ok:
+        return {"status": "error", "error": err,
+                "sequence_id": sid, "resend_id": None}
+
+    msg1 = db.get_sequence_message(sid, 1) or {}
+    advance_after_send(seq, 1)
+    log.info("auto-enrolled sequence %s for %s (niche=%s, step 1 sent)",
+             sid, email, niche)
+    return {"status": "queued", "sequence_id": sid,
+            "resend_id": msg1.get("resend_id"), "error": None}
 
 
 # ─────────────────────────── send ───────────────────────────
@@ -333,45 +575,76 @@ def _text_to_html(text):
 
 def advance_after_send(seq, step):
     """Update sequence pointer after a successful send. Schedules next step,
-    or marks done after step 4."""
+    or marks done after the final step."""
     if step >= NUM_STEPS:
         db.update_sequence(seq["id"], status="done", current_step=step,
                            next_send_at=None)
         return
     next_step = step + 1
-    delay = STEP_OFFSETS_DAYS[next_step] - STEP_OFFSETS_DAYS[step]
-    db.update_sequence(
-        seq["id"],
-        current_step=step,
-        next_send_at=_add_days_iso(delay),
-    )
+    delay_days = STEP_OFFSETS_DAYS[next_step] - STEP_OFFSETS_DAYS[step]
+    earliest = datetime.now(timezone.utc) + timedelta(days=delay_days)
+    # Snap to business hours in the prospect's tz. Pull country from the
+    # stored lead snapshot when present; fall back to UTC.
+    country = ""
+    facts_json = seq.get("lead_facts_json") or ""
+    if facts_json:
+        try:
+            country = niche_briefs.infer_country(json.loads(facts_json)) or ""
+        except Exception:
+            pass
+    next_iso = send_timing.next_send_at(country, earliest).isoformat()
+    db.update_sequence(seq["id"], current_step=step, next_send_at=next_iso)
 
 
 def tick():
-    """Process all sequences whose next_send_at has elapsed.
+    """Process all sequences whose next_send_at has elapsed. Honors the
+    Resend free-tier daily/monthly caps — when capped, due steps are left
+    queued and re-attempted on the next tick.
 
     Returns dict with counts.
     """
     now = _now_iso()
     due = db.due_sequences(now, limit=50)
-    sent, failed = 0, 0
+    sent, failed, skipped_quota = 0, 0, 0
+
+    daily_cap = int(os.getenv("LEADGEN_DAILY_CAP", "100"))
+    monthly_cap = int(os.getenv("LEADGEN_MONTHLY_CAP", "3000"))
+    quota = db.send_quota_status(daily_cap=daily_cap, monthly_cap=monthly_cap)
+    if quota["daily_blocked"] or quota["monthly_blocked"]:
+        if due:
+            log.info("tick: %d due but quota blocked (%s)", len(due), quota)
+        return {"due": len(due), "sent": 0, "failed": 0,
+                "skipped_quota": len(due), "quota": quota}
+    remaining = quota["today_remaining"]
+
     for seq in due:
         next_step = seq["current_step"] + 1
         if next_step > NUM_STEPS:
             db.update_sequence(seq["id"], status="done", next_send_at=None)
             continue
+        if remaining <= 0:
+            skipped_quota += 1
+            continue  # leave queued for tomorrow
+        # Redraft step >1 with engagement context (opens/clicks from prior
+        # steps) so the email reflects what the prospect has actually done.
+        try:
+            _refresh_step_with_engagement(seq, next_step)
+        except Exception:
+            log.exception("redraft failed seq=%s step=%s — sending pre-drafted version",
+                          seq["id"], next_step)
         ok, err = _send_step(seq, next_step)
         if ok:
             advance_after_send(seq, next_step)
             sent += 1
+            remaining -= 1
         else:
             failed += 1
-            # Permanent error? Pause so we don't hammer.
             if err and ("not configured" in err or "INVALID" in err.upper()):
                 db.update_sequence(seq["id"], status="paused",
                                    paused_reason=f"send error: {err[:120]}",
                                    next_send_at=None)
-    return {"due": len(due), "sent": sent, "failed": failed}
+    return {"due": len(due), "sent": sent, "failed": failed,
+            "skipped_quota": skipped_quota, "quota": quota}
 
 
 # ─────────────────────────── scheduler thread ───────────────────────────
@@ -469,7 +742,26 @@ def record_event(payload):
     event = payload.get("type") or payload.get("event") or ""
     data = payload.get("data") or {}
     resend_id = data.get("email_id") or data.get("id") or ""
-    db.log_email_event(resend_id, event, json.dumps(payload)[:8000])
+    # Resend events carry their own created_at — use it for replay dedupe.
+    created_at = (
+        payload.get("created_at")
+        or data.get("created_at")
+        or payload.get("createdAt")
+        or ""
+    )
+
+    is_new = db.log_email_event(
+        resend_id, event, json.dumps(payload)[:8000], created_at=created_at,
+    )
+
+    if not is_new:
+        # Replay of an event we already processed. Don't re-increment
+        # counters — but still let status promote (idempotent UPDATE).
+        log.info("resend event REPLAY skipped counters rid=%s event=%s ts=%s",
+                 resend_id, event, created_at)
+        return {"ok": True, "event": event, "resend_id": resend_id,
+                "replay": True, "outreach_updated": False,
+                "paused_sequence": None}
 
     paused_sid = None
     metric = _RESEND_EVENT_TO_METRIC.get(event)

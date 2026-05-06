@@ -43,33 +43,16 @@
         <a href="/leads" class="nav-link {{ 'active' if request.endpoint in ('leads_index','leads_detail') else '' }}">
           Leads{% if pending_leads %}<span class="chip chip-gray ml-auto">{{ pending_leads }}</span>{% endif %}
         </a>
-        <a href="/outreach" class="nav-link {{ 'active' if request.endpoint == 'outreach_page' else '' }}">Outreach</a>
+        {% set pending_fail = (sidebar_counts.fail if sidebar_counts and sidebar_counts.fail else 0) %}
+        <a href="/outreach" class="nav-link {{ 'active' if request.endpoint == 'outreach_page' else '' }} {% if pending_fail %}warn{% endif %}">
+          Outreach{% if pending_fail %}<span class="chip chip-red ml-auto">{{ pending_fail }} fail</span>{% endif %}
+        </a>
         <a href="/sequences" class="nav-link {{ 'active' if request.endpoint == 'sequences_page' else '' }}">
           Sequences{% if pending_seq %}<span class="chip chip-gray ml-auto">{{ pending_seq }}</span>{% endif %}
         </a>
 
         <div class="nav-section">System</div>
         <a href="/settings" class="nav-link {{ 'active' if request.endpoint == 'settings_page' else '' }}">Settings</a>
-      </div>
-
-      <div class="mt-auto px-4 py-3" style="border-top: 1px solid var(--line);">
-        <div class="text-[10px] uppercase tracking-wider mb-2" style="color: var(--ink-faint); font-weight: 600;">Connections</div>
-        <div class="conn-row">
-          <span>Google</span>
-          {% if google_connected %}
-            <span class="dot"></span>
-          {% elif has_oauth_config %}
-            <a href="/auth/google" class="dot off" title="Click to connect"></a>
-          {% else %}
-            <span class="dot off"></span>
-          {% endif %}
-        </div>
-        <div class="conn-row"><span>Claude</span><span class="dot{{ '' if claude_enabled else ' off' }}"></span></div>
-        <div class="conn-row"><span>Resend</span><span class="dot{{ '' if resend_enabled else ' off' }}"></span></div>
-        <div class="conn-row"><span>Asana</span><span class="dot{{ '' if asana_enabled else ' off' }}"></span></div>
-        {% if google_connected %}
-          <a href="/auth/disconnect" class="text-[11px] mt-2 inline-block" style="color: var(--ink-mute);">Sign out of Google</a>
-        {% endif %}
       </div>
     </aside>
 

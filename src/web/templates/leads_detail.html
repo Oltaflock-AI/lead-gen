@@ -54,6 +54,41 @@
   </div>
 </div>
 
+{% if campaign and campaign.sent %}
+<section class="n-card mb-5" style="padding: 18px 22px;">
+  <div class="flex items-baseline justify-between mb-3">
+    <div class="n-block-title" style="margin: 0;">Outreach progress</div>
+    <a href="/outreach?csv={{ name }}" class="text-xs" style="color: var(--accent);">→ open campaign view</a>
+  </div>
+  <div class="campaign-grid">
+    <div class="metric-tile">
+      <div class="metric-rate">{{ campaign.sent }}</div>
+      <div class="metric-label">sent</div>
+    </div>
+    <div class="metric-tile metric-tile-accent">
+      <div class="metric-rate">{{ campaign.open_rate }}<span class="metric-pct">%</span></div>
+      <div class="metric-label">open rate</div>
+      <div class="metric-sub">{{ campaign.unique_opened }} opened</div>
+    </div>
+    <div class="metric-tile metric-tile-good">
+      <div class="metric-rate">{{ campaign.click_rate }}<span class="metric-pct">%</span></div>
+      <div class="metric-label">click rate</div>
+      <div class="metric-sub">{{ campaign.unique_clicked }} clicked</div>
+    </div>
+    <div class="metric-tile metric-tile-warm">
+      <div class="metric-rate">{{ campaign.reply_rate }}<span class="metric-pct">%</span></div>
+      <div class="metric-label">reply rate</div>
+      <div class="metric-sub">{{ campaign.replied }} replied</div>
+    </div>
+    <div class="metric-tile metric-tile-warn">
+      <div class="metric-rate">{{ campaign.bounce_rate }}<span class="metric-pct">%</span></div>
+      <div class="metric-label">bounce rate</div>
+      <div class="metric-sub">{{ campaign.bounced }} bounced</div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
 <div id="log-wrap" class="hidden mb-5 n-card overflow-hidden">
   <div class="px-5 py-3 text-sm font-semibold" style="border-bottom: 1px solid var(--border); color: var(--text);">Live log</div>
   <pre id="log" class="n-log h-64 m-5 mt-3"></pre>
@@ -67,6 +102,7 @@
           <th class="text-right">Niche fit</th>
           <th class="text-right">AI lead score</th>
           <th>Email status</th>
+          <th>Outreach</th>
           <th>Business</th>
           <th>Phone</th>
           <th>City</th>
@@ -106,6 +142,24 @@
               <span class="chip chip-gray">unchecked</span>
             {% endif %}
           </td>
+          <td class="cell-outreach-status">
+            {% set st = outreach_status.get((n.email or '')|lower) %}
+            {% if st %}
+              {% if st.status == 'replied' %}<span class="chip chip-status chip-status-replied">replied</span>
+              {% elif st.status == 'clicked' %}<span class="chip chip-status chip-status-clicked">clicked</span>
+              {% elif st.status == 'opened' %}<span class="chip chip-status chip-status-opened">opened</span>
+              {% elif st.status == 'delivered' or st.status == 'sent' %}<span class="chip chip-status chip-status-delivered">delivered</span>
+              {% elif st.status == 'bounced' %}<span class="chip chip-status chip-status-bounced">bounced</span>
+              {% elif st.status == 'failed' %}<span class="chip chip-status chip-status-failed">failed</span>
+              {% else %}<span class="chip chip-status chip-status-sent">{{ st.status }}</span>
+              {% endif %}
+              {% if st.opens or st.clicks %}
+              <div class="text-[10px] mt-0.5" style="color: var(--text-mute);">{{ st.opens or 0 }} open · {{ st.clicks or 0 }} click</div>
+              {% endif %}
+            {% else %}
+              <span class="chip chip-status chip-status-notsent">not sent</span>
+            {% endif %}
+          </td>
           <td>
             <div style="color: var(--text);">{{ n.business_name }}</div>
             {% if r.get('opening_hours_summary') %}
@@ -140,6 +194,35 @@
 
 {% block scripts %}
 <script>
+// Paint the matching row's email-status cell live as each verify event arrives.
+// Maps the `progress` event to the chip + email line in cell-email-status,
+// keyed on data-business (which the worker also includes in `ev.name`).
+function paintEmailStatus(ev) {
+  if (!ev || !ev.name) return;
+  const tr = document.querySelector(`tr[data-business="${(ev.name || '').replace(/"/g, '\\"')}"]`);
+  if (!tr) return;
+  const cell = tr.querySelector('.cell-email-status');
+  if (!cell) return;
+  let chipHtml;
+  if (ev.verified === true) {
+    chipHtml = '<span class="chip chip-green">✓ verified</span>';
+  } else if (ev.email) {
+    chipHtml = '<span class="chip chip-amber">⚠ found</span>';
+  } else if (ev.email === '' || ev.email === null) {
+    chipHtml = '<span class="chip chip-red">no email</span>';
+  } else {
+    chipHtml = '<span class="chip chip-gray">unchecked</span>';
+  }
+  const emailLine = ev.email
+    ? `<div class="text-[10px] mt-0.5 truncate" style="color: var(--text-soft); max-width: 14rem;">${escapeHtml(ev.email)}</div>`
+    : '';
+  cell.innerHTML = chipHtml + emailLine;
+  // Tiny flash so the user sees what just changed.
+  cell.style.transition = 'background-color 0.6s ease';
+  cell.style.backgroundColor = '#fffbe6';
+  setTimeout(() => { cell.style.backgroundColor = ''; }, 700);
+}
+
 async function bulkVerifyEmails(name) {
   document.getElementById('log-wrap').classList.remove('hidden');
   clearLog();
@@ -150,6 +233,7 @@ async function bulkVerifyEmails(name) {
       const tag = ev.verified ? '✓' : (ev.email ? '~' : '✗');
       appendLog(`  [${ev.i}/${ev.total}] ${tag} ${ev.name} — ${ev.email || 'no email'}`);
       status.textContent = `${ev.i}/${ev.total} · ${ev.verified_count} verified · ${ev.found_count} found · ${ev.missing_count} missing`;
+      paintEmailStatus(ev);
     } else if (ev.type === 'done') {
       appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found unverified, ${ev.missing} missing. Persisted ${ev.persisted} rows.`);
       status.innerHTML = `Verified ${ev.verified}/${ev.total}. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;
@@ -167,6 +251,7 @@ async function bulkVerifyExisting(name) {
       const tag = ev.verified ? '✓' : (ev.email ? '~' : (ev.email === '' ? '–' : '✗'));
       appendLog(`  [${ev.i}/${ev.total}] ${tag} ${ev.name} — ${ev.email || 'no email'}`);
       status.textContent = `${ev.i}/${ev.total} · ${ev.verified_count} verified · ${ev.found_count} found · ${ev.missing_count} missing · ${ev.skipped_count} skipped`;
+      paintEmailStatus(ev);
     } else if (ev.type === 'done') {
       appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found unverified, ${ev.missing} missing, ${ev.skipped} skipped (no email). Persisted ${ev.persisted}.`);
       status.innerHTML = `Verified ${ev.verified}/${ev.total - ev.skipped}. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;

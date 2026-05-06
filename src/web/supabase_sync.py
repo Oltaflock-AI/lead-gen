@@ -98,6 +98,68 @@ def sync_once() -> dict:
     return {"pulled": len(rows), "applied": len(applied_ids)}
 
 
+def reconcile_processed(limit: int = 1000) -> dict:
+    """Re-apply already-processed Supabase events to local outreach_log.
+
+    Recovers from the case where an event was poll-pulled BEFORE the
+    legacy `resend_id` backfill ran, so `update_outreach_event` could not
+    find the matching row. Now that the backfill landed, walk every
+    processed event whose resend_id matches an outreach_log row and bring
+    the row up to date.
+
+    Idempotent — re-running this is safe; it short-circuits on rows that
+    already reflect the latest event.
+    """
+    if not is_configured():
+        return {"configured": False}
+
+    from . import db
+
+    url = f"{SUPABASE_URL}/rest/v1/email_events_raw"
+    params = {
+        "processed_at": "not.is.null",
+        "select": "id,resend_id,event_type,payload,received_at",
+        "order": "received_at.asc",
+        "limit": str(limit),
+    }
+    try:
+        r = requests.get(url, headers=_headers(), params=params, timeout=10)
+        r.raise_for_status()
+        rows = r.json()
+    except Exception as e:
+        return {"error": f"fetch failed: {e}"}
+
+    applied = 0
+    skipped = 0
+    no_match = 0
+    for row in rows:
+        rid = row.get("resend_id") or ""
+        event = row.get("event_type") or ""
+        if not rid:
+            skipped += 1
+            continue
+        # Does outreach_log have a row that needs this event?
+        import sqlite3
+        with sqlite3.connect(db.DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            existing = c.execute(
+                "SELECT id, status, opens, clicks, last_event_type "
+                "FROM outreach_log WHERE resend_id = ?", (rid,),
+            ).fetchone()
+        if not existing:
+            no_match += 1
+            continue
+        # Already at this event's status? Skip.
+        if existing["last_event_type"] == event:
+            skipped += 1
+            continue
+        if db.update_outreach_event(rid, event):
+            applied += 1
+            log.info("reconcile applied %s to resend_id=%s", event, rid)
+    return {"scanned": len(rows), "applied": applied,
+            "skipped": skipped, "no_match": no_match}
+
+
 def status() -> dict:
     """For the Settings UI — quick reachability check + queue depth."""
     out = {"configured": is_configured(), "url": SUPABASE_URL or None}

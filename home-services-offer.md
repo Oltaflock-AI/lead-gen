@@ -565,4 +565,16 @@ When generating an email for a prospect, follow this order:
 
 ---
 
+## 9. Sequence Step Copy Principles
+
+The 7-step drip is governed by two laws on top of everything in sections 1–8:
+
+**Law 1: Every step solves "why now."** Step 1 sells the problem. Step 3 sells loss aversion. Step 5 sells arithmetic. Step 7 sells closure. The reader must finish each email knowing why they should reply *today*, not next quarter.
+
+**Law 2: The offer compounds, not the pressure.** By step 5 the risk-reversal should feel inevitable, not desperate. Frame: "the only way you lose money is if it works and you stop us." That sentence ships in step 5 verbatim. Do not weaken it.
+
+Step 6 is the only step that breaks tone. It is allowed to be self-aware and slightly funny. The pizza breakup in step 7 is the second tone break and the only one with a fixed mechanic (reply PIZZA / CALL / LATER). Both are deliberate pattern-interrupts after five formal touches.
+
+---
+
 *Maintained by Khush, OltaFlock AI | Single source of truth for home services cold email*

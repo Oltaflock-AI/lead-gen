@@ -11,19 +11,28 @@
 </div>
 
 {% if disk_briefs %}
-<section class="n-card mb-4" style="padding: 14px 18px;">
-  <div style="font-family: var(--font-serif); font-size: 16px; color: var(--ink); margin-bottom: 6px;">On-disk briefs</div>
-  <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 10px;">
-    Markdown playbooks shipped with the project. Click import to copy into an offer record so the AI writer uses it.
-  </p>
-  <div class="flex flex-wrap gap-2">
-    {% for b in disk_briefs %}
-    <button type="button" class="btn btn-ghost btn-sm"
-            onclick='importDiskBrief("{{ b.filename }}", "{{ b.suggested_niche }}")'>
-      ↥ {{ b.filename }} <span style="color: var(--ink-faint);">· {{ (b.size/1024)|round(1) }} KB → {{ b.suggested_niche }}</span>
-    </button>
-    {% endfor %}
-  </div>
+<section class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+  {% for b in disk_briefs %}
+  <article class="n-card" style="padding: 18px 20px; border-color: var(--accent); border-style: dashed;">
+    <div class="flex items-start justify-between mb-2">
+      <div>
+        <div style="font-family: var(--font-serif); font-size: 18px; font-weight: 500; color: var(--ink);">{{ b.suggested_niche }}</div>
+        <div class="text-xs" style="color: var(--ink-mute);">on-disk · {{ b.filename }}</div>
+      </div>
+      <div class="flex gap-1 text-xs">
+        <button class="btn btn-ghost btn-sm" onclick='editDiskBrief("{{ b.filename }}", "{{ b.suggested_niche }}")'>edit</button>
+      </div>
+    </div>
+    <p class="text-sm" style="color: var(--ink-soft); margin: 0 0 8px;">
+      Markdown playbook shipped with the project ({{ (b.size/1024)|round(1) }} KB). The AI writer uses this whenever you scrape Home Services leads. Edit here to update the file in place — changes apply on the next send.
+    </p>
+    <div class="flex items-center gap-3 text-xs" style="color: var(--ink-mute);">
+      <span style="color: var(--accent);">📄 source-of-truth file</span>
+      <span>·</span>
+      <span>covers offer, country sections, email templates</span>
+    </div>
+  </article>
+  {% endfor %}
 </section>
 {% endif %}
 
@@ -94,7 +103,8 @@
     </div>
   </form>
   <div class="drawer-foot">
-    <button type="button" class="btn btn-primary" onclick="submitOffer()">Save</button>
+    <button type="button" class="btn btn-primary" onclick="submitOffer()" id="save-db-btn" title="Save as a per-niche offer record in the database. The AI writer prefers this over the on-disk file when both exist.">Save as offer</button>
+    <button type="button" class="btn btn-success" onclick="saveBriefToDisk()" id="save-disk-btn" style="display: none;" title="Overwrite the on-disk markdown file. Affects every niche the file covers.">Save to disk file</button>
     <button type="button" class="btn btn-ghost" onclick="resetOfferForm()">Clear</button>
   </div>
 </aside>
@@ -158,16 +168,66 @@ function clearBrief(){
   updateBriefMeta();
 }
 
-async function importDiskBrief(filename, suggestedNiche){
+// Track which on-disk file (if any) the drawer is currently editing.
+// When set, the "Save to disk file" button appears and writes back.
+let _diskFilename = null;
+
+function _setDiskMode(filename) {
+  _diskFilename = filename;
+  document.getElementById('save-disk-btn').style.display = filename ? '' : 'none';
+}
+
+async function editDiskBrief(filename, suggestedNiche) {
   try {
     const r = await fetch(`/api/offers/brief-file/${encodeURIComponent(filename)}`);
     if (!r.ok) { alert('Could not load ' + filename); return; }
     const j = await r.json();
+    resetOfferForm();
+    _setDiskMode(filename);
+    document.getElementById('drawer-title').textContent = `Edit · ${suggestedNiche} (${filename})`;
+    document.getElementById('niche').value = suggestedNiche || '';
+    document.getElementById('brief_md').value = j.markdown || '';
+    updateBriefMeta();
+    openOfferDrawer();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function saveBriefToDisk() {
+  if (!_diskFilename) return;
+  const md = document.getElementById('brief_md').value || '';
+  if (!md.trim()) { alert('Brief is empty — nothing to save.'); return; }
+  if (!confirm(`Overwrite ${_diskFilename}? The change applies to every niche this file covers.`)) return;
+  const btn = document.getElementById('save-disk-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch(`/api/offers/brief-file/${encodeURIComponent(_diskFilename)}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({markdown: md}),
+    });
+    const j = await r.json();
+    if (!r.ok) { alert('Save failed: ' + (j.error || r.status)); return; }
+    alert(`Saved ${j.chars.toLocaleString()} chars to ${j.filename}.`);
+    closeOfferDrawer();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save to disk file';
+  }
+}
+
+async function importDiskBrief(filename, suggestedNiche){
+  // Legacy: copy disk content into a NEW DB offer record (no disk write).
+  try {
+    const r = await fetch(`/api/offers/brief-file/${encodeURIComponent(filename)}`);
+    if (!r.ok) { alert('Could not load ' + filename); return; }
+    const j = await r.json();
+    resetOfferForm();
     document.getElementById('drawer-title').textContent = `New offer · ${suggestedNiche}`;
     document.getElementById('niche').value = suggestedNiche || '';
     document.getElementById('brief_md').value = j.markdown || '';
-    document.getElementById('offer').value = document.getElementById('offer').value
-      || `(See full markdown brief below — covers offer, country variants, email templates.)`;
+    document.getElementById('offer').value =
+      `(See full markdown brief below — covers offer, country variants, email templates.)`;
     updateBriefMeta();
     openOfferDrawer();
   } catch (e) { alert('Failed: ' + e.message); }
@@ -200,6 +260,7 @@ function resetOfferForm(){
   document.getElementById('brief_md').value = '';
   document.getElementById('brief_file').value = '';
   document.getElementById('drawer-title').textContent = 'New offer';
+  _setDiskMode(null);
   updateBriefMeta();
 }
 </script>

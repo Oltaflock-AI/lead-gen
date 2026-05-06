@@ -26,12 +26,14 @@
       <tr>
         <th>Started</th>
         <th>Label</th>
+        <th>Country</th>
+        <th>State</th>
+        <th>City</th>
         <th>Niche</th>
-        <th>Where</th>
         <th class="text-right">Leads</th>
         <th>Status</th>
         <th>CSV</th>
-        <th>Sheet</th>
+        <th title="Empty until you click 'Sync Sheet' on the outreach page for this CSV">Master Sheet</th>
         <th></th>
       </tr>
     </thead>
@@ -39,7 +41,7 @@
       {% for s in scrapes %}
         {% include '_scrape_row.html' %}
       {% else %}
-      <tr><td colspan="9" class="text-xs n-muted">No scrapes yet. Start one from /scrape.</td></tr>
+      <tr><td colspan="11" class="text-xs n-muted">No scrapes yet. Start one from /scrape.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -111,7 +113,7 @@ async function refreshList(){
   const tbody = document.getElementById('scrapes-tbody');
   if (!tbody) return;
   if (!d.scrapes || d.scrapes.length === 0){
-    tbody.innerHTML = '<tr><td colspan="9" class="text-xs n-muted">No scrapes yet. Start one from /scrape.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="text-xs n-muted">No scrapes yet. Start one from /scrape.</td></tr>';
     return;
   }
   tbody.innerHTML = d.scrapes.map(rowHtml).join('');
@@ -124,23 +126,40 @@ function rowHtml(s){
     ? `<a href="/leads/${encodeURIComponent(s.csv_basename)}" class="underline">${escapeHtml(s.csv_basename)}</a>`
     : '<span class="n-muted">—</span>';
   const sheetLink = s.sheet_url
-    ? `<a href="${s.sheet_url}" target="_blank" class="underline">open</a>`
-    : '<span class="n-muted">—</span>';
-  return `<tr>
+    ? `<a href="${s.sheet_url}" target="_blank" class="underline">open ↗</a>`
+    : '<span class="n-muted">not synced</span>';
+  const delBtn = s.status === 'running'
+    ? ''
+    : `<button class="btn btn-ghost btn-sm" onclick="deleteScrape(${s.id})" title="Remove from history (CSV preserved)">delete</button>`;
+  return `<tr data-scrape-id="${s.id}">
     <td class="text-xs">${escapeHtml((s.started_at||'').slice(0,19))}</td>
     <td>
       <div class="font-medium">${escapeHtml(s.label||s.kind||'')}</div>
       <div class="text-xs n-muted">${escapeHtml(s.kind||'')}</div>
     </td>
+    <td class="text-xs">${escapeHtml(s.country||'—')}</td>
+    <td class="text-xs">${escapeHtml(s.state||'—')}</td>
+    <td class="text-xs">${escapeHtml(s.city||'—')}</td>
     <td class="text-xs">${escapeHtml(s.niche||'—')}</td>
-    <td class="text-xs">${escapeHtml((s.city||'') + (s.state ? ', ' + s.state : '') || s.country || '—')}</td>
     <td class="text-right">${s.leads_count || 0}</td>
     <td><span class="chip ${statusChip}">${s.status}</span></td>
     <td class="text-xs">${csvLink}</td>
-    <td class="text-xs">${sheetLink}</td>
-    <td class="text-right"><button class="n-btn-ghost" onclick="showScrape(${s.id})">view</button></td>
+    <td class="text-xs" title="Empty until 'Sync Sheet' is clicked on /outreach.">${sheetLink}</td>
+    <td class="text-right whitespace-nowrap">
+      <button class="btn btn-ghost btn-sm" onclick="showScrape(${s.id})">view</button>
+      ${delBtn}
+    </td>
   </tr>`;
 }
+
+async function deleteScrape(id){
+  if (!confirm(`Remove scrape #${id} from history?\n\nThe CSV file and any leads stay — only the audit log entry is removed.`)) return;
+  const r = await fetch(`/api/scrapes/${id}`, {method: 'DELETE'});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(d.error || ('failed: ' + r.status)); return; }
+  document.querySelector(`tr[data-scrape-id="${id}"]`)?.remove();
+}
+
 setInterval(refreshList, 5000);
 </script>
 {% endblock %}

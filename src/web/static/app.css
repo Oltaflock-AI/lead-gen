@@ -258,8 +258,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
 /* ---------- 7. Buttons ---------- */
 .btn, .n-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 6px 12px;
-  border-radius: var(--r-sm);
+  padding: 8px 16px;
+  border-radius: var(--r-pill);
   font-family: var(--font-sans);
   font-size: var(--fs-md);
   font-weight: 500;
@@ -268,32 +268,75 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
   border: 1px solid var(--line-strong);
   background: var(--bg-elev);
   color: var(--ink);
-  transition: background var(--t-fast) ease, border-color var(--t-fast) ease;
+  transition: background var(--t-fast) ease,
+              border-color var(--t-fast) ease,
+              transform var(--t-fast) ease,
+              box-shadow var(--t-fast) ease;
   text-decoration: none;
   white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(15, 17, 21, 0.04);
 }
-.btn:hover, .n-btn:hover { background: var(--bg-sunken); border-color: var(--ink-mute); }
-.btn:disabled, .n-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:hover, .n-btn:hover {
+  background: var(--bg-sunken);
+  border-color: var(--ink-mute);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(15, 17, 21, 0.08);
+}
+.btn:active, .n-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(15, 17, 21, 0.06);
+}
+.btn:focus-visible, .n-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(22, 100, 184, 0.18);
+}
+.btn:disabled, .n-btn:disabled {
+  opacity: 0.5; cursor: not-allowed;
+  transform: none; box-shadow: none;
+}
 
 .btn-primary, .n-btn-primary {
   background: var(--ink);
   color: var(--bg);
   border-color: var(--ink);
+  box-shadow: 0 2px 6px rgba(15, 17, 21, 0.18);
 }
 .btn-primary:hover, .n-btn-primary:hover {
   background: var(--ink-soft);
   border-color: var(--ink-soft);
+  box-shadow: 0 4px 12px rgba(15, 17, 21, 0.22);
 }
 
 .btn-ghost, .n-btn-ghost {
   background: transparent;
   border-color: transparent;
   color: var(--ink-soft);
-  padding: 4px 8px;
+  padding: 6px 12px;
+  box-shadow: none;
 }
-.btn-ghost:hover, .n-btn-ghost:hover { background: var(--bg-sunken); color: var(--ink); }
+.btn-ghost:hover, .n-btn-ghost:hover {
+  background: var(--bg-sunken);
+  color: var(--ink);
+  box-shadow: none;
+  transform: none;
+}
 
-.btn-sm, .n-btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-sm, .n-btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-lg, .n-btn-lg { padding: 10px 22px; font-size: 14px; }
+
+/* Optional accent variants for "destructive" or "success" intents. */
+.btn-danger {
+  background: #ffe9e9;
+  color: #8a1a1a;
+  border-color: #f4caca;
+}
+.btn-danger:hover { background: #ffd6d6; border-color: #e6a9a9; }
+.btn-success {
+  background: #e2f6e8;
+  color: #0f6b2c;
+  border-color: #b8e6c2;
+}
+.btn-success:hover { background: #cef0d6; border-color: #93d8a3; }
 
 /* ---------- 8. Inputs ---------- */
 .n-input, .n-select, .n-textarea {
@@ -421,6 +464,144 @@ input[type="radio"]:checked::after {
 .chip-red    { background: var(--pink-soft);   border-color: transparent; color: #8a2727; }
 .chip-purple { background: var(--purple-soft); border-color: transparent; color: var(--purple); }
 .chip-gray   { background: var(--bg-sunken);   border-color: var(--line); color: var(--ink-mute); }
+
+/* ---------- Status chips for outreach pipeline ----------
+   Each chip is a distinct color so the table is scannable from across the
+   room: not-sent → sent → delivered → opened → clicked → replied are
+   progressive (cool → warm → bright), with bounced/failed as alerts.
+   A leading colored dot doubles the at-a-distance signal. */
+.chip-status {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 3px 10px 3px 8px;
+  border: 1px solid transparent;
+}
+.chip-status::before {
+  content: "";
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  background: currentColor;
+  flex: none;
+}
+.chip-status-notsent  { background: #f4f4f4; color: #9a9a9a; border-color: #e5e5e5; border-style: dashed; }
+.chip-status-sent     { background: #eef2f7; color: #4a5b73; }
+.chip-status-delivered{ background: #d8e8ff; color: #1d4f9a; }
+.chip-status-opened   { background: #b6e3ff; color: #0f3a78; font-weight: 700; }
+.chip-status-clicked  { background: #c7f5d4; color: #0f6b2c; font-weight: 700; }
+.chip-status-replied  { background: #d8c4ff; color: #4d1f9c; font-weight: 700; box-shadow: 0 0 0 2px rgba(125, 60, 230, 0.18); }
+.chip-status-bounced  { background: #ffd7b3; color: #8a3a08; font-weight: 700; }
+.chip-status-failed   { background: #ffb3b3; color: #8a1a1a; font-weight: 700; }
+.chip-status-delayed  { background: #fff3b3; color: #6a4d00; }
+
+/* ---------- Outreach table compact cells ----------
+   Tightens the per-row inputs so the leads table reads as a proper grid
+   instead of a stack of boxes. Subject + body sit at consistent heights,
+   regenerate buttons collapse into small icon-style affordances. */
+.cell-subject, .cell-body, .cell-refine {
+  vertical-align: top;
+  padding: 8px 10px !important;
+  position: relative;
+}
+.cell-subject { min-width: 240px; }
+.cell-body    { min-width: 360px; }
+.cell-refine  { min-width: 240px; max-width: 280px; }
+
+.n-input-sm {
+  font-size: 13px;
+  padding: 6px 10px !important;
+  width: 100%;
+}
+.n-textarea-tight {
+  font-size: 13px;
+  padding: 8px 10px !important;
+  resize: vertical;
+  min-height: 90px;
+  width: 100%;
+  font-family: var(--font-sans);
+  line-height: 1.45;
+}
+.cell-body .n-textarea-tight { min-height: 110px; }
+
+/* Tiny round icon-style button used for per-cell regenerate.
+   Sits right under its input, low-noise so the row looks clean. */
+.btn-iconlike {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--ink-mute);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background var(--t-fast) ease, color var(--t-fast) ease, border-color var(--t-fast) ease;
+}
+.btn-iconlike:hover {
+  background: var(--bg-sunken);
+  color: var(--ink);
+  border-color: var(--ink-mute);
+}
+.btn-iconlike:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Zebra-stripe + tighter row separators for the leads table. */
+.n-table tbody tr:nth-child(even) { background: var(--bg); }
+.n-table tbody tr:hover { background: var(--bg-sunken); }
+.n-table tbody td { border-top: 1px solid var(--line); }
+
+/* Signature-preview disclosure — single one above the table now. */
+.signature-preview summary::-webkit-details-marker { display: none; }
+.signature-preview[open] summary { color: var(--ink-soft); }
+
+/* ---------- Campaign analytics tiles ----------
+   Big-number scoreboard so each metric is readable from across the room. */
+.campaign-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1080px) {
+  .campaign-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.metric-tile {
+  padding: 18px 20px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  position: relative;
+}
+.metric-tile-accent { background: linear-gradient(180deg, #f4f9ff 0%, var(--bg-elev) 70%); border-color: #c7e0ff; }
+.metric-tile-good   { background: linear-gradient(180deg, #f0fbf2 0%, var(--bg-elev) 70%); border-color: #b8e6c2; }
+.metric-tile-warm   { background: linear-gradient(180deg, #faf2ff 0%, var(--bg-elev) 70%); border-color: #ddc4ff; }
+.metric-tile-warn   { background: linear-gradient(180deg, #fff7ec 0%, var(--bg-elev) 70%); border-color: #ffd9b3; }
+
+.metric-rate {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1.05;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.metric-rate .metric-pct { font-size: 22px; color: var(--ink-soft); margin-left: 2px; }
+.metric-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  color: var(--ink-mute);
+  margin-top: 8px;
+}
+.metric-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---------- 11. Pipeline strip ---------- */
 .pipeline-strip {

@@ -170,6 +170,12 @@ def init_db():
             c.execute("ALTER TABLE niche_offers ADD COLUMN brief_md TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Persist the original lead facts on the sequence so every step can
+        # be redrafted at send time with the latest engagement context.
+        try:
+            c.execute("ALTER TABLE sequences ADD COLUMN lead_facts_json TEXT")
+        except sqlite3.OperationalError:
+            pass
         # Idempotent column adds for outreach_log analytics.
         for ddl in (
             "ALTER TABLE outreach_log ADD COLUMN resend_id TEXT",
@@ -191,6 +197,27 @@ def init_db():
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_outreach_log_csv "
             "ON outreach_log(csv_path, sent_at DESC)"
+        )
+        # Backfill resend_id from the legacy gmail_message_id="resend:<id>"
+        # convention so replayed Resend events can match these rows.
+        c.execute(
+            "UPDATE outreach_log "
+            "SET resend_id = SUBSTR(gmail_message_id, 8) "
+            "WHERE (resend_id IS NULL OR resend_id = '') "
+            "  AND gmail_message_id LIKE 'resend:%'"
+        )
+        # Idempotency for replayed webhook events: each Resend event payload
+        # carries a `created_at`. Dedupe on (resend_id, event, created_at)
+        # so replaying the same event in the Resend dashboard cannot
+        # double-bump opens/clicks counters.
+        try:
+            c.execute("ALTER TABLE email_events ADD COLUMN created_at TEXT")
+        except sqlite3.OperationalError:
+            pass
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_events_unique "
+            "ON email_events(resend_id, event, created_at) "
+            "WHERE resend_id IS NOT NULL AND created_at IS NOT NULL"
         )
         # Clear any legacy seeded placeholder values.
         c.execute("DELETE FROM settings WHERE value IN ('0.02', '500', 'Khush', 'Best,\nKhush')")
@@ -245,7 +272,7 @@ def clear_token():
 
 
 def log_outreach(lead_email, business_name, csv_path, subject, body,
-                 gmail_message_id=None, status="sent", resend_id=None):
+                 gmail_message_id=None, status="delivered", resend_id=None):
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
         c.execute(
@@ -256,6 +283,28 @@ def log_outreach(lead_email, business_name, csv_path, subject, body,
             (lead_email, business_name, csv_path, subject, body, now,
              gmail_message_id, status, resend_id),
         )
+
+
+def delete_failed_outreach(csv_path=None, lead_emails=None):
+    """Remove failed outreach_log rows. Filters:
+      - csv_path:    restrict to a single CSV (None = all CSVs)
+      - lead_emails: list of addresses (None = every failed row in that CSV)
+
+    Returns the count deleted. Used to clean up duplicates that pile up when
+    a retry fails, and to make a single retry collapse to one row per lead.
+    """
+    sql = "DELETE FROM outreach_log WHERE status = 'failed'"
+    args = []
+    if csv_path:
+        sql += " AND csv_path = ?"
+        args.append(csv_path)
+    if lead_emails:
+        placeholders = ",".join("?" * len(lead_emails))
+        sql += f" AND lower(lead_email) IN ({placeholders})"
+        args.extend([(e or "").lower() for e in lead_emails])
+    with _conn() as c:
+        cur = c.execute(sql, args)
+        return cur.rowcount
 
 
 def list_outreach(limit=100, csv_path=None):
@@ -278,7 +327,10 @@ def list_outreach(limit=100, csv_path=None):
 
 # Resend event names → outreach_log update.
 _OUTREACH_EVENT_MAP = {
-    "email.sent":             ("status",      "sent"),
+    # Treat 'sent' (Resend accepted) and 'delivered' (recipient MX accepted)
+    # as the same milestone for UX. The distinction adds noise without an
+    # actionable difference for cold outreach.
+    "email.sent":             ("status",      "delivered"),
     "email.delivered":        ("status",      "delivered"),
     "email.opened":           ("counter",     "opens"),
     "email.clicked":          ("counter",     "clicks"),
@@ -308,12 +360,13 @@ def update_outreach_event(resend_id, event):
         if not row:
             return False
         if kind == "counter":
-            # Bump counter; promote status when it's still "sent".
+            # Bump counter; promote status when it's still pre-engagement.
             new_status_clause = ""
             params = [now, event, row["id"]]
-            if value == "opens" and (row["status"] or "") == "sent":
+            cur_status = row["status"] or ""
+            if value == "opens" and cur_status in ("sent", "delivered"):
                 new_status_clause = ", status = 'opened'"
-            elif value == "clicks" and (row["status"] or "") in ("sent", "opened"):
+            elif value == "clicks" and cur_status in ("sent", "delivered", "opened"):
                 new_status_clause = ", status = 'clicked'"
             elif value == "bounced":
                 new_status_clause = ", status = 'bounced'"
@@ -538,9 +591,13 @@ def delete_niche_offer(niche):
 # ─────────────────────────── sequences ───────────────────────────
 
 
-def create_sequence(lead_email, business_name, niche, csv_name, city=""):
-    """Create a sequence row. Returns id, or existing id if already present."""
+def create_sequence(lead_email, business_name, niche, csv_name, city="",
+                    lead_facts=None):
+    """Create a sequence row. Returns id, or existing id if already present.
+    `lead_facts` is a dict (rating, review_count, website, etc.) — stored as
+    JSON so steps 2-7 can be redrafted at send time with full context."""
     now = datetime.now(timezone.utc).isoformat()
+    facts_json = json.dumps(lead_facts) if lead_facts else None
     with _conn() as c:
         existing = c.execute(
             "SELECT id FROM sequences WHERE lead_email = ?", (lead_email,)
@@ -550,9 +607,10 @@ def create_sequence(lead_email, business_name, niche, csv_name, city=""):
         cur = c.execute(
             "INSERT INTO sequences "
             "(lead_email, business_name, niche, csv_name, city, status, "
-            " current_step, next_send_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 'active', 0, ?, ?, ?)",
-            (lead_email, business_name, niche, csv_name, city, now, now, now),
+            " current_step, next_send_at, created_at, updated_at, lead_facts_json) "
+            "VALUES (?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?)",
+            (lead_email, business_name, niche, csv_name, city, now, now, now,
+             facts_json),
         )
         return cur.lastrowid
 
@@ -580,6 +638,39 @@ def get_sequence_by_email(email):
     with _conn() as c:
         row = c.execute(
             "SELECT * FROM sequences WHERE lead_email = ?", (email,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_active_sequence_by_email(email):
+    """Return the currently-active sequence row for this email, or None.
+
+    Used by the auto-enrol path on /api/outreach/send to skip leads that
+    are already mid-drip (idempotent re-sends of the same campaign).
+    """
+    if not email:
+        return None
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM sequences "
+            "WHERE lower(lead_email) = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (email.strip().lower(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_sequence_message(sequence_id, step):
+    """Return the message row for one (sequence_id, step), or None.
+
+    Unlike `get_pending_message`, this returns the row regardless of status
+    (so callers can read the resend_id after a successful send).
+    """
+    with _conn() as c:
+        row = c.execute(
+            "SELECT * FROM sequence_messages "
+            "WHERE sequence_id = ? AND step = ?",
+            (sequence_id, step),
         ).fetchone()
         return dict(row) if row else None
 
@@ -663,6 +754,31 @@ def get_pending_message(sequence_id, step):
         return dict(row) if row else None
 
 
+def update_sequence_message(message_id, subject, body):
+    """Overwrite a pending step's subject/body just before send so we can
+    inject prior-engagement context into the redraft."""
+    with _conn() as c:
+        c.execute(
+            "UPDATE sequence_messages SET subject = ?, body = ? WHERE id = ?",
+            (subject, body, message_id),
+        )
+
+
+def list_sent_sequence_messages(sequence_id, before_step=None):
+    """Return all already-sent steps on a sequence, with engagement counters,
+    ordered by step. Pass `before_step=N` to limit to steps preceding N."""
+    q = ("SELECT step, subject, sent_at, opens, clicks, replied "
+         "FROM sequence_messages "
+         "WHERE sequence_id = ? AND status = 'sent'")
+    args = [sequence_id]
+    if before_step is not None:
+        q += " AND step < ?"
+        args.append(before_step)
+    q += " ORDER BY step"
+    with _conn() as c:
+        return [dict(r) for r in c.execute(q, args).fetchall()]
+
+
 def pause_sequence_for_email(email, reason):
     """Pause active sequence for a given lead email (used on reply)."""
     now = datetime.now(timezone.utc).isoformat()
@@ -679,14 +795,24 @@ def pause_sequence_for_email(email, reason):
 # ─────────────────────────── email events / webhook ───────────────────────────
 
 
-def log_email_event(resend_id, event, payload_json):
+def log_email_event(resend_id, event, payload_json, created_at=None):
+    """Persist a webhook event row. Returns True when a NEW row was written,
+    False when the (resend_id, event, created_at) tuple was already logged
+    (i.e. the user replayed an event in the Resend dashboard) so callers can
+    skip duplicate counter increments.
+    """
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as c:
-        c.execute(
-            "INSERT INTO email_events (resend_id, event, payload_json, ts) "
-            "VALUES (?, ?, ?, ?)",
-            (resend_id, event, payload_json, now),
-        )
+        try:
+            c.execute(
+                "INSERT INTO email_events (resend_id, event, payload_json, ts, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (resend_id, event, payload_json, now, created_at),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            # idx_email_events_unique blocked a replay of the same event.
+            return False
 
 
 def increment_message_metric(resend_id, field, by=1):
@@ -814,6 +940,14 @@ def get_scrape(scrape_id):
         return dict(row) if row else None
 
 
+def delete_scrape(scrape_id):
+    """Delete a scrape_history row. Does NOT remove the underlying CSV file
+    or any leads — only the audit-log entry. Returns rows affected."""
+    with _conn() as c:
+        cur = c.execute("DELETE FROM scrape_history WHERE id = ?", (scrape_id,))
+        return cur.rowcount
+
+
 def get_scrape_by_job_id(job_id):
     with _conn() as c:
         row = c.execute(
@@ -896,3 +1030,45 @@ def delete_outreach_draft(csv_path, lead_email):
             "DELETE FROM outreach_drafts WHERE csv_path = ? AND lead_email = ?",
             (csv_path, (lead_email or "").lower()),
         )
+
+
+# ─────────────────────────── send quota ───────────────────────────
+
+
+def _send_count_since(iso_threshold):
+    """Count emails actually sent since `iso_threshold`. Combines one-shot
+    outreach (outreach_log) + sequencer steps (sequence_messages)."""
+    with _conn() as c:
+        n_one = c.execute(
+            "SELECT COUNT(*) AS n FROM outreach_log "
+            "WHERE sent_at >= ? AND status NOT IN ('failed')",
+            (iso_threshold,),
+        ).fetchone()["n"]
+        n_seq = c.execute(
+            "SELECT COUNT(*) AS n FROM sequence_messages "
+            "WHERE status = 'sent' AND sent_at >= ?",
+            (iso_threshold,),
+        ).fetchone()["n"]
+        return int(n_one or 0) + int(n_seq or 0)
+
+
+def send_quota_status(daily_cap=100, monthly_cap=3000):
+    """Return today / month-to-date send counts + remaining headroom.
+    Wired to whatever caps you pass; defaults match Resend free tier."""
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    today_n = _send_count_since(today)
+    month_n = _send_count_since(month_start)
+    return {
+        "today": today_n,
+        "today_cap": daily_cap,
+        "today_remaining": max(0, daily_cap - today_n),
+        "today_pct": round(100 * today_n / daily_cap, 1) if daily_cap else 0,
+        "month": month_n,
+        "month_cap": monthly_cap,
+        "month_remaining": max(0, monthly_cap - month_n),
+        "month_pct": round(100 * month_n / monthly_cap, 1) if monthly_cap else 0,
+        "daily_blocked": today_n >= daily_cap,
+        "monthly_blocked": month_n >= monthly_cap,
+    }
