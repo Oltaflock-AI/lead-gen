@@ -68,17 +68,19 @@ EMAIL_RE = re.compile(
     r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 )
 
-# Domains that are never a business's own contact email
+# Domains we never want to surface as a lead's contact email.
+# NOTE: freemail (gmail/yahoo/hotmail/etc) is intentionally NOT here — many
+# small businesses (real-estate agents, HVAC, accountants) publish a Gmail
+# as their only contact address. score_email() penalises freemail so a
+# matching business-domain still beats it on ties.
 JUNK_DOMAINS = {
     "example.com", "test.com", "email.com", "sentry.io",
-    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
-    "aol.com", "icloud.com", "mail.com", "protonmail.com",
-    "yandex.com", "zoho.com",
-    # listing/directory sites — these are the site's own addresses
+    # listing / directory sites — these surface the site's own addresses
     "yelp.com", "bbb.org", "yellowpages.com", "facebook.com",
     "linkedin.com", "twitter.com", "instagram.com",
     "google.com", "googleapis.com", "gstatic.com",
     "mapquest.com", "foursquare.com", "tripadvisor.com",
+    "wixsite.com", "wordpress.com", "squarespace.com",
 }
 
 api_calls = 0
@@ -98,69 +100,73 @@ def find_email(business_name, region="", country="united states"):
     """Search the web for a publicly listed email for a business.
 
     Strategy:
-    1. DuckDuckGo search for "{business} {location} email contact"
-    2. Extract all email addresses from result snippets + titles
-    3. Filter out junk/generic domains
-    4. Verify the best candidate's domain has MX records
+    1. DuckDuckGo — try multiple query phrasings (operators rarely write
+       "email contact" near their address; "contact" or just "{biz} {city}"
+       can surface mailtos the original query missed).
+    2. Extract all email addresses from result snippets, titles, and hrefs.
+    3. Drop directory junk; keep freemail (small businesses use Gmail).
+    4. Score, then MX-verify the top 10 candidates.
     """
-    query = f"{business_name} {region} {country} email contact".strip()
-
-    try:
-        results = ddg.text(query, max_results=5)
-    except Exception:
+    name = (business_name or "").strip()
+    if not name:
         return ""
+    region = (region or "").strip()
+    country = (country or "").strip()
 
-    if not results:
-        return ""
+    queries = [
+        f"{name} {region} {country} email contact",
+        f"{name} contact email",
+        f"{name} {region} contact",
+        f"\"{name}\" email",
+    ]
+    # Strip empties produced by missing region/country.
+    queries = [q.strip() for q in queries if q.strip() and q.strip() != name]
 
-    # Collect all emails from snippets and titles
     candidates = []
-    for r in results:
-        text = f"{r.get('title', '')} {r.get('body', '')} {r.get('href', '')}"
-        found = EMAIL_RE.findall(text)
-        candidates.extend(found)
+    for q in queries:
+        try:
+            results = ddg.text(q, max_results=12) or []
+        except Exception:
+            results = []
+        for r in results:
+            text = f"{r.get('title', '')} {r.get('body', '')} {r.get('href', '')}"
+            candidates.extend(EMAIL_RE.findall(text))
+        if candidates:
+            # Stop early once we have enough material to rank — additional
+            # queries cost time and DDG sometimes rate-limits on rapid runs.
+            if len(candidates) >= 8:
+                break
 
     if not candidates:
         return ""
 
-    # Filter and rank
+    from src.web.email_quality import score_email  # local import: avoid cycle
+
+    seen = set()
     scored = []
     for email in candidates:
-        email = email.lower().strip()
-        domain = email.split("@")[1]
-
-        # Skip junk domains
+        email = email.lower().strip().rstrip(".,;:)")
+        if email in seen or "@" not in email:
+            continue
+        seen.add(email)
+        domain = email.split("@", 1)[1]
         if domain in JUNK_DOMAINS:
             continue
-
-        # Skip very long or suspicious addresses
         if len(email) > 60:
             continue
-
-        # Prefer addresses that look like business contacts
-        local = email.split("@")[0]
-        score = 0
-        if any(w in local for w in ("info", "contact", "office", "admin", "hello", "sales")):
-            score += 3
-        if any(w in local for w in ("support", "service", "help", "team")):
-            score += 2
-
-        # Slight preference for shorter, cleaner addresses
-        score += max(0, 3 - len(local) // 10)
-
-        scored.append((score, email, domain))
+        s, kind, _ = score_email(email, business_name=name)
+        scored.append((s, kind, email, domain))
 
     if not scored:
         return ""
 
-    # Sort by score descending, take best
-    scored.sort(key=lambda x: x[0], reverse=True)
+    # Highest score first; personal beats role on ties.
+    scored.sort(key=lambda x: (x[0], x[1] == "personal"), reverse=True)
 
-    # Verify MX for top candidates (try up to 3)
-    for _, email, domain in scored[:3]:
+    # MX-verify deeper into the candidate list.
+    for _, _, email, domain in scored[:10]:
         if verify_mx(domain):
             return email
-
     return ""
 
 

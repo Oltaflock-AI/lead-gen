@@ -4,8 +4,11 @@ Run: `python -m src.web.app`  →  http://localhost:5001
 """
 import csv
 import json
+import logging
 import os
+import sys
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,11 +23,12 @@ from . import asana as asana_api
 from . import db
 from . import jobs
 from . import metrics
+from . import sequencer
 from .enrich_runner import run_enrich_stream
 from .gmail import check_replies as gmail_check_replies
 from . import resend_send
 from .email_compose import compose as compose_email
-from .personalize import draft_email
+from .personalize import draft_email, draft_emails_batch
 from .scraper import COUNTRY_CITIES, COUNTRY_REGION_CODES, COUNTRY_STATES, NICHE_PRESETS, run_search
 from .scraper_runner import list_scrapers, run_scraper_stream
 from .sheets import SCOPES, add_tab, ensure_master_spreadsheet, update_tab
@@ -33,6 +37,38 @@ from .fitcheck import compute_fit, update_csv_fit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
+
+# ─────────────────────────── logging ───────────────────────────
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+
+def _configure_logging():
+    root = logging.getLogger()
+    if getattr(root, "_lead_gen_configured", False):
+        return
+    root.setLevel(LOG_LEVEL)
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-7s %(name)s [%(threadName)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setFormatter(fmt)
+    fh = RotatingFileHandler(
+        LOG_DIR / "lead-gen.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8",
+    )
+    fh.setFormatter(fmt)
+    root.handlers = [sh, fh]
+    # Tame noisy libs
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
+    root._lead_gen_configured = True
+
+
+_configure_logging()
+log = logging.getLogger("leadgen.app")
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24).hex())
@@ -49,6 +85,19 @@ os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 db.init_db()
+# Any scrape that was 'running' when Flask was killed is now stale (its
+# in-memory worker thread is gone). Mark such rows so they show up correctly
+# in the history view instead of forever appearing 'running'.
+_orphans = db.mark_orphan_scrapes_interrupted()
+if _orphans:
+    logging.getLogger("leadgen.app").warning(
+        "marked %d orphan scrape(s) as interrupted on startup", _orphans,
+    )
+
+# Start the email-sequence scheduler in a daemon thread (idempotent).
+# Disable with LEADGEN_SCHEDULER=0 if you want to run ticks manually only.
+if os.getenv("LEADGEN_SCHEDULER", "1") not in ("0", "false", "no"):
+    sequencer.start_scheduler()
 
 
 # ─────────────────────────── helpers ───────────────────────────
@@ -85,14 +134,19 @@ def _slug(s):
 
 
 INTERACTIVE_FIELDNAMES = [
-    "Business Name", "City", "Address", "Phone", "Email", "Email Verified",
+    "Business Name", "City", "Address", "Phone",
+    "Email", "Email Verified", "Email Kind", "Email Legit", "Email SMTP",
     "Rating", "Reviews", "Business Type", "Google Maps URL",
 ]
 
 
 def _save_interactive_csv(leads, niche, country):
     """Append leads to data/outputs/interactive_<niche>_<country>.csv.
-    Creates the file with a header row if it doesn't exist yet.
+
+    If the file exists already, honor its (possibly widened) header so each
+    appended row writes one cell per column. Without this guard, downstream
+    enrichment / AI-score steps that add columns leave new scrape rows
+    shorter than the header and DictReader silently shifts every value left.
     Returns the absolute path written.
     """
     if not leads:
@@ -100,13 +154,41 @@ def _save_interactive_csv(leads, niche, country):
     basename = f"interactive_{_slug(niche)}_{_slug(country)}.csv"
     path = PROJECT_ROOT / "data" / "outputs" / basename
     path.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not path.exists()
+
+    if path.exists():
+        with open(path, newline="", encoding="utf-8") as f:
+            try:
+                existing_header = next(csv.reader(f))
+            except StopIteration:
+                existing_header = []
+        # Use the existing header verbatim, extending only with canonical
+        # fields it doesn't yet carry. Never re-order existing columns.
+        fieldnames = list(existing_header)
+        for col in INTERACTIVE_FIELDNAMES:
+            if col not in fieldnames:
+                fieldnames.append(col)
+        new_file = False
+
+        # If we widened the schema, rewrite the file with the new header so
+        # every row matches the new column count.
+        if fieldnames != existing_header:
+            with open(path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                w.writeheader()
+                for row in rows:
+                    w.writerow({k: row.get(k, "") for k in fieldnames})
+    else:
+        fieldnames = list(INTERACTIVE_FIELDNAMES)
+        new_file = True
+
     with open(path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=INTERACTIVE_FIELDNAMES, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         if new_file:
             writer.writeheader()
         for l in leads:
-            writer.writerow({k: l.get(k, "") for k in INTERACTIVE_FIELDNAMES})
+            writer.writerow({k: l.get(k, "") for k in fieldnames})
     return str(path)
 
 
@@ -167,17 +249,55 @@ def _sse(payload):
 
 @app.route("/")
 def dashboard():
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     settings = db.get_settings()
     outreach = db.outreach_stats()
     summary = metrics.dashboard_summary(settings, outreach)
     recent = db.list_outreach(limit=10)
-    cached_forecast = db.load_forecast("dashboard")
+
+    # Sent today / niches today (from outreach log).
+    today_prefix = _dt.utcnow().strftime("%Y-%m-%d")
+    sent_today_rows = [r for r in db.list_outreach(limit=500) if (r.get("sent_at") or "").startswith(today_prefix)]
+    summary["sent_today"] = len(sent_today_rows)
+    summary["niches_today"] = 0  # outreach_log lacks niche column; placeholder
+
+    # Today's queue — active sequences with next_send_at in next 24h.
+    now = _dt.now(_tz.utc)
+    horizon = now + _td(hours=24)
+    active_seq = db.list_sequences(status="active", limit=500)
+    today_queue = []
+    step_labels = {1: "Cold", 2: "Bump", 3: "Loom", 4: "Breakup"}
+    for s in active_seq:
+        nxt = (s.get("next_send_at") or "").strip()
+        if not nxt:
+            continue
+        try:
+            ts = _dt.fromisoformat(nxt.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_tz.utc)
+        except Exception:
+            continue
+        if now <= ts <= horizon:
+            today_queue.append({
+                "when": ts.strftime("%H:%M"),
+                "business_name": s.get("business_name"),
+                "lead_email": s.get("lead_email"),
+                "niche": s.get("niche"),
+                "step": (s.get("current_step") or 0) + 1,
+                "step_label": step_labels.get((s.get("current_step") or 0) + 1, ""),
+            })
+    today_queue.sort(key=lambda q: q["when"])
+    summary["queued_today"] = len(today_queue)
+
+    today_label = _dt.utcnow().strftime("%A, %b %-d")
+
     return render_template(
         "dashboard.html",
         summary=summary,
         recent=recent,
         settings=settings,
-        cached_forecast=cached_forecast,
+        today_queue=today_queue[:20],
+        today_label=today_label,
         **_ctx(),
     )
 
@@ -234,16 +354,39 @@ def outreach_page():
     selected_path = _safe_csv_path(csv_name) if csv_name else None
     rows = []
     fieldnames = []
+    drafts_by_email = {}
     if selected_path:
         fieldnames, rows = metrics.read_csv_with_scores(selected_path)
         rows = [r for r in rows if r["_normalized"]["email"]]
-    log = db.list_outreach(limit=50)
+        # Pull existing drafts so the table cells pre-fill on reload.
+        for d in db.get_outreach_drafts(csv_name):
+            drafts_by_email[d["lead_email"]] = d
+    log = db.list_outreach(limit=50, csv_path=csv_name) if csv_name else db.list_outreach(limit=50)
+    campaign = db.outreach_campaign_summary(csv_name) if csv_name else db.outreach_campaign_summary()
+    status_by_email = db.outreach_status_by_email(csv_name)
+    settings = db.get_settings()
+    sig_lines = []
+    if settings.get("sender_name"):
+        sig_lines.append(settings["sender_name"])
+    title, company = settings.get("sender_title", ""), settings.get("company_name", "")
+    if title and company:
+        sig_lines.append(f"{title}, {company}")
+    elif company:
+        sig_lines.append(company)
+    if settings.get("website_url"):
+        sig_lines.append(settings["website_url"])
+    if settings.get("booking_url"):
+        sig_lines.append(f"Book a call: {settings['booking_url']}")
     return render_template(
         "outreach.html",
         all_csvs=metrics.list_csvs(),
         selected=csv_name,
         rows=rows,
         log=log,
+        drafts_by_email=drafts_by_email,
+        signature_preview=sig_lines,
+        campaign=campaign,
+        status_by_email=status_by_email,
         sheet=db.get_sheet_for_csv(csv_name) if csv_name else None,
         **_ctx(),
     )
@@ -327,15 +470,27 @@ def api_niche_types(niche):
 def api_scrape_canonical(key):
     label = f"Canonical scraper · {key}"
     jid = jobs.create_job("canonical_scrape", label)
+    scrape_id = db.record_scrape_start(jid, "canonical_scrape", label, {"key": key})
 
     def worker():
-        for line in run_scraper_stream(key):
-            jobs.append(jid, {"type": "log", "line": line})
-        jobs.append(jid, {"type": "done"})
-        jobs.finish(jid, result={"key": key})
+        try:
+            for line in run_scraper_stream(key):
+                jobs.append(jid, {"type": "log", "line": line})
+            jobs.append(jid, {"type": "done"})
+            jobs.finish(jid, result={"key": key})
+            j = jobs.get(jid)
+            db.record_scrape_finish(
+                scrape_id, "done",
+                events=(j or {}).get("events", []),
+            )
+        except Exception as e:
+            db.record_scrape_finish(scrape_id, "failed",
+                                    events=(jobs.get(jid) or {}).get("events", []),
+                                    error=e)
+            raise
 
     jobs.run_in_thread(jid, worker)
-    return jsonify({"job_id": jid, "label": label})
+    return jsonify({"job_id": jid, "label": label, "scrape_id": scrape_id})
 
 
 @app.route("/api/scrape/interactive", methods=["POST"])
@@ -377,6 +532,55 @@ def api_scrape_interactive():
 
     label = f"Scrape · {niche} · {city or state}"
     jid = jobs.create_job("interactive_scrape", label)
+    scrape_id = db.record_scrape_start(jid, "interactive_scrape", label, {
+        "niche": niche, "country": country, "state": state, "city": city,
+        "business_types": business_types,
+        "target_leads": target_leads,
+        "min_reviews": min_reviews, "min_rating": min_rating,
+        "require_no_website": require_no_website,
+        "verify_emails": verify_emails,
+    })
+    log.info(
+        "scrape job %s (history#%s) start: niche=%r country=%s state=%s city=%s "
+        "types=%s min_reviews=%d min_rating=%.1f target=%d "
+        "require_no_website=%s verify_emails=%s internal_target=%d",
+        jid, scrape_id, niche, country, state, city, business_types,
+        min_reviews, min_rating, target_leads,
+        require_no_website, verify_emails, internal_target,
+    )
+
+    def on_event(kind, payload):
+        """Bridge run_search diagnostics → job event log + Python logger."""
+        if kind == "search_start":
+            line = (
+                f"▶ searching {payload['cities']} cities × {payload['types']} types "
+                f"(target {payload['target']}, region {payload['region']})"
+            )
+        elif kind == "query_start":
+            line = f"  → query: {payload['query']} (kept so far: {payload['leads_so_far']})"
+        elif kind == "query_done":
+            line = (
+                f"  ✓ {payload['city']} / {payload['type']} — "
+                f"{payload['raw']} raw, {payload['kept']} kept "
+                f"(total {payload['total_kept']})"
+            )
+        elif kind == "query_error":
+            line = (
+                f"  ✗ API error on {payload.get('query','?')} — "
+                f"status={payload.get('status')} reason={payload.get('reason')} "
+                f"{payload.get('body','')[:160]}"
+            )
+            log.error("scrape job %s api error: %s", jid, payload)
+        elif kind == "search_end":
+            line = (
+                f"■ search end — kept {payload['kept']} of {payload['raw']} raw "
+                f"({payload['filtered']} filtered, {payload['api_calls']} api calls); "
+                f"filters={payload['filter_counts']}"
+            )
+            log.info("scrape job %s search_end: %s", jid, payload)
+        else:
+            line = f"  · {kind}: {payload}"
+        jobs.append(jid, {"type": "log", "line": line})
 
     def worker():
         leads = []
@@ -390,6 +594,7 @@ def api_scrape_interactive():
             min_rating=min_rating,
             target_leads=internal_target,
             require_no_website=require_no_website,
+            on_event=on_event,
         ):
             if verify_emails:
                 v = verify_lead_email(
@@ -397,19 +602,34 @@ def api_scrape_interactive():
                     current_email="",
                     region=lead.get("City", ""),
                     country=country,
+                    # Keep role accounts (info@, contact@) — they're often the
+                    # ONLY published address for small businesses. The operator
+                    # can filter later if needed.
+                    drop_role=False,
                 )
-                if not v.get("email"):
-                    # Drop leads with no email when the user asked for emails-only.
+                # Accept any email whose MX resolves. SMTP probes are flaky
+                # behind residential ISPs (port 25 blocked) so requiring full
+                # `legit` would silently drop most otherwise-valid leads.
+                if not v.get("email") or not v.get("mx_ok"):
+                    # Drop leads with no legit email when user asked for emails-only.
+                    # 'role' / 'disposable' / failed-SMTP all fall here.
                     skipped_no_email += 1
+                    why = v.get("dropped") or (
+                        "no email" if not v.get("email")
+                        else f"smtp={v.get('smtp_check')}"
+                    )
                     jobs.append(jid, {
                         "type": "log",
-                        "line": f"  ↷ skip {lead.get('Business Name', '')} — no email found",
+                        "line": f"  ↷ skip {lead.get('Business Name', '')} — {why}",
                     })
                     if len(leads) >= target_leads:
                         break
                     continue
                 lead["Email"] = v["email"]
                 lead["Email Verified"] = "yes" if v.get("verified") else "found"
+                lead["Email Kind"] = v.get("kind", "")
+                lead["Email Legit"] = "yes" if v.get("legit") else "no"
+                lead["Email SMTP"] = v.get("smtp_check", "")
 
             leads.append(lead)
             # Override the progress numerator to count only kept leads, so the
@@ -434,12 +654,45 @@ def api_scrape_interactive():
             "csv_path": csv_path,
             "csv_basename": Path(csv_path).name if csv_path else None,
             "sheet": sheet_info,
+            "skipped_no_email": skipped_no_email,
         }
+        log.info(
+            "scrape job %s done: kept=%d skipped_no_email=%d csv=%s sheet=%s",
+            jid, len(leads), skipped_no_email,
+            Path(csv_path).name if csv_path else None,
+            (sheet_info or {}).get("tab_title"),
+        )
+        if not leads:
+            jobs.append(jid, {
+                "type": "log",
+                "line": "⚠ scrape finished with 0 leads — check filter thresholds, API key, "
+                        "or query results above for error details",
+            })
         jobs.append(jid, {"type": "done", **{k: v for k, v in result.items() if k != "leads"}})
         jobs.finish(jid, result=result)
 
-    jobs.run_in_thread(jid, worker)
-    return jsonify({"job_id": jid, "label": label})
+        # Persist a snapshot of this scrape so it survives Flask restart.
+        db.record_scrape_finish(
+            scrape_id, "done",
+            leads_count=len(leads),
+            csv_basename=Path(csv_path).name if csv_path else None,
+            sheet_url=(sheet_info or {}).get("sheet_url"),
+            events=(jobs.get(jid) or {}).get("events", []),
+        )
+
+    def _wrapped():
+        try:
+            worker()
+        except Exception as e:
+            db.record_scrape_finish(
+                scrape_id, "failed",
+                events=(jobs.get(jid) or {}).get("events", []),
+                error=e,
+            )
+            raise
+
+    jobs.run_in_thread(jid, _wrapped)
+    return jsonify({"job_id": jid, "label": label, "scrape_id": scrape_id})
 
 
 # ─────────────────────────── api: enrich ───────────────────────────
@@ -476,14 +729,282 @@ def api_enrich():
 def api_outreach_preview():
     data = request.json or {}
     leads = data.get("leads", [])
+    csv_name = (data.get("csv_name") or "").strip()
+    force = bool(data.get("force"))
     sender = db.get_setting("sender_name", "") or ""
-    drafts = []
-    for lead in leads:
-        norm = metrics.normalize_lead(lead) if not lead.get("_normalized") else lead.get("_normalized")
-        d = draft_email(norm, sender_name=sender)
-        d["lead"] = norm
-        drafts.append(d)
-    return jsonify({"drafts": drafts, "personalized_engine": "claude" if ANTHROPIC_API_KEY else "template"})
+
+    norms = [
+        (lead.get("_normalized") if lead.get("_normalized") else metrics.normalize_lead(lead))
+        for lead in leads
+    ]
+
+    # Skip leads that already have a saved draft (unless `force`).
+    cached = {}
+    to_generate = []
+    to_generate_idx = []
+    if csv_name and not force:
+        for d in db.get_outreach_drafts(csv_name):
+            cached[d["lead_email"]] = d
+
+    out = [None] * len(norms)
+    for i, n in enumerate(norms):
+        em = (n.get("email") or "").lower()
+        if em in cached and not force:
+            c = cached[em]
+            out[i] = {
+                "subject": c["subject"], "body": c["body"],
+                "personalized": True, "lead": n, "cached": True,
+            }
+        else:
+            to_generate.append(n)
+            to_generate_idx.append(i)
+
+    t0 = datetime.now()
+    if to_generate:
+        fresh = draft_emails_batch(to_generate, sender_name=sender)
+        engine = "claude" if ANTHROPIC_API_KEY else "template"
+        for i, d in zip(to_generate_idx, fresh):
+            d["cached"] = False
+            out[i] = d
+            if csv_name and d.get("body"):
+                db.upsert_outreach_draft(
+                    csv_path=csv_name,
+                    lead_email=(d["lead"].get("email") or "").lower(),
+                    subject=d.get("subject", ""),
+                    body=d.get("body", ""),
+                    business_name=d["lead"].get("business_name", ""),
+                    engine=engine,
+                )
+    elapsed = (datetime.now() - t0).total_seconds()
+    log.info("outreach preview csv=%s total=%d generated=%d cached=%d in %.1fs",
+             csv_name, len(out), len(to_generate), len(cached) - sum(
+                 1 for x in out if not x or not x.get("cached")), elapsed)
+    return jsonify({
+        "drafts": out,
+        "personalized_engine": "claude" if ANTHROPIC_API_KEY else "template",
+        "elapsed_sec": round(elapsed, 2),
+        "generated": len(to_generate),
+        "from_cache": sum(1 for x in out if x and x.get("cached")),
+    })
+
+
+@app.route("/api/outreach/draft", methods=["POST"])
+def api_outreach_draft_save():
+    """Persist user edits to a draft (subject/body) without re-generating."""
+    data = request.json or {}
+    csv_name = (data.get("csv_name") or "").strip()
+    lead_email = (data.get("lead_email") or "").strip().lower()
+    if not csv_name or not lead_email:
+        return jsonify({"error": "csv_name and lead_email required"}), 400
+    db.upsert_outreach_draft(
+        csv_path=csv_name,
+        lead_email=lead_email,
+        subject=(data.get("subject") or "").strip(),
+        body=(data.get("body") or "").strip(),
+        business_name=(data.get("business_name") or "").strip(),
+        engine="manual",
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/outreach/refine", methods=["POST"])
+def api_outreach_refine():
+    """Apply a user instruction to an existing draft. Cheap, fast, persists."""
+    data = request.json or {}
+    csv_name = (data.get("csv_name") or "").strip()
+    lead = data.get("lead") or {}
+    norm = lead.get("_normalized") or metrics.normalize_lead(lead) if lead else {}
+    instruction = (data.get("instruction") or "").strip()
+    current_subject = (data.get("subject") or "").strip()
+    current_body = (data.get("body") or "").strip()
+
+    if not instruction:
+        return jsonify({"error": "instruction required"}), 400
+    if not current_body:
+        return jsonify({"error": "no draft to refine"}), 400
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 400
+
+    try:
+        from anthropic import Anthropic
+        from .personalize import SYSTEM_PROMPT, BATCH_MODEL, BATCH_MAX_TOKENS
+        from . import niche_briefs
+    except Exception as e:
+        return jsonify({"error": f"refine setup failed: {e}"}), 500
+
+    sender = db.get_setting("sender_name", "") or ""
+    brief = niche_briefs.get_brief_for_lead(norm) if norm else None
+    sys_blocks = [{"type": "text", "text": SYSTEM_PROMPT,
+                   "cache_control": {"type": "ephemeral"}}]
+    if brief:
+        sys_blocks.extend(niche_briefs.system_blocks(brief))
+
+    facts = (
+        f"business_name: {norm.get('business_name','')}\n"
+        f"city: {norm.get('city','')}\n"
+        f"business_type: {norm.get('business_type','')}\n"
+        f"google_rating: {norm.get('rating',0)}\n"
+        f"review_count: {norm.get('review_count',0)}\n"
+        f"sender_name: {sender}\n"
+    )
+    user_msg = (
+        "Refine the cold email below using the user instruction. Keep it "
+        "compliant with all formatting rules. Output JSON only.\n\n"
+        f"--- lead facts ---\n{facts}\n"
+        f"--- current subject ---\n{current_subject}\n\n"
+        f"--- current body ---\n{current_body}\n\n"
+        f"--- user instruction ---\n{instruction}\n"
+    )
+
+    try:
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=BATCH_MODEL,
+            max_tokens=BATCH_MAX_TOKENS,
+            system=sys_blocks,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        text = "".join(b.text for b in resp.content
+                       if getattr(b, "type", "") == "text").strip()
+        import re as _re, json as _json
+        m = _re.search(r"\{.*\}", text, _re.DOTALL)
+        if not m:
+            return jsonify({"error": "no JSON in refine output"}), 500
+        parsed = _json.loads(m.group(0))
+        new_subject = (parsed.get("subject") or current_subject)[:120]
+        new_body = (parsed.get("body") or "").strip()
+        if not new_body:
+            return jsonify({"error": "empty body returned"}), 500
+    except Exception as e:
+        log.exception("refine failed")
+        return jsonify({"error": str(e)}), 500
+
+    if csv_name and norm.get("email"):
+        db.upsert_outreach_draft(
+            csv_path=csv_name,
+            lead_email=norm["email"].lower(),
+            subject=new_subject,
+            body=new_body,
+            business_name=norm.get("business_name", ""),
+            engine="claude-refine",
+        )
+    return jsonify({"subject": new_subject, "body": new_body})
+
+
+@app.route("/api/outreach/regen-field", methods=["POST"])
+def api_outreach_regen_field():
+    """Regenerate ONLY subject OR ONLY body for a single lead. Saves credits.
+
+    Payload: { csv_name, lead, field: 'subject'|'body', subject, body }
+    """
+    data = request.json or {}
+    csv_name = (data.get("csv_name") or "").strip()
+    lead = data.get("lead") or {}
+    norm = lead.get("_normalized") or metrics.normalize_lead(lead) if lead else {}
+    field = (data.get("field") or "").strip().lower()
+    current_subject = (data.get("subject") or "").strip()
+    current_body = (data.get("body") or "").strip()
+
+    if field not in ("subject", "body"):
+        return jsonify({"error": "field must be 'subject' or 'body'"}), 400
+    if not norm.get("email"):
+        return jsonify({"error": "lead missing email"}), 400
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 400
+
+    try:
+        from anthropic import Anthropic
+        from .personalize import SYSTEM_PROMPT, BATCH_MODEL
+        from . import niche_briefs
+    except Exception as e:
+        return jsonify({"error": f"setup failed: {e}"}), 500
+
+    sender = db.get_setting("sender_name", "") or ""
+    brief = niche_briefs.get_brief_for_lead(norm)
+    sys_blocks = [{"type": "text", "text": SYSTEM_PROMPT,
+                   "cache_control": {"type": "ephemeral"}}]
+    if brief:
+        sys_blocks.extend(niche_briefs.system_blocks(brief))
+
+    facts = (
+        f"business_name: {norm.get('business_name','')}\n"
+        f"city: {norm.get('city','')}\n"
+        f"business_type: {norm.get('business_type','')}\n"
+        f"google_rating: {norm.get('rating',0)}\n"
+        f"review_count: {norm.get('review_count',0)}\n"
+        f"sender_name: {sender}\n"
+    )
+
+    if field == "subject":
+        user_msg = (
+            "Generate a NEW subject line ONLY. Quirky, curiosity-driven, "
+            "pattern-interrupt — must follow all subject rules. Keep the body "
+            "EXACTLY as given. Output JSON.\n\n"
+            f"--- lead facts ---\n{facts}\n"
+            f"--- current subject (replace this) ---\n{current_subject}\n\n"
+            f"--- current body (do not change) ---\n{current_body}\n"
+        )
+        max_tokens = 80
+    else:
+        user_msg = (
+            "Rewrite the BODY ONLY for this prospect, keeping the subject "
+            "exactly as given. Hyper-personalize using the lead facts. "
+            "Follow the formatting rules strictly. Output JSON with the "
+            "unchanged subject and the new body.\n\n"
+            f"--- lead facts ---\n{facts}\n"
+            f"--- subject (do not change) ---\n{current_subject}\n\n"
+            f"--- current body (replace this) ---\n{current_body or '(empty)'}\n"
+        )
+        max_tokens = 500
+
+    try:
+        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=BATCH_MODEL,
+            max_tokens=max_tokens,
+            system=sys_blocks,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        text = "".join(b.text for b in resp.content
+                       if getattr(b, "type", "") == "text").strip()
+        import re as _re, json as _json
+        m = _re.search(r"\{.*\}", text, _re.DOTALL)
+        if not m:
+            return jsonify({"error": "no JSON in regen output"}), 500
+        parsed = _json.loads(m.group(0))
+    except Exception as e:
+        log.exception("regen-field failed")
+        return jsonify({"error": str(e)}), 500
+
+    new_subject = (parsed.get("subject") or current_subject)[:120].strip()
+    new_body = (parsed.get("body") or current_body).strip()
+    # Enforce that only the requested field actually changed.
+    if field == "subject":
+        new_body = current_body
+    else:
+        new_subject = current_subject or new_subject
+
+    if csv_name:
+        db.upsert_outreach_draft(
+            csv_path=csv_name,
+            lead_email=norm["email"].lower(),
+            subject=new_subject,
+            body=new_body,
+            business_name=norm.get("business_name", ""),
+            engine=f"claude-regen-{field}",
+        )
+    return jsonify({"subject": new_subject, "body": new_body, "field": field})
+
+
+@app.route("/api/outreach/draft/clear", methods=["POST"])
+def api_outreach_draft_clear():
+    data = request.json or {}
+    csv_name = (data.get("csv_name") or "").strip()
+    lead_email = (data.get("lead_email") or "").strip().lower()
+    if not csv_name or not lead_email:
+        return jsonify({"error": "csv_name and lead_email required"}), 400
+    db.delete_outreach_draft(csv_name, lead_email)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/outreach/check-replies", methods=["POST"])
@@ -522,8 +1043,11 @@ def api_outreach_send():
         text_body, html_body = compose_email(body, settings)
         try:
             mid = resend_send.send_email(to_addr, subject, text_body, html_body)
-            db.log_outreach(to_addr, business_name, csv_path, subject, body,
-                            gmail_message_id=f"resend:{mid}", status="sent")
+            db.log_outreach(
+                to_addr, business_name, csv_path, subject, body,
+                gmail_message_id=f"resend:{mid}", status="sent",
+                resend_id=mid,
+            )
             results.append({"to": to_addr, "ok": True, "message_id": mid})
         except Exception as e:
             db.log_outreach(to_addr, business_name, csv_path, subject, body,
@@ -646,6 +1170,9 @@ def api_verify_email():
                 path, business_name,
                 new_email=result.get("email", ""),
                 verified=result.get("verified"),
+                kind=result.get("kind"),
+                legit=result.get("legit"),
+                smtp_check=result.get("smtp_check"),
             )
     result["persisted"] = persisted
     return jsonify(result)
@@ -690,6 +1217,9 @@ def api_bulk_verify_emails():
                 ok = update_csv_email(
                     path, name, new_email=v.get("email", current),
                     verified=v.get("verified"),
+                    kind=v.get("kind"),
+                    legit=v.get("legit"),
+                    smtp_check=v.get("smtp_check"),
                 )
                 if ok:
                     persisted += 1
@@ -708,6 +1238,85 @@ def api_bulk_verify_emails():
             "verified": verified,
             "found": found,
             "missing": missing,
+            "persisted": persisted,
+        }
+        jobs.append(jid, {"type": "done", **result})
+        jobs.finish(jid, result=result)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
+
+
+@app.route("/api/bulk-verify-existing", methods=["POST"])
+def api_bulk_verify_existing():
+    """MX/SMTP-verify only emails already present in the CSV. Skips rows
+    with no email and skips DDG search. Persists verification flags back.
+    """
+    data = request.json or {}
+    csv_name = data.get("csv_name", "")
+    path = _safe_csv_path(csv_name)
+    if not path:
+        return jsonify({"error": f"CSV not found: {csv_name}"}), 404
+
+    _, rows = metrics.read_csv_with_scores(path)
+    total = len(rows)
+
+    label = f"Verify existing emails · {csv_name}"
+    jid = jobs.create_job("bulk_verify_existing", label)
+
+    def worker():
+        verified, found, missing, persisted, skipped = 0, 0, 0, 0, 0
+        for i, r in enumerate(rows, 1):
+            n = r["_normalized"]
+            name = n["business_name"]
+            current = n["email"]
+            region = n["city"]
+            if not current or "@" not in current:
+                skipped += 1
+                jobs.append(jid, {
+                    "type": "progress",
+                    "i": i, "total": total,
+                    "name": name, "email": "", "verified": None,
+                    "verified_count": verified,
+                    "found_count": found,
+                    "missing_count": missing,
+                    "skipped_count": skipped,
+                })
+                continue
+            v = verify_lead_email(name, current, region, "", skip_search=True)
+            if v.get("verified"):
+                verified += 1
+            elif v.get("email"):
+                found += 1
+            else:
+                missing += 1
+            ok = update_csv_email(
+                path, name,
+                new_email=v.get("email", current),
+                verified=v.get("verified"),
+                kind=v.get("kind"),
+                legit=v.get("legit"),
+                smtp_check=v.get("smtp_check"),
+            )
+            if ok:
+                persisted += 1
+            jobs.append(jid, {
+                "type": "progress",
+                "i": i, "total": total,
+                "name": name,
+                "email": v.get("email", current),
+                "verified": v.get("verified"),
+                "verified_count": verified,
+                "found_count": found,
+                "missing_count": missing,
+                "skipped_count": skipped,
+            })
+        result = {
+            "total": total,
+            "verified": verified,
+            "found": found,
+            "missing": missing,
+            "skipped": skipped,
             "persisted": persisted,
         }
         jobs.append(jid, {"type": "done", **result})
@@ -742,24 +1351,6 @@ def api_fitcheck():
 
 
 # ─────────────────────────── api: ai ───────────────────────────
-
-
-@app.route("/api/ai/forecast", methods=["GET", "POST"])
-def api_ai_forecast():
-    if not ai_metrics.is_enabled():
-        return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 400
-
-    if request.method == "GET":
-        cached = db.load_forecast("dashboard")
-        return jsonify(cached or {"forecast": None})
-
-    settings = db.get_settings()
-    outreach = db.outreach_stats()
-    summary = metrics.dashboard_summary(settings, outreach)
-    forecast = ai_metrics.forecast_pipeline(summary["per_csv"])
-    if not forecast.get("error"):
-        db.save_forecast("dashboard", forecast)
-    return jsonify({"forecast": forecast})
 
 
 @app.route("/api/ai/score-leads", methods=["POST"])
@@ -864,6 +1455,350 @@ def api_asana_create_task():
         return jsonify({"ok": True, "task": task})
     except asana_api.AsanaError as e:
         return jsonify({"error": str(e)}), 400
+
+
+# ─────────────────────────── scrapes history ───────────────────────────
+
+
+@app.route("/scrapes")
+def scrapes_history_page():
+    status = request.args.get("status")
+    return render_template(
+        "scrapes.html",
+        scrapes=db.list_scrapes(status=status),
+        stats=db.scrape_stats(),
+        active_filter=status or "all",
+        **_ctx(),
+    )
+
+
+@app.route("/api/scrapes")
+def api_scrapes_list():
+    status = request.args.get("status")
+    return jsonify({"scrapes": db.list_scrapes(status=status)})
+
+
+@app.route("/api/scrapes/<int:sid>")
+def api_scrape_detail(sid):
+    """Return a scrape row + its event log. Live scrapes are stitched from
+    the in-memory job buffer so the user sees current progress; finished
+    scrapes pull from `events_json` snapshot."""
+    s = db.get_scrape(sid)
+    if not s:
+        return jsonify({"error": "not found"}), 404
+
+    # Live events for running jobs come from in-memory `jobs` module — DB
+    # only gets the snapshot on finish.
+    events = []
+    if s["status"] == "running" and s["job_id"]:
+        live = jobs.get(s["job_id"])
+        if live:
+            events = list(live.get("events", []))
+    elif s.get("events_json"):
+        try:
+            events = json.loads(s["events_json"])
+        except Exception:
+            events = []
+
+    return jsonify({"scrape": s, "events": events})
+
+
+# ─────────────────────────── offers + sequences ───────────────────────────
+
+
+@app.route("/offers")
+def offers_page():
+    offers = db.list_niche_offers()
+    for o in offers:
+        md = (o.get("brief_md") or "")
+        o["brief_chars"] = len(md)
+        o["has_brief"] = bool(md)
+    disk_briefs = []
+    home_md = (PROJECT_ROOT / "home-services-offer.md")
+    if home_md.exists():
+        disk_briefs.append({
+            "filename": home_md.name,
+            "suggested_niche": "Home Services",
+            "size": home_md.stat().st_size,
+        })
+    return render_template(
+        "offers.html",
+        offers=offers,
+        disk_briefs=disk_briefs,
+        niche_presets=list(__import__("src.web.scraper", fromlist=["NICHE_PRESETS"]).NICHE_PRESETS.keys()),
+        **_ctx(),
+    )
+
+
+@app.route("/api/offers/brief-file/<path:filename>")
+def api_offer_brief_file(filename):
+    """Return contents of an on-disk brief markdown for the offers UI to load."""
+    if "/" in filename or ".." in filename or not filename.endswith(".md"):
+        return jsonify({"error": "invalid filename"}), 400
+    p = PROJECT_ROOT / filename
+    if not p.exists() or not p.is_file():
+        return jsonify({"error": "not found"}), 404
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"filename": filename, "markdown": text, "chars": len(text)})
+
+
+@app.route("/api/offers", methods=["POST"])
+def api_offer_save():
+    data = request.json or {}
+    niche = (data.get("niche") or "").strip()
+    if not niche:
+        return jsonify({"error": "niche required"}), 400
+    db.upsert_niche_offer(
+        niche=niche,
+        offer=(data.get("offer") or "").strip(),
+        tone=(data.get("tone") or "").strip(),
+        loom_url=(data.get("loom_url") or "").strip(),
+        brief_md=(data.get("brief_md") or "").strip(),
+    )
+    return jsonify({"ok": True, "niche": niche})
+
+
+@app.route("/api/offers/<niche>", methods=["DELETE"])
+def api_offer_delete(niche):
+    db.delete_niche_offer(niche)
+    return jsonify({"ok": True})
+
+
+@app.route("/sequences")
+def sequences_page():
+    status = request.args.get("status")
+    return render_template(
+        "sequences.html",
+        sequences=db.list_sequences(status=status),
+        stats=db.sequence_stats(),
+        active_filter=status or "all",
+        **_ctx(),
+    )
+
+
+@app.route("/api/sequences/<int:sid>")
+def api_sequence_detail(sid):
+    seq = db.get_sequence(sid)
+    if not seq:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({
+        "sequence": seq,
+        "messages": db.list_sequence_messages(sid),
+    })
+
+
+@app.route("/api/sequences/<int:sid>/pause", methods=["POST"])
+def api_sequence_pause(sid):
+    db.update_sequence(sid, status="paused", paused_reason="manual",
+                       next_send_at=None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sequences/<int:sid>/resume", methods=["POST"])
+def api_sequence_resume(sid):
+    seq = db.get_sequence(sid)
+    if not seq:
+        return jsonify({"error": "not found"}), 404
+    # Resume: schedule next-step send for now.
+    if seq["current_step"] >= sequencer.NUM_STEPS:
+        db.update_sequence(sid, status="done", next_send_at=None)
+    else:
+        db.update_sequence(sid, status="active", paused_reason=None,
+                           next_send_at=datetime.now().astimezone().isoformat())
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sequences/<int:sid>/cancel", methods=["POST"])
+def api_sequence_cancel(sid):
+    db.update_sequence(sid, status="cancelled", next_send_at=None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/sequences/start-from-csv", methods=["POST"])
+def api_sequences_start_from_csv():
+    """Bulk-enqueue every emailable lead in a CSV into the sequencer."""
+    data = request.json or {}
+    csv_name = data.get("csv_name", "")
+    niche_override = (data.get("niche") or "").strip()
+    path = _safe_csv_path(csv_name)
+    if not path:
+        return jsonify({"error": f"CSV not found: {csv_name}"}), 404
+
+    sender_name = db.get_setting("sender_name", "")
+    _, rows = metrics.read_csv_with_scores(path)
+
+    label = f"Enqueue sequence · {csv_name}"
+    jid = jobs.create_job("seq_enqueue", label)
+
+    def worker():
+        queued, skipped = 0, 0
+        reasons = {}
+        for r in rows:
+            n = r["_normalized"]
+            email = (n.get("email") or "").strip().lower()
+            if not email or "@" not in email:
+                skipped += 1
+                reasons["no_email"] = reasons.get("no_email", 0) + 1
+                continue
+            niche = niche_override or n.get("business_type") or n.get("niche") or ""
+            lead = {
+                "email": email,
+                "business_name": n.get("business_name", ""),
+                "city": n.get("city", ""),
+                "niche": niche,
+                "rating": n.get("rating", 0),
+                "review_count": n.get("review_count", 0),
+                "website": n.get("website", ""),
+            }
+            sid, msg = sequencer.enqueue_lead(
+                lead, csv_name=csv_name, sender_name=sender_name,
+            )
+            if sid is None:
+                skipped += 1
+                reasons[msg] = reasons.get(msg, 0) + 1
+            else:
+                queued += 1
+                jobs.append(jid, {
+                    "type": "log",
+                    "line": f"  ✓ {lead['business_name']} → seq#{sid} ({msg})",
+                })
+        result = {"queued": queued, "skipped": skipped, "reasons": reasons}
+        jobs.append(jid, {"type": "done", **result})
+        jobs.finish(jid, result=result)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
+
+
+@app.route("/api/sequences/tick", methods=["POST"])
+def api_sequences_tick():
+    """Manual tick — useful when the scheduler is disabled."""
+    return jsonify(sequencer.tick())
+
+
+@app.route("/api/sequences/check-replies", methods=["POST"])
+def api_sequences_check_replies():
+    creds_dict = db.load_token()
+    if not creds_dict:
+        return jsonify({"error": "Gmail not connected"}), 400
+    return jsonify(sequencer.process_replies(creds_dict))
+
+
+# ─────────────────────────── resend webhook ───────────────────────────
+
+
+@app.route("/api/webhook-status")
+def api_webhook_status():
+    """Detect any locally-running ngrok tunnel by calling ngrok's local API
+    on 127.0.0.1:4040. Returns the public webhook URL + reachability state.
+    Also pings our own /webhook/resend through the public URL to confirm
+    the round-trip works (so a green check here = Resend can also reach it).
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    secret_set = bool(os.getenv("RESEND_WEBHOOK_SECRET"))
+    out = {
+        "ngrok_running": False,
+        "public_url": None,
+        "webhook_url": None,
+        "reachable": False,
+        "secret_configured": secret_set,
+        "warning": None,
+    }
+    try:
+        req = urllib.request.Request("http://127.0.0.1:4040/api/tunnels")
+        with urllib.request.urlopen(req, timeout=2) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        tunnels = data.get("tunnels") or []
+        # Prefer https tunnel forwarded to our Flask port.
+        public = None
+        for t in tunnels:
+            url = t.get("public_url") or ""
+            cfg = (t.get("config") or {}).get("addr", "")
+            if url.startswith("https://") and "5001" in cfg:
+                public = url
+                break
+        if not public and tunnels:
+            public = tunnels[0].get("public_url")
+        if public:
+            out["ngrok_running"] = True
+            out["public_url"] = public
+            out["webhook_url"] = public.rstrip("/") + "/webhook/resend"
+    except urllib.error.URLError:
+        out["warning"] = "ngrok API not reachable on 127.0.0.1:4040 — start the tunnel"
+    except Exception as e:
+        out["warning"] = f"ngrok API error: {type(e).__name__}: {e}"
+
+    if out["webhook_url"]:
+        try:
+            req = urllib.request.Request(out["webhook_url"], method="GET",
+                                         headers={"ngrok-skip-browser-warning": "1"})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                body = _json.loads(r.read().decode("utf-8"))
+                out["reachable"] = bool(body.get("ok"))
+                out["pong"] = body
+        except Exception as e:
+            out["reachable"] = False
+            out["warning"] = f"reachable from your machine? {type(e).__name__}: {e}"
+    if not secret_set:
+        msg = "RESEND_WEBHOOK_SECRET unset — webhook will accept ANY payload (insecure)"
+        out["warning"] = (out["warning"] + " · " + msg) if out["warning"] else msg
+    return jsonify(out)
+
+
+@app.route("/webhook/resend", methods=["GET", "HEAD", "POST"], strict_slashes=False)
+def webhook_resend():
+    """Resend webhook receiver with Svix signature verification.
+
+    GET/HEAD return a 200 health pong so Resend's dashboard reachability
+    check (and curl/uptime probes through ngrok) see the endpoint as
+    reachable instead of 405-ing.
+
+    POST receives the actual signed event. Resend signs every payload via
+    Svix. Set `RESEND_WEBHOOK_SECRET` in `.env` to the signing secret from
+    the Resend dashboard endpoint detail page (starts with `whsec_`). When
+    set, requests missing or with invalid Svix signatures are rejected
+    with 401. Leave the env var empty during local testing — the endpoint
+    will accept any payload without verification.
+    """
+    if request.method in ("GET", "HEAD"):
+        return jsonify({
+            "ok": True,
+            "endpoint": "/webhook/resend",
+            "method_required": "POST",
+            "verification": "svix" if os.getenv("RESEND_WEBHOOK_SECRET") else "disabled",
+        })
+
+    secret = os.getenv("RESEND_WEBHOOK_SECRET", "")
+    raw = request.get_data()  # MUST be raw bytes — Svix signs the byte string
+    log.info("resend webhook POST: bytes=%d secret_configured=%s headers=%s",
+             len(raw), bool(secret),
+             [h for h in request.headers.keys() if h.lower().startswith("svix")])
+    if secret:
+        try:
+            from svix.webhooks import Webhook, WebhookVerificationError
+            wh = Webhook(secret)
+            wh.verify(raw, dict(request.headers))
+        except WebhookVerificationError as e:
+            log.warning("resend webhook signature invalid: %s", e)
+            return jsonify({"error": "invalid signature"}), 401
+        except ImportError:
+            log.error("svix not installed — `pip install svix` then restart")
+            return jsonify({"error": "svix not installed"}), 500
+        except Exception as e:
+            # Malformed signature header (bad base64, missing parts, etc.)
+            log.warning("resend webhook signature unparseable: %s", e)
+            return jsonify({"error": "invalid signature"}), 401
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    return jsonify(sequencer.record_event(payload))
 
 
 # ─────────────────────────── auth ───────────────────────────

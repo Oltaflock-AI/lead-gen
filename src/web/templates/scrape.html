@@ -1,43 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Scrape — lead-gen{% endblock %}
-{% block breadcrumb %}Workspace / Scrape{% endblock %}
+{% block breadcrumb %}workspace / scrape{% endblock %}
 {% block heading %}Scrape{% endblock %}
-{% block subheading %}Run a canonical scraper or compose an interactive search.{% endblock %}
+{% block subheading %}Country, niche, filters → CSV of leads.{% endblock %}
 
 {% block content %}
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<div class="space-y-6 max-w-4xl">
 
-  <section class="n-card">
-    <div class="px-5 py-4" style="border-bottom: 1px solid var(--border);">
-      <div class="text-sm font-semibold" style="color: var(--text);">Canonical scrapers</div>
-      <div class="text-xs mt-0.5" style="color: var(--text-mute);">Pre-built CLI scrapers. Each writes to <code>data/outputs/&lt;name&gt;.csv</code>.</div>
-    </div>
-    <div class="p-5 space-y-3">
-      {% for s in canonical_scrapers %}
-      <div class="n-card p-3" style="background: var(--bg-soft);">
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0">
-            <div class="text-sm font-medium truncate" style="color: var(--text);">{{ s.label }}</div>
-            <div class="text-xs mt-0.5" style="color: var(--text-soft);">{{ s.description }}</div>
-            <div class="text-xs mt-1 truncate" style="color: var(--text-mute);">
-              {{ s.output }}
-              {% if s.exists %} <span class="chip chip-green ml-1">exists</span>{% endif %}
-            </div>
-          </div>
-          <button type="button" class="btn btn-primary btn-sm" onclick="runCanonical('{{ s.key }}')">Run</button>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
+  {# ---------- Block 1 — Search parameters ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="n-block-title mb-4">Search parameters</div>
 
-  <section class="n-card">
-    <div class="px-5 py-4" style="border-bottom: 1px solid var(--border);">
-      <div class="text-sm font-semibold" style="color: var(--text);">Interactive search</div>
-      <div class="text-xs mt-0.5" style="color: var(--text-mute);">Pick country + niche, stream results live. Toggle no-website + email verification.</div>
-    </div>
-    <form id="interactive-form" class="p-5 space-y-4">
-      <div class="grid grid-cols-2 gap-3">
+    <form id="interactive-form" class="space-y-5">
+      <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="n-label" for="country">Country</label>
           <select name="country" id="country" class="n-select">
@@ -53,28 +28,28 @@
       </div>
 
       <div>
-        <div class="flex items-center justify-between">
-          <span class="n-label">Business types</span>
-          <div class="text-xs">
-            <button type="button" onclick="toggleAllTypes(true)" class="btn-ghost btn btn-sm">all</button>
-            <button type="button" onclick="toggleAllTypes(false)" class="btn-ghost btn btn-sm">none</button>
+        <div class="flex items-center justify-between mb-1">
+          <span class="n-label" style="margin-bottom: 0;">Business types</span>
+          <div class="flex gap-1 text-xs">
+            <button type="button" onclick="toggleAllTypes(true)" class="btn btn-ghost btn-sm">all</button>
+            <button type="button" onclick="toggleAllTypes(false)" class="btn btn-ghost btn-sm">none</button>
           </div>
         </div>
-        <div id="business_types_grid" class="mt-1 p-2 max-h-44 overflow-auto grid grid-cols-2 gap-1 text-xs" style="background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px;"></div>
+        <div id="business_types_grid" class="grid grid-cols-2 gap-1 text-xs p-2 max-h-44 overflow-auto" style="background: var(--bg-sunken); border: 1px solid var(--line); border-radius: var(--r-sm);"></div>
       </div>
 
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="n-label" for="state">State / region <span style="color: var(--red);">*</span></label>
+          <label class="n-label" for="state"><span style="color: var(--accent); margin-right: 4px;">●</span>State / region</label>
           <select name="state" id="state" required class="n-select"></select>
         </div>
         <div>
-          <label class="n-label" for="city">City <span style="color: var(--text-mute);">(optional)</span></label>
+          <label class="n-label" for="city">City <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— optional</span></label>
           <input name="city" id="city" type="text" placeholder="leave blank to search whole state" class="n-input">
         </div>
       </div>
 
-      <div class="grid grid-cols-3 gap-3">
+      <div class="grid grid-cols-3 gap-4">
         <div>
           <label class="n-label" for="min_reviews">Min reviews</label>
           <input name="min_reviews" id="min_reviews" type="number" value="50" class="n-input">
@@ -90,59 +65,57 @@
       </div>
 
       <div class="space-y-2 pt-1">
-        <label class="flex items-start gap-2 text-sm" style="color: var(--text);">
+        <label class="flex items-start gap-2 text-sm cursor-pointer" style="color: var(--ink);">
           <input type="checkbox" name="require_no_website" id="require_no_website" class="mt-0.5">
-          <span>Only leads with no website <span style="color: var(--text-mute);">(cold-call mode)</span></span>
+          <span>Only leads with no website <span style="color: var(--ink-mute);">— cold-call mode</span></span>
         </label>
-        <label class="flex items-start gap-2 text-sm" style="color: var(--text);">
+        <label class="flex items-start gap-2 text-sm cursor-pointer" style="color: var(--ink);">
           <input type="checkbox" name="verify_emails" id="verify_emails" class="mt-0.5">
-          <span>Also scrape + verify emails <span style="color: var(--text-mute);">(DDG search → MX check, slower; each lead arrives with a verified email when found)</span></span>
+          <span>Also scrape + verify emails <span style="color: var(--ink-mute);">— DDG → MX check, slower</span></span>
         </label>
       </div>
 
-      <button type="submit" class="btn btn-primary w-full justify-center" style="padding: 8px 14px;">Run search</button>
-    </form>
+      <button type="submit" class="btn btn-primary w-full" style="padding: 10px 16px; font-size: 14px;">Run search</button>
 
-    <div class="px-5 pb-5">
-      <div class="text-xs" style="color: var(--text-mute);">
-        Every interactive scrape auto-saves to <code>data/outputs/interactive_&lt;niche&gt;_&lt;country&gt;.csv</code>
-        and (when Google is connected) appends a new tab to your master sheet.
+      <div class="text-xs" style="color: var(--ink-mute);">
+        Saving to <code>data/outputs/interactive_&lt;niche&gt;_&lt;country&gt;.csv</code>{% if google_connected %} and a new tab on your master sheet{% endif %}.
       </div>
+    </form>
+  </section>
+
+  {# ---------- Block 2 — Live log ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="flex items-center justify-between mb-3">
+      <div class="n-block-title">Live log</div>
+      <div id="progress" class="text-xs" style="color: var(--ink-mute);"></div>
+    </div>
+    <pre id="log" class="n-log" style="height: 360px; max-height: 360px;"></pre>
+  </section>
+
+  <div id="save-banner" class="n-callout info hidden text-sm"></div>
+
+  <section class="n-card hidden" id="results-section" style="padding: 0; overflow: hidden;">
+    <div style="padding: 14px 22px; border-bottom: 1px solid var(--line);">
+      <div class="n-block-title" id="results-count"></div>
+    </div>
+    <div class="max-h-96 overflow-auto">
+      <table class="n-table">
+        <thead>
+          <tr>
+            <th>Business</th>
+            <th>City</th>
+            <th>Type</th>
+            <th class="text-right">Rating</th>
+            <th class="text-right">Reviews</th>
+            <th>Phone</th>
+            <th>Email</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
     </div>
   </section>
 </div>
-
-<section class="mt-6 n-card overflow-hidden">
-  <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
-    <div class="text-sm font-semibold" style="color: var(--text);">Live log</div>
-    <div id="progress" class="text-xs" style="color: var(--text-mute);"></div>
-  </div>
-  <pre id="log" class="n-log h-72 m-5 mt-3 rounded"></pre>
-</section>
-
-<div id="save-banner" class="mt-4 n-card p-4 hidden text-sm" style="background: var(--bg-soft);"></div>
-
-<section class="mt-4 n-card overflow-hidden hidden" id="results-section">
-  <div class="px-5 py-4" style="border-bottom: 1px solid var(--border);">
-    <div class="text-sm font-semibold" style="color: var(--text);" id="results-count"></div>
-  </div>
-  <div class="max-h-96 overflow-auto">
-    <table class="n-table">
-      <thead>
-        <tr>
-          <th>Business</th>
-          <th>City</th>
-          <th>Type</th>
-          <th class="text-right">Rating</th>
-          <th class="text-right">Reviews</th>
-          <th>Phone</th>
-          <th>Email</th>
-        </tr>
-      </thead>
-      <tbody id="results-body"></tbody>
-    </table>
-  </div>
-</section>
 {% endblock %}
 
 {% block scripts %}
@@ -152,7 +125,7 @@ async function refreshNicheTypes() {
   const types = await fetch(`/api/niche-types/${encodeURIComponent(niche)}`).then(r => r.json());
   const grid = document.getElementById('business_types_grid');
   grid.innerHTML = types.map(t => `
-    <label class="flex items-center gap-1 px-1 py-0.5 hover:bg-stone-100 rounded">
+    <label class="flex items-center gap-1 px-1 py-0.5 rounded cursor-pointer">
       <input type="checkbox" class="bt-cb" value="${escapeHtml(t)}" checked>
       <span>${escapeHtml(t)}</span>
     </label>`).join('');
@@ -173,13 +146,11 @@ document.getElementById('country').addEventListener('change', refreshStates);
 refreshStates();
 
 const interactiveLeads = [];
-let lastNiche = '';
 
 document.getElementById('interactive-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const niche = document.getElementById('niche').value;
-  lastNiche = niche;
   const country = fd.get('country');
   const businessTypes = Array.from(document.querySelectorAll('.bt-cb:checked')).map(cb => cb.value);
   if (!businessTypes.length) { alert('Pick at least one business type.'); return; }
@@ -187,10 +158,7 @@ document.getElementById('interactive-form').addEventListener('submit', async (e)
   const cityVal = (fd.get('city') || '').trim();
   if (!state) { alert('State is required.'); return; }
   const body = {
-    country,
-    niche,
-    state,
-    city: cityVal,
+    country, niche, state, city: cityVal,
     business_types: businessTypes,
     min_reviews: fd.get('min_reviews'),
     min_rating: fd.get('min_rating'),
@@ -233,11 +201,11 @@ document.getElementById('interactive-form').addEventListener('submit', async (e)
         if (ev.sheet && ev.sheet.tab_url) {
           html += `<div class="mt-1">Synced to master Sheet → <a href="${escapeHtml(ev.sheet.tab_url)}" target="_blank" rel="noopener" style="color: var(--accent);" class="underline">open this scrape's tab ↗</a> · <a href="${escapeHtml(ev.sheet.master_url)}" target="_blank" rel="noopener" style="color: var(--accent);" class="underline">master ↗</a></div>`;
         } else if (ev.sheet && ev.sheet.error) {
-          html += `<div class="mt-1" style="color: var(--amber);">Sheet sync failed: ${escapeHtml(ev.sheet.error)}</div>`;
+          html += `<div class="mt-1" style="color: var(--warn);">Sheet sync failed: ${escapeHtml(ev.sheet.error)}</div>`;
         } else {
-          html += `<div class="mt-1" style="color: var(--text-mute);">Connect Google in the sidebar to auto-sync to the master sheet next time.</div>`;
+          html += `<div class="mt-1" style="color: var(--ink-mute);">Connect Google in the sidebar to auto-sync next time.</div>`;
         }
-        banner.innerHTML = html;
+        banner.innerHTML = '<div class="icon">ℹ</div><div>' + html + '</div>';
         banner.classList.remove('hidden');
       }
     }
@@ -248,8 +216,8 @@ function addResultRow(lead) {
   const tr = document.createElement('tr');
   const emailVer = lead['Email Verified'];
   const emailCell = lead['Email']
-    ? `<span style="color: ${emailVer === 'yes' ? 'var(--green)' : 'var(--amber)'}" title="${escapeHtml(emailVer || '')}">${escapeHtml(lead['Email'])}</span>`
-    : '<span style="color: var(--text-mute);">—</span>';
+    ? `<span style="color: ${emailVer === 'yes' ? 'var(--accent)' : 'var(--warn)'}" title="${escapeHtml(emailVer || '')}">${escapeHtml(lead['Email'])}</span>`
+    : '<span style="color: var(--ink-mute);">—</span>';
   tr.innerHTML = `
     <td>${escapeHtml(lead['Business Name'])}</td>
     <td>${escapeHtml(lead['City'] || '')}</td>
@@ -261,16 +229,5 @@ function addResultRow(lead) {
   `;
   document.getElementById('results-body').appendChild(tr);
 }
-
-async function runCanonical(key) {
-  clearLog();
-  appendLog(`▶ Running canonical scraper: ${key}`);
-  document.getElementById('results-section').classList.add('hidden');
-  await startJob(`/api/scrape/canonical/${encodeURIComponent(key)}`, {}, (ev) => {
-    if (ev.type === 'log') appendLog(ev.line);
-    else if (ev.type === 'done') appendLog('✔ Done.');
-  });
-}
-
 </script>
 {% endblock %}

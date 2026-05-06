@@ -7,10 +7,13 @@ buffer that any number of SSE consumers can replay from any cursor.
 This is intentionally in-memory only — restart the Flask app and jobs are
 lost. Good enough for a single-user local dashboard.
 """
+import logging
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
+
+log = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _jobs = {}            # id -> dict
@@ -35,6 +38,7 @@ def create_job(kind, label):
             "result": None,
             "error": None,
         }
+    log.info("job created: %s [%s] %s", jid, kind, label)
     return jid
 
 
@@ -54,6 +58,8 @@ def finish(jid, result=None):
         j["status"] = "done"
         j["result"] = result
         j["finished_at"] = _now()
+        kind = j["kind"]
+    log.info("job done: %s [%s]", jid, kind)
     _trim_completed()
 
 
@@ -65,6 +71,8 @@ def fail(jid, error):
         j["status"] = "failed"
         j["error"] = str(error)
         j["finished_at"] = _now()
+        kind = j["kind"]
+    log.error("job failed: %s [%s] — %s", jid, kind, error)
     _trim_completed()
 
 
@@ -164,6 +172,7 @@ def run_in_thread(jid, fn):
         try:
             fn()
         except Exception as e:
+            log.exception("job %s crashed", jid)
             append(jid, {"type": "error", "error": f"{type(e).__name__}: {e}"})
             fail(jid, e)
 

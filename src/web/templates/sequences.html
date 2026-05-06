@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}Sequences — lead-gen{% endblock %}
+{% block breadcrumb %}workspace / sequences{% endblock %}
+{% block heading %}Email sequences{% endblock %}
+{% block subheading %}4-step cadence: cold → bump → Loom → breakup. Sent via Resend, replies caught by Gmail.{% endblock %}
+
+{% block content %}
+
+<div class="flex justify-end mb-4">
+  <button type="button" onclick="checkReplies()" class="btn btn-sm">Check replies</button>
+</div>
+
+{# ---------- Stat row (4 cards) ---------- #}
+<section class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+  <div class="n-tile">
+    <div class="n-tile-label">Active</div>
+    <div class="n-tile-value">{{ stats.active }}</div>
+  </div>
+  <div class="n-tile">
+    <div class="n-tile-label">Replies</div>
+    <div class="n-tile-value">{{ stats.replies }}</div>
+  </div>
+  <div class="n-tile">
+    <div class="n-tile-label">Sent</div>
+    <div class="n-tile-value">{{ stats.messages_sent }}</div>
+  </div>
+  <div class="n-tile">
+    <div class="n-tile-label">Open rate</div>
+    <div class="n-tile-value">
+      {% if stats.messages_sent %}
+        {{ ((stats.opens or 0) / stats.messages_sent * 100) | round(1) }}%
+      {% else %}—{% endif %}
+    </div>
+    <div class="n-tile-sub">{{ stats.opens or 0 }} / {{ stats.messages_sent or 0 }}</div>
+  </div>
+</section>
+
+{% if stats.paused or stats.done or stats.clicks %}
+<details class="disclosure mb-6">
+  <summary>Show more <span style="color: var(--ink-mute); margin-left: 6px;">paused · done · clicks</span></summary>
+  <div class="grid grid-cols-3 gap-3 mt-2">
+    <div class="n-tile"><div class="n-tile-label">Paused</div><div class="n-tile-value">{{ stats.paused }}</div></div>
+    <div class="n-tile"><div class="n-tile-label">Done</div><div class="n-tile-value">{{ stats.done }}</div></div>
+    <div class="n-tile"><div class="n-tile-label">Clicks</div><div class="n-tile-value">{{ stats.clicks }}</div></div>
+  </div>
+</details>
+{% endif %}
+
+{# ---------- Enqueue ---------- #}
+<section class="n-card mb-6" style="padding: 18px 22px;">
+  <div class="n-block-title mb-3">Enqueue a CSV</div>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+    <div>
+      <label class="n-label" for="csv_name">CSV</label>
+      <input id="csv_name" class="n-input" placeholder="filename.csv">
+    </div>
+    <div>
+      <label class="n-label" for="niche_override">Niche override <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— optional</span></label>
+      <input id="niche_override" class="n-input" placeholder="leave blank to use Business Type column">
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-primary" onclick="enqueueCsv()">Enqueue → sequence</button>
+      <button class="btn" onclick="manualTick()">Force tick</button>
+    </div>
+  </div>
+  <div id="enq-status" class="text-xs mt-3" style="color: var(--ink-mute);"></div>
+</section>
+
+{# ---------- Filter tabs ---------- #}
+<section class="tab-strip mb-3">
+  {% for s in ['all','active','paused','done','cancelled'] %}
+    <a href="/sequences{% if s != 'all' %}?status={{ s }}{% endif %}" class="{{ 'active' if active_filter == s else '' }}">{{ s }}</a>
+  {% endfor %}
+</section>
+
+{# ---------- Sequence list ---------- #}
+<section class="n-card" style="padding: 0; overflow: hidden;">
+  <table class="n-table">
+    <thead>
+      <tr>
+        <th>Lead</th>
+        <th>Niche</th>
+        <th>City</th>
+        <th>Step</th>
+        <th>Status</th>
+        <th>Next send</th>
+        <th>Reason</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sequences %}
+      <tr>
+        <td>
+          <div style="font-weight: 500;">{{ s.business_name or '—' }}</div>
+          <div class="text-xs" style="color: var(--ink-mute);">{{ s.lead_email }}</div>
+        </td>
+        <td class="text-xs">{{ s.niche or '—' }}</td>
+        <td class="text-xs">{{ s.city or '—' }}</td>
+        <td>
+          <div class="dot-progress">
+            {% for i in range(1, 5) %}<span class="d {% if i <= s.current_step %}on{% endif %}"></span>{% endfor %}
+          </div>
+        </td>
+        <td>
+          {% if s.status == 'active' %}<span class="chip chip-green">{{ s.status }}</span>
+          {% elif s.status == 'paused' %}<span class="chip chip-amber">{{ s.status }}</span>
+          {% elif s.status == 'done' %}<span class="chip chip-blue">{{ s.status }}</span>
+          {% else %}<span class="chip chip-gray">{{ s.status }}</span>{% endif %}
+        </td>
+        <td class="text-xs text-mono" style="color: var(--ink-mute);">{{ (s.next_send_at or '—')[:16] }}</td>
+        <td class="text-xs" style="color: var(--ink-mute);">{{ s.paused_reason or '' }}</td>
+        <td class="text-right">
+          <button class="btn btn-ghost btn-sm" onclick="showDrafts({{ s.id }})">drafts</button>
+          {% if s.status == 'active' %}
+            <button class="btn btn-ghost btn-sm" onclick="pauseSeq({{ s.id }})">pause</button>
+          {% elif s.status == 'paused' %}
+            <button class="btn btn-ghost btn-sm" onclick="resumeSeq({{ s.id }})">resume</button>
+          {% endif %}
+          <button class="btn btn-ghost btn-sm" onclick="cancelSeq({{ s.id }})">cancel</button>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" style="padding: 32px; text-align: center; color: var(--ink-mute);">No sequences yet. Enqueue a CSV above.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<dialog id="draft-modal" style="max-width: 720px; width: 100%;">
+  <div style="padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
+    <h3 style="font-family: var(--font-serif); font-size: 18px; font-weight: 500;">Drafted steps</h3>
+    <button class="btn btn-ghost btn-sm" onclick="document.getElementById('draft-modal').close()">close</button>
+  </div>
+  <div id="draft-body" style="padding: 20px; max-height: 70vh; overflow: auto;"></div>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function enqueueCsv(){
+  const csv = document.getElementById('csv_name').value.trim();
+  const niche = document.getElementById('niche_override').value.trim();
+  if (!csv){ alert('csv name required'); return; }
+  const r = await fetch('/api/sequences/start-from-csv',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({csv_name: csv, niche}),
+  });
+  const d = await r.json();
+  document.getElementById('enq-status').textContent = `job ${d.job_id || d.error}`;
+}
+async function manualTick(){
+  const r = await fetch('/api/sequences/tick',{method:'POST'});
+  document.getElementById('enq-status').textContent = JSON.stringify(await r.json());
+}
+async function checkReplies(){
+  const r = await fetch('/api/sequences/check-replies',{method:'POST'});
+  const d = await r.json();
+  document.getElementById('enq-status').textContent = JSON.stringify(d);
+}
+async function pauseSeq(id){ await fetch(`/api/sequences/${id}/pause`,{method:'POST'}); location.reload(); }
+async function resumeSeq(id){ await fetch(`/api/sequences/${id}/resume`,{method:'POST'}); location.reload(); }
+async function cancelSeq(id){ if(!confirm('cancel?')) return; await fetch(`/api/sequences/${id}/cancel`,{method:'POST'}); location.reload(); }
+async function showDrafts(id){
+  const r = await fetch(`/api/sequences/${id}`);
+  const d = await r.json();
+  const body = document.getElementById('draft-body');
+  body.innerHTML = (d.messages||[]).map(m => `
+    <div style="border: 1px solid var(--line); border-radius: var(--r-md); padding: 14px; margin-bottom: 10px;">
+      <div class="text-xs" style="color: var(--ink-mute); margin-bottom: 6px;">step ${m.step} · ${m.status} · scheduled ${(m.scheduled_for||'').slice(0,16)} · sent ${(m.sent_at||'—').slice(0,16)}</div>
+      <div style="font-weight: 500; margin-bottom: 4px;">${escapeHtml(m.subject||'')}</div>
+      <pre class="text-xs" style="white-space: pre-wrap; font-family: inherit; margin: 0;">${escapeHtml(m.body||'')}</pre>
+      <div class="text-xs" style="color: var(--ink-mute); margin-top: 8px;">opens ${m.opens} · clicks ${m.clicks} · bounced ${m.bounced} · replied ${m.replied}</div>
+    </div>`).join('');
+  document.getElementById('draft-modal').showModal();
+}
+</script>
+{% endblock %}

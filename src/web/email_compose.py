@@ -5,8 +5,60 @@ Every cold email we send goes through `compose(...)` so that:
 - Structured signature (name / title / company / website / cal link) is
   always appended
 - Plain-text fallback is generated automatically for clients without HTML
+- Any trailing signoff the LLM may have inserted (old prompt, manual edit)
+  is stripped first so the structured signature is the only one
 """
+import re
 from html import escape
+
+_SIGNOFF_KEYWORDS = (
+    "best", "best,", "best regards", "regards", "cheers", "thanks",
+    "thank you", "sincerely", "warmly", "kind regards", "talk soon",
+    "speak soon", "yours", "all the best",
+)
+
+
+def _strip_trailing_signoff(body, settings):
+    """Strip any signoff block the LLM left at the end of `body`.
+
+    The structured signature is appended afterwards, so removing what the
+    model wrote prevents duplicate signoffs (e.g. "Khush\\nOltaFlock AI"
+    followed by the real Khush Mutha / Founder / Oltaflock AI block).
+
+    Conservative: only strips the LAST contiguous run of "signoff-like"
+    short lines from the bottom — never touches earlier paragraphs.
+    """
+    if not body:
+        return body
+    sender = (settings.get("sender_name") or "").strip().lower()
+    company = (settings.get("company_name") or "").strip().lower()
+    sender_first = sender.split()[0] if sender else ""
+
+    lines = body.rstrip().splitlines()
+    while lines:
+        last = lines[-1].strip()
+        if not last:
+            lines.pop()
+            continue
+        low = last.lower().rstrip(",.;:!")
+        is_signoff = (
+            low in _SIGNOFF_KEYWORDS
+            or any(low.startswith(k) for k in _SIGNOFF_KEYWORDS)
+            # A line that's just the sender's full name or first name.
+            or (sender and low == sender)
+            or (sender_first and low == sender_first)
+            # A line that's the company name (with or without "AI").
+            or (company and (low == company or low == company.replace(" ai", "")))
+            # Common LLM hallucination: "OltaFlock AI", "Oltaflock AI".
+            or low in ("oltaflock ai", "oltaflock", "oltaflock.ai")
+            # Two-token name lines like "Khush Mutha".
+            or (sender and low in sender)
+        )
+        if is_signoff and len(last) <= 60:
+            lines.pop()
+            continue
+        break
+    return "\n".join(lines).rstrip()
 
 GEORGIA_STYLE = (
     "font-family: Georgia, 'Times New Roman', Times, serif; "
@@ -85,6 +137,7 @@ def _signature_text(settings):
 
 def compose(body, settings):
     """Return (text, html) versions of an outbound email."""
+    body = _strip_trailing_signoff(body or "", settings)
     sig_html = _signature_html(settings)
     sig_text = _signature_text(settings)
 

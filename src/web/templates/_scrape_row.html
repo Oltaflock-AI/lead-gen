@@ -1,0 +1,28 @@
+<tr>
+  <td class="text-xs">{{ (s.started_at or '')[:19] }}</td>
+  <td>
+    <div class="font-medium">{{ s.label or s.kind }}</div>
+    <div class="text-xs n-muted">{{ s.kind }}</div>
+  </td>
+  <td class="text-xs">{{ s.niche or '—' }}</td>
+  <td class="text-xs">
+    {{ s.city or '' }}{% if s.state %}{% if s.city %}, {% endif %}{{ s.state }}{% endif %}
+    {% if not s.city and not s.state %}{{ s.country or '—' }}{% endif %}
+  </td>
+  <td class="text-right">{{ s.leads_count or 0 }}</td>
+  <td>
+    <span class="chip
+      {% if s.status == 'running' %}chip-yellow
+      {% elif s.status == 'done' %}chip-green
+      {% else %}chip-gray{% endif %}">{{ s.status }}</span>
+  </td>
+  <td class="text-xs">
+    {% if s.csv_basename %}
+      <a href="/leads/{{ s.csv_basename }}" class="underline">{{ s.csv_basename }}</a>
+    {% else %}<span class="n-muted">—</span>{% endif %}
+  </td>
+  <td class="text-xs">
+    {% if s.sheet_url %}<a href="{{ s.sheet_url }}" target="_blank" class="underline">open</a>{% else %}<span class="n-muted">—</span>{% endif %}
+  </td>
+  <td class="text-right"><button class="n-btn-ghost" onclick="showScrape({{ s.id }})">view</button></td>
+</tr>

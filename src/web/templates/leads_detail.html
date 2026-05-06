@@ -13,6 +13,7 @@
   <div class="text-xs font-semibold mb-2" style="color: var(--text-soft); text-transform: uppercase; letter-spacing: 0.04em;">Bulk actions</div>
   <div class="flex flex-wrap items-center gap-2 mb-3">
     <button type="button" onclick="bulkVerifyEmails('{{ name }}')" class="btn btn-primary btn-sm" title="For every row, search for an email and MX-check it. Updates the CSV in place.">Scrape + verify emails</button>
+    <button type="button" onclick="bulkVerifyExisting('{{ name }}')" class="btn btn-sm" title="Re-verify only the emails already on the list (MX + SMTP). No DDG search.">Verify existing emails</button>
     {% if claude_enabled %}
     <button type="button" onclick="scoreVisibleWithAI()" class="btn btn-sm" style="border-color: var(--purple); color: var(--purple);" title="Send the visible 50 rows to Claude for niche-fit + lead-score scoring. Persists to ai_niche_fit / ai_lead_score columns.">Score all with AI</button>
     {% endif %}
@@ -152,6 +153,23 @@ async function bulkVerifyEmails(name) {
     } else if (ev.type === 'done') {
       appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found unverified, ${ev.missing} missing. Persisted ${ev.persisted} rows.`);
       status.innerHTML = `Verified ${ev.verified}/${ev.total}. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;
+    }
+  });
+}
+
+async function bulkVerifyExisting(name) {
+  document.getElementById('log-wrap').classList.remove('hidden');
+  clearLog();
+  appendLog(`▶ Verifying existing emails (MX + SMTP) in ${name}…`);
+  const status = document.getElementById('action-status');
+  await startJob('/api/bulk-verify-existing', {csv_name: name}, (ev) => {
+    if (ev.type === 'progress') {
+      const tag = ev.verified ? '✓' : (ev.email ? '~' : (ev.email === '' ? '–' : '✗'));
+      appendLog(`  [${ev.i}/${ev.total}] ${tag} ${ev.name} — ${ev.email || 'no email'}`);
+      status.textContent = `${ev.i}/${ev.total} · ${ev.verified_count} verified · ${ev.found_count} found · ${ev.missing_count} missing · ${ev.skipped_count} skipped`;
+    } else if (ev.type === 'done') {
+      appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found unverified, ${ev.missing} missing, ${ev.skipped} skipped (no email). Persisted ${ev.persisted}.`);
+      status.innerHTML = `Verified ${ev.verified}/${ev.total - ev.skipped}. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;
     }
   });
 }

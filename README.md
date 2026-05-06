@@ -1,168 +1,181 @@
 # lead-gen
 
-Google Places API → CSV lead scrapers. Niche × region targeting with no-website / review-count / rating filters.
+OltaFlock outbound lead-generation pipeline. Scrapes local-business leads from
+Google Places, enriches them with contact + AI fit signals, drafts
+hyper-personalized cold emails, and runs a 5-step Resend drip sequence with
+Gmail reply detection.
 
-> **Before you write a new scraper, read [Existing scrapers](#existing-scrapers) and [Decision tree](#decision-tree-modify-or-create). 9 times out of 10 the answer is *modify the existing one*.** Creating yet another scraper is the slow path, not the fast path.
+Single-tenant Flask app on port `5001`. Designed to run on a laptop with a
+Supabase Edge Function catching webhooks while the laptop is offline.
 
 ---
 
-## Project layout
+## High-Level Architecture
 
 ```
-lead-gen/
-├── src/
-│   ├── scrapers/         # one file per niche × region (production)
-│   ├── processors/       # post-processing on existing CSVs (enrich_leads.py)
-│   ├── web/              # Flask dashboard — canonical UI for every script
-│   └── utils/            # shared helpers — only when ≥2 callers exist
-├── data/
-│   ├── outputs/          # CSVs produced by code in this repo (one per scraper basename)
-│   ├── imports/          # external CSVs (Apollo/RocketReach dumps, manual exports) — inputs only
-│   ├── cache/            # API response cache (gitignored)
-│   └── outreach.db       # sqlite — outreach log + settings + Gmail token (gitignored)
-├── .env                  # secrets (gitignored) — see .env.example
-├── .env.example          # template for required + optional env vars
-├── AGENTS.md             # file/naming/path rules + enrichment policy — read before adding files
-├── README.md             # this file
-└── requirements.txt
+                    ┌─────────────────────────────────────────────┐
+                    │              Flask app (port 5001)          │
+                    │  src/web/app.py  — UI + REST API             │
+                    └─────────────────────────────────────────────┘
+                          │            │            │
+              ┌───────────┘            │            └────────────┐
+              ▼                        ▼                         ▼
+   ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐
+   │  Scrape & Enrich   │   │  Personalize &     │   │  Send & Track      │
+   │  scraper.py        │   │  Compose           │   │  resend_send.py    │
+   │  enrich_leads.py   │   │  personalize.py    │   │  sequencer.py      │
+   │  verify.py         │   │  email_compose.py  │   │  gmail.py          │
+   │  fitcheck.py       │   │  niche_briefs.py   │   │                    │
+   └────────────────────┘   └────────────────────┘   └────────────────────┘
+              │                        │                         │
+              └────────────────────────┼─────────────────────────┘
+                                       ▼
+                       ┌──────────────────────────────┐
+                       │  SQLite  data/outreach.db    │
+                       │  + per-niche CSV outputs     │
+                       │  in data/outputs/*.csv       │
+                       └──────────────────────────────┘
+                                       │
+                                       ▼
+              ┌────────────────────────────────────────────────┐
+              │  Supabase                                       │
+              │  • email_events_raw (webhook buffer)            │
+              │  • Edge Function: resend-webhook                │
+              │    receives Resend events 24/7, supabase_sync   │
+              │    polls + replays into local sequencer         │
+              └────────────────────────────────────────────────┘
+
+External services:
+  • Google Places API     — scraping
+  • Anthropic Claude       — niche fit, lead scoring, email drafting
+  • Resend                 — outbound send + open/click/bounce webhooks
+  • Gmail API (OAuth)      — reply detection (read-only)
+  • Google Sheets API      — Master Sheet sync
+  • Asana API              — task creation for replied leads
 ```
 
-File/naming/path rules live in [AGENTS.md](./AGENTS.md). This README focuses on **what already exists** and **when to reuse vs create**.
+### Data flow
+
+1. **Scrape** — `scraper.py` calls Google Places `searchText` for each
+   `(niche, city)` combo. Results streamed to a per-niche CSV under
+   `data/outputs/`. Progress tracked in the `scrape_history` table.
+2. **Enrich** — `enrich_leads.py` adds website, email, social handles.
+   `verify.py` runs MX + SMTP probes. `fitcheck.py` asks Claude for a
+   per-lead niche fit score and reason. `ai_metrics.py` aggregates these
+   into dashboard stats.
+3. **Compose** — `personalize.py` drafts subject + body per lead using the
+   per-niche `niche_offers` record (offer copy, tone, Loom URL). Drafts are
+   cached in `outreach_drafts`. Final assembly + signoff stripping done by
+   `email_compose.py`.
+4. **Send** — `sequencer.py` enqueues 5 steps per lead at offsets `0, 3, 6,
+   10, 14` days. A daemon thread polls every minute for due steps and ships
+   them via `resend_send.py`. Each send writes to `outreach_log` and
+   `sequence_messages`.
+5. **Track** — Resend posts `email.delivered/opened/clicked/bounced/etc.` to
+   the Supabase Edge Function `resend-webhook`. Rows land in
+   `email_events_raw`. `supabase_sync.py` polls the buffer every tick,
+   replays events through `sequencer.record_event`, then marks
+   `processed_at`. `gmail.check_replies` runs every 15 min and pauses the
+   sequence on any inbound reply.
+
+### Layout
+
+```
+src/
+  processors/
+    enrich_leads.py        # batch enrichment + verification
+  web/
+    app.py                 # Flask routes (UI + API)
+    scraper.py             # Google Places client
+    scraper_runner.py      # streaming wrapper for /scrape UI
+    enrich_runner.py       # streaming wrapper for /enrich
+    verify.py              # MX + SMTP email verifier
+    fitcheck.py            # Claude-based niche fit scoring
+    ai_metrics.py          # rollups for dashboard
+    personalize.py         # Claude email drafter (subject + body)
+    email_compose.py       # final body assembly + signoff stripper
+    niche_briefs.py        # per-niche offer / tone / Loom URL
+    email_quality.py       # heuristics for draft quality gating
+    sequencer.py           # 5-step drip engine + scheduler daemon
+    resend_send.py         # Resend HTTP client
+    gmail.py               # Gmail OAuth + reply detection
+    sheets.py              # Master Sheet sync
+    asana.py               # Asana task creation
+    supabase_sync.py       # poll Supabase webhook buffer → sequencer
+    db.py                  # SQLite schema + CRUD + analytics
+    jobs.py                # background job registry (in-process)
+    metrics.py             # campaign + funnel metrics
+    static/, templates/    # Notion-styled UI
+supabase/
+  functions/resend-webhook/  # Deno Edge Function (Resend receiver)
+  migrations/                # SQL for email_events_raw
+data/
+  outputs/                 # per-niche scrape CSVs (gitignored)
+  imports/                 # user-uploaded CSVs (gitignored)
+  outreach.db              # SQLite, gitignored
+```
+
+### Local SQLite tables (`data/outreach.db`)
+
+| Table              | Purpose                                          |
+|--------------------|--------------------------------------------------|
+| `settings`         | per-user prefs, API tokens, sender signature     |
+| `scrape_history`   | every scrape run + lead count                    |
+| `outreach_log`     | one row per send, joins to Resend events         |
+| `outreach_drafts`  | cached subject + body per lead                   |
+| `sequences`        | one row per (lead, niche) sequence enrolment     |
+| `sequence_messages`| 5 step rows per sequence (status, send_at, …)    |
+| `email_events`     | Resend webhook events (delivered/opened/…)       |
+| `niche_offers`     | per-niche offer copy + tone notes + Loom URL     |
+| `gmail_tokens`     | OAuth tokens for reply-scan inbox                |
+| `csv_sheets`       | Master Sheet tab mapping per CSV                 |
+| `asana_tasks`      | Asana task IDs created for replied leads         |
+| `ai_forecast`      | dashboard score forecasts                        |
 
 ---
 
-## Existing scrapers
-
-| File | Niche | Region | Output | Filters / notes |
-|---|---|---|---|---|
-| `src/scrapers/law_firms_us.py` | Law firms | US (150+ cities) | `data/outputs/law_firms_us.csv` | No-website, review-count + rating thresholds (env-tunable: `MIN_REVIEWS`, `MIN_RATING`) |
-| `src/scrapers/seasonal_us.py` | Seasonal businesses (landscaping, pool, HVAC, roofing, summer/outdoor, etc.) | US (~50 cities) | `data/outputs/seasonal_us.csv` | Multi-niche list inside file |
-| `src/scrapers/businesses_india.py` | Mixed local businesses (restaurants, salons, gyms, clinics, retail, services) | India (25 cities) | `data/outputs/businesses_india.csv` | Wide niche list inside file |
-| `src/processors/enrich_leads.py` | **Canonical enrichment processor** | — | enriches any lead CSV in place | Full pipeline: Places lookup → phone → verify exists → confirm no website → drop closed → add `rating`/`review_count`/`full_address`/`google_maps_url`/`email` → re-index. Mandatory per [AGENTS.md § Lead enrichment](./AGENTS.md). Flags: `--keep-with-website`, `--skip-email`. |
-
-### Existing imports (external data, not produced by this repo)
-
-| File | Schema | Rows | Source |
-|---|---|---|---|
-| `data/imports/home_services_contacts_us.csv` | Apollo-style contacts (prospect + company + emails + phones + LinkedIn) | 59 | External enrichment dump, US home-services niche |
-| `data/imports/home_services_businesses_us.csv` | Firmographic (company + NAICS + revenue + employee range) | 30 | External business-only dump, US home-services niche |
-
-These feed into `enrich_leads.py`, which writes the enriched version to `data/outputs/<same_basename>.csv`. Same basename across `imports/` and `outputs/` is intentional — directory signals raw vs enriched. No `_enriched` suffix.
-
-Source of truth for what each script actually does = the module docstring + the `CITIES` / `BUSINESS_TYPES` / threshold constants at the top of the file. **Open the file before deciding it doesn't fit.**
-
-There is also a Flask **dashboard** under `src/web/` that wraps every script above behind a single UI: run any scraper, run enrichment, view per-CSV lead-quality scores + projected pipeline revenue, generate Claude-personalized cold emails, send via Gmail OAuth, export to Google Sheets, and create Asana tasks for low-score leads. Run with `python -m src.web.app` → http://localhost:5001. The CLI scrapers above remain the canonical batch pipeline; the dashboard is the day-to-day interface.
-
----
-
-## Decision tree: modify or create
-
-When a new lead-gen task arrives, follow this in order. **Stop at the first match.**
-
-1. **Same niche + same region as an existing scraper?**
-   → Edit that scraper. Adjust thresholds (`MIN_REVIEWS`, `MIN_RATING`, no-website flag) or extend `CITIES` / `BUSINESS_TYPES`. Do **not** create a new file.
-
-2. **Same niche, different region (e.g. law firms in UK)?**
-   → New scraper file: `<niche>_<region>.py`. Copy the closest existing one as a template, swap the city list and any region-specific filters.
-
-3. **Different niche, same region as existing (e.g. dentists US)?**
-   → If the niche is already covered inside `seasonal_us.py` or `businesses_india.py` BUSINESS_TYPES list, just run that scraper — it likely already produces those leads.
-   → Otherwise new scraper file `<new_niche>_<region>.py`.
-
-4. **Same data, just need post-processing (phone, email, website status, dedupe, format conversion)?**
-   → Run `src/processors/enrich_leads.py` first — it already does Places lookup, phone, website check, closure check, and email enrichment. Only add a new processor if the transformation is genuinely outside that pipeline. Model new processors after `enrich_leads.py`.
-
-5. **Need a one-off Google Sheets export, ad-hoc query, or visual UI run?**
-   → Use `tests/web_app/`. Don't add a CLI scraper for it.
-
-6. **None of the above?**
-   → Then, and only then, create a new scraper file. Confirm the pattern with the user first if the request is ambiguous.
-
-### Anti-patterns (do not do these)
-
-- ❌ Creating `law_firms_us_high_reviews.py` because the threshold differs — change `MIN_REVIEWS` instead.
-- ❌ Creating `law_firms_no_website_us.py` because the filter differs — filters are logic, not identity. Document in docstring, parametrize via env or constant.
-- ❌ Creating a `_v2`, `_new`, `_final`, or date-stamped variant — edit in place; git tracks history.
-- ❌ Creating a separate scraper to add a single city — append to the `CITIES` list.
-- ❌ Putting a new script at repo root or in `tests/` when it's production logic — it goes in `src/scrapers/` or `src/processors/`.
-- ❌ Writing a bespoke Places API client — reuse the request shape from an existing scraper (same `places:searchText` endpoint, same `X-Goog-FieldMask` header pattern).
-
----
-
-## Conventions (summary — full rules in AGENTS.md)
-
-- **Naming:** `<niche>_<region>.py`, lowercase snake_case. No filter adjectives, version suffixes, or dates in filenames.
-- **Output:** every scraper writes to `data/outputs/<same_basename>.csv`. One scraper, one CSV.
-- **Paths:** anchor everything to `PROJECT_ROOT = Path(__file__).resolve().parents[2]`. No hardcoded absolute paths, no cwd-relative paths.
-- **Secrets:** `GOOGLE_PLACES_API_KEY` from `.env` via `python-dotenv`. Anchor `load_dotenv(PROJECT_ROOT / ".env")`. Fail fast if missing. Never hardcode.
-- **Shared logic:** extract to `src/utils/` only after ≥2 real callers exist. No premature abstraction.
-
----
-
-## Setup
+## Run
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+cp .env.example .env       # fill in keys (see below)
 pip install -r requirements.txt
-echo 'GOOGLE_PLACES_API_KEY=your_key_here' > .env
+python -m src.web.app      # http://localhost:5001
 ```
 
-## Running a scraper
+### Required env vars
+
+```
+GOOGLE_PLACES_API_KEY=
+ANTHROPIC_API_KEY=
+RESEND_API_KEY=
+RESEND_FROM=                # verified sender, e.g. founder@oltaflock.ai
+RESEND_WEBHOOK_SECRET=      # whsec_… from Resend dashboard
+
+# Gmail OAuth (reply detection)
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+
+# Supabase webhook buffer
+SUPABASE_URL=https://<ref>.supabase.co
+SUPABASE_SERVICE_KEY=        # service_role JWT, server-only
+```
+
+### Deploying the webhook receiver
 
 ```bash
-python -m src.scrapers.law_firms_us
-python -m src.scrapers.seasonal_us
-python -m src.scrapers.businesses_india
+supabase db push                                                 # runs migration
+supabase functions deploy resend-webhook --no-verify-jwt
+supabase secrets set RESEND_WEBHOOK_SECRET=whsec_...
+# Then in Resend → Webhooks, point at:
+#   https://<ref>.supabase.co/functions/v1/resend-webhook
 ```
-
-Output lands in `data/outputs/<basename>.csv`. Re-runs resume / append (check the script's resume logic before assuming overwrite).
-
-## Running the enrichment pipeline
-
-Every lead CSV must pass through this before delivery (see [AGENTS.md § Lead enrichment](./AGENTS.md)).
-
-```bash
-python3 src/processors/enrich_leads.py data/outputs/law_firms_us.csv
-python3 src/processors/enrich_leads.py data/imports/home_services_contacts_us.csv --skip-email
-python3 src/processors/enrich_leads.py data/outputs/seasonal_us.csv --keep-with-website
-```
-
-Drops leads with no phone, no Places match, permanently closed status, or (by default) any website. Adds `rating`, `review_count`, `full_address`, `google_maps_url`, `email`. Re-indexes `row_num`.
-
-## Dashboard (canonical UI for everything)
-
-```bash
-python -m src.web.app    # http://localhost:5001
-```
-
-Pages:
-
-| Path | What it does |
-|---|---|
-| `/` | Total leads, quality scores, projected pipeline revenue, recent outreach |
-| `/scrape` | Run any canonical scraper or do an interactive country×niche search (toggle no-website filter) |
-| `/leads` | Every CSV in `data/imports/` + `data/outputs/` with avg score + qualified count |
-| `/leads/<file>` | Per-row quality score; buttons for Enrich, Export to Sheets, Compose outreach, Bulk Asana tasks |
-| `/outreach` | Pick leads with email → Claude personalized drafts → edit → send via Gmail → log |
-| `/settings` | Edit close rate / avg deal value / sender name / signature; see env-var status |
-
-Setup:
-
-1. `pip install -r requirements.txt`
-2. Copy `.env.example` → `.env`, fill in:
-   - `GOOGLE_PLACES_API_KEY` — required for scrapers + enrichment
-   - `FLASK_SECRET_KEY` — any random string
-   - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google OAuth (web app, redirect `http://localhost:5001/auth/callback`); enable Sheets API + Gmail API in Google Cloud
-   - `ANTHROPIC_API_KEY` — optional; without it cold emails fall back to a static template
-   - `ASANA_PAT` — optional; PAT from `app.asana.com/0/my-apps` to enable task creation
-3. `python -m src.web.app`
 
 ---
 
-## Checklist before adding any new file
+## File / dir conventions
 
-1. Read [Existing scrapers](#existing-scrapers).
-2. Walk the [Decision tree](#decision-tree-modify-or-create).
-3. Confirm naming and path rules in [AGENTS.md](./AGENTS.md).
-4. If still creating a new file: copy the closest existing scraper as a template — same imports, same `PROJECT_ROOT` anchoring, same `.env` loading, same Places API request shape, same CSV writer pattern.
+- Code lives under `src/`. Nothing executable in repo root.
+- Generated CSVs / SQLite live under `data/` and are gitignored.
+- HTML templates in `src/web/templates/`, static assets in `src/web/static/`.
+- Keep modules under 500 lines; split when they grow past that.
+- Never commit `.env`, `*.bak`, lead CSVs, or `outreach.db`.

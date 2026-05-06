@@ -3,88 +3,84 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Lead-Gen Dashboard{% endblock %}</title>
+  <title>{% block title %}Lead-Gen{% endblock %}</title>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+  <link rel="shortcut icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/favicon.png') }}">
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body>
   <div class="flex min-h-screen" style="background: var(--bg);">
-    <aside class="w-60 flex flex-col" style="background: var(--bg-alt); border-right: 1px solid var(--border);">
-      <div class="px-4 pt-5 pb-3">
-        <div class="flex items-center gap-2">
-          <span class="inline-flex items-center justify-center w-6 h-6 rounded text-white font-semibold text-xs" style="background: var(--text);">L</span>
-          <span class="font-semibold text-sm" style="color: var(--text);">lead-gen</span>
-        </div>
-        <div class="text-xs mt-0.5" style="color: var(--text-mute);">internal dashboard</div>
-      </div>
 
-      <div class="px-3 pt-2">
-        <div class="text-[11px] uppercase tracking-wide mb-1 px-2" style="color: var(--text-mute);">Workspace</div>
-        {% set nav = [
-          ('dashboard',     '/',         'Dashboard'),
-          ('scrape_page',   '/scrape',   'Scrape'),
-          ('leads_index',   '/leads',    'Leads'),
-          ('outreach_page', '/outreach', 'Outreach'),
-          ('settings_page', '/settings', 'Settings'),
-        ] %}
-        {% for endpoint, href, label in nav %}
-          <a href="{{ href }}" class="nav-link {{ 'active' if request.endpoint == endpoint else '' }}">{{ label }}</a>
-        {% endfor %}
-      </div>
-
-      <div class="mt-auto px-4 py-3" style="border-top: 1px solid var(--border);">
-        <div class="text-[11px] uppercase tracking-wide mb-2" style="color: var(--text-mute);">Connections</div>
-        <div class="space-y-1.5 text-xs">
-          <div class="flex items-center justify-between">
-            <span style="color: var(--text-soft);">Google</span>
-            {% if google_connected %}
-              <span class="chip chip-green">connected</span>
-            {% elif has_oauth_config %}
-              <a href="/auth/google" class="chip chip-blue hover:underline">connect</a>
-            {% else %}
-              <span class="chip chip-gray">not configured</span>
-            {% endif %}
-          </div>
-          <div class="flex items-center justify-between">
-            <span style="color: var(--text-soft);">Claude</span>
-            <span class="chip {{ 'chip-purple' if claude_enabled else 'chip-gray' }}">{{ 'on' if claude_enabled else 'off' }}</span>
-          </div>
-          <div class="flex items-center justify-between">
-            <span style="color: var(--text-soft);">Asana</span>
-            <span class="chip {{ 'chip-blue' if asana_enabled else 'chip-gray' }}">{{ 'on' if asana_enabled else 'off' }}</span>
-          </div>
-          <div class="flex items-center justify-between">
-            <span style="color: var(--text-soft);">Resend</span>
-            <span class="chip {{ 'chip-green' if resend_enabled else 'chip-gray' }}">{{ 'on' if resend_enabled else 'off' }}</span>
+    <aside class="w-60 flex flex-col" style="background: var(--bg); border-right: 1px solid var(--line);">
+      <div class="px-4 pt-5 pb-4">
+        <div class="flex items-center gap-2.5">
+          <span class="inline-flex items-center justify-center w-8 h-8 rounded-md" style="background: transparent;">
+            <img src="{{ url_for('static', filename='img/favicon.png') }}" alt="Oltaflock" style="width: 28px; height: 28px; object-fit: contain;">
+          </span>
+          <div class="leading-tight">
+            <div style="color: var(--ink); font-weight: 600; font-size: 13px;">Oltaflock</div>
+            <div style="color: var(--ink-mute); font-size: 11px;">lead-gen</div>
           </div>
         </div>
+      </div>
+
+      <div class="px-3">
+        {% set pending_seq = (sidebar_counts.sequences if sidebar_counts and sidebar_counts.sequences else 0) %}
+        {% set pending_leads = (sidebar_counts.leads if sidebar_counts and sidebar_counts.leads else 0) %}
+
+        <div class="nav-section">Pulse</div>
+        <a href="/" class="nav-link {{ 'active' if request.endpoint == 'dashboard' else '' }}">Dashboard</a>
+
+        <div class="nav-section">Pipeline</div>
+        <a href="/scrape" class="nav-link {{ 'active' if request.endpoint == 'scrape_page' else '' }}">Scrape</a>
+        <a href="/scrapes" class="nav-link {{ 'active' if request.endpoint == 'scrapes_history_page' else '' }}">Scrape history</a>
+        <a href="/offers" class="nav-link {{ 'active' if request.endpoint == 'offers_page' else '' }}">Offers</a>
+        <a href="/leads" class="nav-link {{ 'active' if request.endpoint in ('leads_index','leads_detail') else '' }}">
+          Leads{% if pending_leads %}<span class="chip chip-gray ml-auto">{{ pending_leads }}</span>{% endif %}
+        </a>
+        <a href="/outreach" class="nav-link {{ 'active' if request.endpoint == 'outreach_page' else '' }}">Outreach</a>
+        <a href="/sequences" class="nav-link {{ 'active' if request.endpoint == 'sequences_page' else '' }}">
+          Sequences{% if pending_seq %}<span class="chip chip-gray ml-auto">{{ pending_seq }}</span>{% endif %}
+        </a>
+
+        <div class="nav-section">System</div>
+        <a href="/settings" class="nav-link {{ 'active' if request.endpoint == 'settings_page' else '' }}">Settings</a>
+      </div>
+
+      <div class="mt-auto px-4 py-3" style="border-top: 1px solid var(--line);">
+        <div class="text-[10px] uppercase tracking-wider mb-2" style="color: var(--ink-faint); font-weight: 600;">Connections</div>
+        <div class="conn-row">
+          <span>Google</span>
+          {% if google_connected %}
+            <span class="dot"></span>
+          {% elif has_oauth_config %}
+            <a href="/auth/google" class="dot off" title="Click to connect"></a>
+          {% else %}
+            <span class="dot off"></span>
+          {% endif %}
+        </div>
+        <div class="conn-row"><span>Claude</span><span class="dot{{ '' if claude_enabled else ' off' }}"></span></div>
+        <div class="conn-row"><span>Resend</span><span class="dot{{ '' if resend_enabled else ' off' }}"></span></div>
+        <div class="conn-row"><span>Asana</span><span class="dot{{ '' if asana_enabled else ' off' }}"></span></div>
         {% if google_connected %}
-          <a href="/auth/disconnect" class="text-[11px] mt-2 inline-block" style="color: var(--text-mute);">Sign out of Google</a>
+          <a href="/auth/disconnect" class="text-[11px] mt-2 inline-block" style="color: var(--ink-mute);">Sign out of Google</a>
         {% endif %}
       </div>
     </aside>
 
     <main class="flex-1 min-w-0">
-      <header class="px-10 py-6" style="border-bottom: 1px solid var(--border);">
-        <div class="flex items-start justify-between gap-4">
-          <div class="min-w-0">
-            <div class="text-xs mb-1" style="color: var(--text-mute);">{% block breadcrumb %}Workspace{% endblock %}</div>
-            <h1 class="text-2xl font-semibold tracking-tight truncate" style="color: var(--text);">{% block heading %}{% endblock %}</h1>
-            <div class="mt-1.5 text-sm" style="color: var(--text-soft);">{% block subheading %}{% endblock %}</div>
-          </div>
-          <div class="flex items-center gap-2 shrink-0">
-            {% if asana_enabled %}
-              <button type="button" onclick="openAsanaTask({title:'',notes:''})" class="btn btn-sm" title="Create an Asana task">+ Asana task</button>
-            {% endif %}
-            {% block header_actions %}{% endblock %}
-          </div>
-        </div>
-      </header>
+      <div class="px-10 pt-10 pb-6">
+        <div class="page-crumb">{% block breadcrumb %}workspace{% endblock %}</div>
+        <h1 class="page-title">{% block heading %}{% endblock %}</h1>
+        <div class="page-sub">{% block subheading %}{% endblock %}</div>
+      </div>
 
-      <div class="px-10 py-8" style="background: var(--bg);">
+      <div class="px-10 pb-16">
         {% block content %}{% endblock %}
       </div>
     </main>
@@ -92,31 +88,26 @@
 
   {% if asana_enabled %}{% include "_asana_modal.html" %}{% endif %}
 
-  <!-- Floating background-job panel — shows running scrapes/enriches across page changes. -->
+  <!-- Floating background-job tray -->
   <div id="job-tray" class="hidden fixed bottom-4 right-4 z-40" style="width: 360px;">
-    <div class="n-card" style="box-shadow: 0 10px 32px rgba(15,15,15,0.12);">
-      <div class="flex items-center justify-between px-3 py-2" style="border-bottom: 1px solid var(--border);">
+    <div class="n-card" style="box-shadow: var(--shadow-md);">
+      <div class="flex items-center justify-between px-3 py-2" style="border-bottom: 1px solid var(--line);">
         <div class="flex items-center gap-2">
-          <span class="inline-block w-2 h-2 rounded-full" style="background: var(--green); animation: pulse 1.6s ease-in-out infinite;"></span>
-          <span class="text-xs font-semibold" id="job-tray-title" style="color: var(--text);">Background jobs</span>
+          <span class="inline-block w-2 h-2 rounded-full" style="background: var(--accent); animation: pulse 1.6s ease-in-out infinite;"></span>
+          <span class="text-xs font-semibold" id="job-tray-title" style="color: var(--ink);">Background jobs</span>
         </div>
-        <div class="flex items-center gap-1">
-          <button type="button" id="job-tray-toggle" onclick="toggleJobTray()" class="btn-ghost btn btn-sm" aria-label="Toggle">−</button>
-        </div>
+        <button type="button" id="job-tray-toggle" onclick="toggleJobTray()" class="btn btn-ghost btn-sm" aria-label="Toggle">−</button>
       </div>
       <div id="job-tray-body" class="p-3 space-y-2 text-xs max-h-80 overflow-auto"></div>
     </div>
   </div>
-  <style>
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-  </style>
+  <style>@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }</style>
 
   <script>
     window.ASANA_ENABLED = {{ 'true' if asana_enabled else 'false' }};
   </script>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script>
-    // Background-job tray: poll /api/jobs/active every 2s, render running jobs.
     let _trayCollapsed = false;
     function toggleJobTray() {
       const body = document.getElementById('job-tray-body');
@@ -135,22 +126,21 @@
         const title = document.getElementById('job-tray-title');
         if (list.length === 0) { tray.classList.add('hidden'); return; }
         tray.classList.remove('hidden');
-        title.textContent = list.length === 1
-          ? `1 job running`
-          : `${list.length} jobs running`;
+        title.textContent = list.length === 1 ? `1 job running` : `${list.length} jobs running`;
         body.innerHTML = list.map(j => {
           const p = j.progress;
           const progressLine = p
             ? `${p.leads_found}/${p.total_target} · ${escapeHtml(p.current_city || '')} / ${escapeHtml(p.current_type || '')}`
-            : (j.leads_count ? `${j.leads_count} items` : 'starting…');
+            : (j.leads_count ? `${j.leads_count} items`
+                : (j.last_log ? escapeHtml(j.last_log).slice(0, 80) : 'starting…'));
           return `
-            <div style="border-left: 2px solid var(--green); padding: 4px 8px;">
-              <div style="color: var(--text); font-weight: 500;">${escapeHtml(j.label || j.kind)}</div>
-              <div style="color: var(--text-mute); margin-top: 2px;">${progressLine}</div>
-              ${j.last_log ? `<div style="color: var(--text-soft); margin-top: 2px; font-family: 'SF Mono', monospace; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(j.last_log).slice(0, 80)}</div>` : ''}
+            <div style="border-left: 2px solid var(--accent); padding: 4px 8px;">
+              <div style="color: var(--ink); font-weight: 500;">${escapeHtml(j.label || j.kind)}</div>
+              <div style="color: var(--ink-mute); margin-top: 2px;">${progressLine}</div>
+              ${j.last_log ? `<div style="color: var(--ink-soft); margin-top: 2px; font-family: var(--font-mono); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(j.last_log).slice(0, 80)}</div>` : ''}
             </div>`;
         }).join('');
-      } catch (e) { /* swallow — server might be reloading */ }
+      } catch (e) { /* ignore */ }
     }
     setInterval(_refreshTray, 2000);
     _refreshTray();

@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Offers — lead-gen{% endblock %}
+{% block breadcrumb %}workspace / offers{% endblock %}
+{% block heading %}Niche offers{% endblock %}
+{% block subheading %}One offer per niche. Feeds the AI writer. Loom URL goes into step 3.{% endblock %}
+
+{% block content %}
+
+<div class="flex justify-end mb-4 gap-2">
+  <button type="button" onclick="newOffer()" class="btn btn-primary">+ New offer</button>
+</div>
+
+{% if disk_briefs %}
+<section class="n-card mb-4" style="padding: 14px 18px;">
+  <div style="font-family: var(--font-serif); font-size: 16px; color: var(--ink); margin-bottom: 6px;">On-disk briefs</div>
+  <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 10px;">
+    Markdown playbooks shipped with the project. Click import to copy into an offer record so the AI writer uses it.
+  </p>
+  <div class="flex flex-wrap gap-2">
+    {% for b in disk_briefs %}
+    <button type="button" class="btn btn-ghost btn-sm"
+            onclick='importDiskBrief("{{ b.filename }}", "{{ b.suggested_niche }}")'>
+      ↥ {{ b.filename }} <span style="color: var(--ink-faint);">· {{ (b.size/1024)|round(1) }} KB → {{ b.suggested_niche }}</span>
+    </button>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if offers %}
+<section class="grid grid-cols-1 md:grid-cols-2 gap-4">
+  {% for o in offers %}
+  <article class="n-card" style="padding: 18px 20px;">
+    <div class="flex items-start justify-between mb-2">
+      <div style="font-family: var(--font-serif); font-size: 18px; font-weight: 500; color: var(--ink);">{{ o.niche }}</div>
+      <div class="flex gap-1 text-xs">
+        <button class="btn btn-ghost btn-sm" onclick='loadOffer({{ o|tojson }})'>edit</button>
+        <button class="btn btn-ghost btn-sm" onclick='deleteOffer("{{ o.niche }}")'>delete</button>
+      </div>
+    </div>
+    <p class="text-sm" style="color: var(--ink-soft); margin: 0 0 8px;">{{ (o.offer or '')[:140] }}{% if (o.offer or '')|length > 140 %}…{% endif %}</p>
+    <div class="flex items-center gap-3 text-xs" style="color: var(--ink-mute);">
+      {% if o.loom_url %}<a href="{{ o.loom_url }}" target="_blank" rel="noopener" style="color: var(--accent);">↗ Loom</a>{% else %}<span style="color: var(--ink-faint);">no Loom</span>{% endif %}
+      <span>·</span>
+      {% if o.has_brief %}<span style="color: var(--accent);">📄 brief · {{ (o.brief_chars/1024)|round(1) }} KB</span>{% else %}<span style="color: var(--ink-faint);">no brief</span>{% endif %}
+      <span>·</span>
+      <span>updated {{ (o.updated_at or '')[:10] }}</span>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+{% else %}
+<section class="n-card" style="padding: 56px 24px; text-align: center;">
+  <div style="font-family: var(--font-serif); font-size: 22px; color: var(--ink); margin-bottom: 6px;">No offers yet</div>
+  <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 18px;">Create one offer per niche so the AI writer has something to work with.</p>
+  <button type="button" onclick="newOffer()" class="btn btn-primary">+ New offer</button>
+</section>
+{% endif %}
+
+<div id="offer-overlay" class="drawer-overlay" onclick="closeOfferDrawer()"></div>
+<aside id="offer-drawer" class="drawer">
+  <div class="drawer-head">
+    <div style="font-family: var(--font-serif); font-size: 18px; font-weight: 500;" id="drawer-title">New offer</div>
+    <button type="button" class="btn btn-ghost btn-sm" onclick="closeOfferDrawer()">✕</button>
+  </div>
+  <form id="offer-form" class="drawer-body space-y-4">
+    <div>
+      <label class="n-label" for="niche">Niche</label>
+      <input list="niche-presets" name="niche" id="niche" class="n-input" required placeholder="e.g. Real Estate, HVAC, Accounting">
+      <datalist id="niche-presets">
+        {% for n in niche_presets %}<option value="{{ n }}">{% endfor %}
+      </datalist>
+    </div>
+    <div>
+      <label class="n-label" for="loom_url">Loom URL <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— step 3</span></label>
+      <input name="loom_url" id="loom_url" class="n-input" type="url" placeholder="https://www.loom.com/share/...">
+    </div>
+    <div>
+      <label class="n-label" for="offer">The offer <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— irresistible, feel-stupid-saying-no</span></label>
+      <textarea name="offer" id="offer" class="n-textarea" rows="6" required placeholder="What you give them, the outcome, the guarantee, why it's reversible..."></textarea>
+    </div>
+    <div>
+      <label class="n-label" for="tone">Tone notes</label>
+      <textarea name="tone" id="tone" class="n-textarea" rows="3" placeholder="Casual, founder-to-founder. Avoid 'I help businesses'. Use first names."></textarea>
+    </div>
+    <div>
+      <label class="n-label" for="brief_md">Niche brief (markdown) <span style="color: var(--ink-faint); text-transform: none; letter-spacing: 0;">— optional, full playbook the AI writer follows</span></label>
+      <div class="flex items-center gap-2 mb-2">
+        <input type="file" id="brief_file" aria-label="Upload markdown brief" title="Upload markdown brief" accept=".md,.markdown,text/markdown,text/plain" onchange="loadBriefFile(event)" class="text-xs">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="clearBrief()">clear</button>
+        <span id="brief_meta" class="text-xs" style="color: var(--ink-faint);"></span>
+      </div>
+      <textarea name="brief_md" id="brief_md" class="n-textarea" rows="8" placeholder="Paste or upload a markdown brief (offer + tone + country sections + email templates). The AI writer will treat it as the source of truth."></textarea>
+    </div>
+  </form>
+  <div class="drawer-foot">
+    <button type="button" class="btn btn-primary" onclick="submitOffer()">Save</button>
+    <button type="button" class="btn btn-ghost" onclick="resetOfferForm()">Clear</button>
+  </div>
+</aside>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const overlay = document.getElementById('offer-overlay');
+const drawer = document.getElementById('offer-drawer');
+const form = document.getElementById('offer-form');
+
+function openOfferDrawer(){
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+}
+
+function newOffer(){
+  resetOfferForm();
+  document.getElementById('drawer-title').textContent = 'New offer';
+  openOfferDrawer();
+}
+function closeOfferDrawer(){
+  overlay.classList.remove('open');
+  drawer.classList.remove('open');
+}
+
+function loadOffer(o){
+  document.getElementById('drawer-title').textContent = `Edit · ${o.niche || ''}`;
+  document.getElementById('niche').value = o.niche || '';
+  document.getElementById('offer').value = o.offer || '';
+  document.getElementById('tone').value = o.tone || '';
+  document.getElementById('loom_url').value = o.loom_url || '';
+  document.getElementById('brief_md').value = o.brief_md || '';
+  updateBriefMeta();
+  openOfferDrawer();
+}
+
+function updateBriefMeta(){
+  const v = document.getElementById('brief_md').value || '';
+  const meta = document.getElementById('brief_meta');
+  if (!v) { meta.textContent = 'no brief loaded'; return; }
+  meta.textContent = `${v.length.toLocaleString()} chars · ${(v.length/1024).toFixed(1)} KB`;
+}
+
+function loadBriefFile(ev){
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  if (f.size > 1_000_000) { alert('Brief too large (>1 MB).'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    document.getElementById('brief_md').value = String(reader.result || '');
+    updateBriefMeta();
+  };
+  reader.onerror = () => alert('Could not read file.');
+  reader.readAsText(f);
+}
+
+function clearBrief(){
+  document.getElementById('brief_md').value = '';
+  document.getElementById('brief_file').value = '';
+  updateBriefMeta();
+}
+
+async function importDiskBrief(filename, suggestedNiche){
+  try {
+    const r = await fetch(`/api/offers/brief-file/${encodeURIComponent(filename)}`);
+    if (!r.ok) { alert('Could not load ' + filename); return; }
+    const j = await r.json();
+    document.getElementById('drawer-title').textContent = `New offer · ${suggestedNiche}`;
+    document.getElementById('niche').value = suggestedNiche || '';
+    document.getElementById('brief_md').value = j.markdown || '';
+    document.getElementById('offer').value = document.getElementById('offer').value
+      || `(See full markdown brief below — covers offer, country variants, email templates.)`;
+    updateBriefMeta();
+    openOfferDrawer();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.id === 'brief_md') updateBriefMeta();
+});
+
+async function submitOffer(){
+  const fd = new FormData(form);
+  const body = Object.fromEntries(fd.entries());
+  if (!body.niche || !body.offer) { alert('Niche and offer are required.'); return; }
+  const r = await fetch('/api/offers', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  if (r.ok) location.reload(); else alert('save failed');
+}
+
+async function deleteOffer(niche){
+  if (!confirm(`delete offer for ${niche}?`)) return;
+  await fetch(`/api/offers/${encodeURIComponent(niche)}`, {method:'DELETE'});
+  location.reload();
+}
+
+function resetOfferForm(){
+  form.reset();
+  document.getElementById('brief_md').value = '';
+  document.getElementById('brief_file').value = '';
+  document.getElementById('drawer-title').textContent = 'New offer';
+  updateBriefMeta();
+}
+</script>
+{% endblock %}

@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Leads — lead-gen{% endblock %}
-{% block breadcrumb %}Workspace / Leads{% endblock %}
+{% block breadcrumb %}workspace / leads{% endblock %}
 {% block heading %}Leads{% endblock %}
-{% block subheading %}All CSVs in <code>data/imports/</code> + <code>data/outputs/</code>.{% endblock %}
+{% block subheading %}CSV library — every scrape and import.{% endblock %}
 
 {% block content %}
-<section class="n-card overflow-hidden">
+
+{% if csvs %}
+<section class="n-card" style="padding: 0; overflow: hidden;">
   <table class="n-table">
     <thead>
       <tr>
@@ -16,14 +18,14 @@
         <th class="text-right">Qualified</th>
         <th class="text-right">w/ email</th>
         <th class="text-right">w/ phone</th>
-        <th class="text-right"></th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
       {% for c in csvs %}
       <tr>
-        <td><a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">{{ c.name }}</a></td>
-        <td><span class="chip {% if c.dir == 'outputs' %}chip-blue{% else %}chip-gray{% endif %}">{{ c.dir }}</span></td>
+        <td><a href="/leads/{{ c.name }}" style="color: var(--ink); font-weight: 500;" class="hover:underline">{{ c.name }}</a></td>
+        <td><span class="chip {% if c.dir == 'outputs' %}chip-blue{% else %}chip-gray{% endif %}">{{ 'Scraped' if c.dir == 'outputs' else 'Imported' }}</span></td>
         <td class="text-right">{{ c.rows }}</td>
         <td class="text-right">{{ c.avg_score }}</td>
         <td class="text-right">{{ c.qualified }}</td>
@@ -31,14 +33,20 @@
         <td class="text-right">{{ c.with_phone }}</td>
         <td class="text-right text-xs">
           <a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">view</a>
-          <span style="color: var(--text-mute);">·</span>
+          <span style="color: var(--ink-faint); margin: 0 4px;">·</span>
           <a href="/outreach?csv={{ c.name }}" style="color: var(--accent);" class="hover:underline">outreach</a>
         </td>
       </tr>
-      {% else %}
-      <tr><td colspan="8" class="text-center" style="padding: 32px; color: var(--text-mute);">No CSVs found.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
+{% else %}
+<section class="n-card" style="padding: 56px 24px; text-align: center;">
+  <div style="font-family: var(--font-serif); font-size: 22px; color: var(--ink); margin-bottom: 6px;">No CSVs yet</div>
+  <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 18px;">Run your first scrape to populate this list.</p>
+  <a href="/scrape" class="btn btn-primary">Go to Scrape</a>
+</section>
+{% endif %}
+
 {% endblock %}

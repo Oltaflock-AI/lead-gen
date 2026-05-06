@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Scrape history — lead-gen{% endblock %}
+{% block breadcrumb %}Workspace / Scrape history{% endblock %}
+{% block heading %}Scrape history{% endblock %}
+{% block subheading %}Every scrape ever started — running, completed, or interrupted by a Flask restart.{% endblock %}
+
+{% block content %}
+<section class="grid grid-cols-4 gap-2 mb-4">
+  <div class="n-card p-3"><div class="n-label">Running</div><div class="text-xl font-semibold">{{ stats.running }}</div></div>
+  <div class="n-card p-3"><div class="n-label">Done</div><div class="text-xl font-semibold">{{ stats.done }}</div></div>
+  <div class="n-card p-3"><div class="n-label">Failed / interrupted</div><div class="text-xl font-semibold">{{ stats.failed }}</div></div>
+  <div class="n-card p-3"><div class="n-label">Total leads scraped</div><div class="text-xl font-semibold">{{ stats.total_leads }}</div></div>
+</section>
+
+<section class="flex gap-2 mb-3 text-xs">
+  {% for s in ['all','running','done','failed','interrupted'] %}
+    <a href="/scrapes{% if s != 'all' %}?status={{ s }}{% endif %}"
+       class="chip {% if active_filter == s %}chip-blue{% endif %}">{{ s }}</a>
+  {% endfor %}
+  <span class="ml-auto text-xs n-muted" id="auto-refresh-status">auto-refreshing every 5s</span>
+</section>
+
+<section class="n-card overflow-hidden">
+  <table class="n-table">
+    <thead>
+      <tr>
+        <th>Started</th>
+        <th>Label</th>
+        <th>Niche</th>
+        <th>Where</th>
+        <th class="text-right">Leads</th>
+        <th>Status</th>
+        <th>CSV</th>
+        <th>Sheet</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="scrapes-tbody">
+      {% for s in scrapes %}
+        {% include '_scrape_row.html' %}
+      {% else %}
+      <tr><td colspan="9" class="text-xs n-muted">No scrapes yet. Start one from /scrape.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<dialog id="scrape-modal" class="n-card max-w-3xl w-full p-0">
+  <div class="p-4 border-b" style="border-color: var(--border);">
+    <div class="flex justify-between items-center">
+      <h3 class="text-sm font-semibold" id="scrape-modal-title">Scrape detail</h3>
+      <button class="n-btn-ghost" onclick="document.getElementById('scrape-modal').close()">close</button>
+    </div>
+  </div>
+  <div id="scrape-modal-body" class="p-4 text-sm" style="max-height:75vh; overflow:auto;"></div>
+</dialog>
+
+<script>
+async function showScrape(id){
+  const r = await fetch(`/api/scrapes/${id}`);
+  const d = await r.json();
+  if (d.error){ alert(d.error); return; }
+  const s = d.scrape;
+  const events = d.events || [];
+  const params = (() => { try { return JSON.parse(s.params_json||'{}'); } catch(e){ return {}; }})();
+  const dl = (k, v) => v == null || v === '' ? '' :
+    `<div><span class="n-muted">${k}:</span> <code>${escapeHtml(String(v))}</code></div>`;
+  const head = `
+    <div class="grid grid-cols-2 gap-3 text-xs mb-3">
+      ${dl('id', s.id)}
+      ${dl('job_id', s.job_id)}
+      ${dl('status', s.status)}
+      ${dl('started', (s.started_at||'').slice(0,19))}
+      ${dl('finished', (s.finished_at||'').slice(0,19))}
+      ${dl('niche', s.niche)}
+      ${dl('country', s.country)}
+      ${dl('state', s.state)}
+      ${dl('city', s.city)}
+      ${dl('target', params.target_leads)}
+      ${dl('min_reviews', params.min_reviews)}
+      ${dl('min_rating', params.min_rating)}
+      ${dl('require_no_website', params.require_no_website)}
+      ${dl('verify_emails', params.verify_emails)}
+      ${dl('leads_count', s.leads_count)}
+      ${dl('csv', s.csv_basename)}
+    </div>
+    ${s.csv_basename ? `<div class="mb-3"><a class="n-btn" href="/leads/${encodeURIComponent(s.csv_basename)}">Open CSV → leads</a></div>` : ''}
+    ${s.error ? `<div class="text-xs" style="color:var(--red,#b00);">error: ${escapeHtml(s.error)}</div>` : ''}
+  `;
+  const evHtml = events.length === 0
+    ? '<div class="text-xs n-muted">No events recorded.</div>'
+    : `<div class="text-xs space-y-1" style="font-family:'SF Mono',monospace; max-height:50vh; overflow:auto;">
+         ${events.map(e => {
+           const t = e.type || '';
+           const line = e.line || e.error || (e.lead && (e.lead['Business Name'] || JSON.stringify(e.lead).slice(0,80))) || '';
+           const cls = t === 'error' ? 'color:var(--red,#b00);' :
+                       t === 'lead'  ? 'color:var(--green);'   :
+                       t === 'log'   ? 'color:var(--text-soft);' : 'color:var(--text-mute);';
+           return `<div style="${cls}">[${t}] ${escapeHtml(String(line)).slice(0,300)}</div>`;
+         }).join('')}
+       </div>`;
+  document.getElementById('scrape-modal-title').textContent = `Scrape #${s.id} · ${s.label || s.kind}`;
+  document.getElementById('scrape-modal-body').innerHTML = head + '<hr style="margin:10px 0; border-color:var(--border);">' + `<div class="text-xs n-muted mb-1">${events.length} event(s)</div>` + evHtml;
+  document.getElementById('scrape-modal').showModal();
+}
+
+async function refreshList(){
+  const url = new URL(window.location.href);
+  const r = await fetch('/api/scrapes' + (url.search || ''));
+  const d = await r.json();
+  const tbody = document.getElementById('scrapes-tbody');
+  if (!tbody) return;
+  if (!d.scrapes || d.scrapes.length === 0){
+    tbody.innerHTML = '<tr><td colspan="9" class="text-xs n-muted">No scrapes yet. Start one from /scrape.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = d.scrapes.map(rowHtml).join('');
+}
+function rowHtml(s){
+  const statusChip = s.status === 'running' ? 'chip-yellow'
+    : s.status === 'done' ? 'chip-green'
+    : 'chip-gray';
+  const csvLink = s.csv_basename
+    ? `<a href="/leads/${encodeURIComponent(s.csv_basename)}" class="underline">${escapeHtml(s.csv_basename)}</a>`
+    : '<span class="n-muted">—</span>';
+  const sheetLink = s.sheet_url
+    ? `<a href="${s.sheet_url}" target="_blank" class="underline">open</a>`
+    : '<span class="n-muted">—</span>';
+  return `<tr>
+    <td class="text-xs">${escapeHtml((s.started_at||'').slice(0,19))}</td>
+    <td>
+      <div class="font-medium">${escapeHtml(s.label||s.kind||'')}</div>
+      <div class="text-xs n-muted">${escapeHtml(s.kind||'')}</div>
+    </td>
+    <td class="text-xs">${escapeHtml(s.niche||'—')}</td>
+    <td class="text-xs">${escapeHtml((s.city||'') + (s.state ? ', ' + s.state : '') || s.country || '—')}</td>
+    <td class="text-right">${s.leads_count || 0}</td>
+    <td><span class="chip ${statusChip}">${s.status}</span></td>
+    <td class="text-xs">${csvLink}</td>
+    <td class="text-xs">${sheetLink}</td>
+    <td class="text-right"><button class="n-btn-ghost" onclick="showScrape(${s.id})">view</button></td>
+  </tr>`;
+}
+setInterval(refreshList, 5000);
+</script>
+{% endblock %}

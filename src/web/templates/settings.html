@@ -1,92 +1,129 @@
 {% extends "base.html" %}
 {% block title %}Settings — lead-gen{% endblock %}
-{% block breadcrumb %}Workspace / Settings{% endblock %}
+{% block breadcrumb %}workspace / settings{% endblock %}
 {% block heading %}Settings{% endblock %}
-{% block subheading %}Manual override values, integration status, and Google connection.{% endblock %}
+{% block subheading %}Identity, connections, and environment plumbing.{% endblock %}
 
 {% block content %}
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+<div class="space-y-6 max-w-4xl">
 
-  <form method="post" class="n-card p-5 space-y-4">
-    <div class="text-sm font-semibold" style="color: var(--text);">Manual revenue override</div>
-    <p class="text-xs -mt-2" style="color: var(--text-mute);">Both fields blank by default. AI forecast on the dashboard is independent. Set these only if you want a formula-based pipeline tile alongside the AI forecast.</p>
+  {# ---------- Block 1 — Identity (signature) ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="n-block-title mb-4">Identity</div>
+    <p class="text-xs mb-5" style="color: var(--ink-mute); margin-top: -6px;">Used in the email signature appended to every outbound message. Body renders Georgia 12pt with this block as the sign-off.</p>
 
-    <div>
-      <label class="n-label" for="close_rate">Close rate (decimal — e.g. 0.02 for 2%)</label>
-      <input id="close_rate" name="close_rate" type="text" placeholder="leave blank to disable" value="{{ settings.close_rate }}" class="n-input">
-    </div>
-    <div>
-      <label class="n-label" for="avg_deal_value">Average deal value ($)</label>
-      <input id="avg_deal_value" name="avg_deal_value" type="text" placeholder="leave blank to disable" value="{{ settings.avg_deal_value }}" class="n-input">
-    </div>
-
-    <div class="n-divider"></div>
-
-    <div class="text-sm font-semibold" style="color: var(--text);">Email signature (appended to every outbound email)</div>
-    <p class="text-xs -mt-2" style="color: var(--text-mute);">Body is rendered in Georgia 12pt with this block as the sign-off.</p>
-
-    <div>
-      <label class="n-label" for="sender_name">Your name</label>
-      <input id="sender_name" name="sender_name" type="text" placeholder="Khush Mutha" value="{{ settings.sender_name }}" class="n-input">
-    </div>
-    <div>
-      <label class="n-label" for="sender_title">Title</label>
-      <input id="sender_title" name="sender_title" type="text" placeholder="Founder" value="{{ settings.sender_title }}" class="n-input">
-    </div>
-    <div>
-      <label class="n-label" for="company_name">Company</label>
-      <input id="company_name" name="company_name" type="text" placeholder="Alter Flog AI" value="{{ settings.company_name }}" class="n-input">
-    </div>
-    <div>
-      <label class="n-label" for="website_url">Website URL</label>
-      <input id="website_url" name="website_url" type="url" placeholder="https://alterflog.ai" value="{{ settings.website_url }}" class="n-input">
-    </div>
-    <div>
-      <label class="n-label" for="booking_url">Booking link (Cal.com / Calendly)</label>
-      <input id="booking_url" name="booking_url" type="url" placeholder="https://cal.com/khush/intro" value="{{ settings.booking_url }}" class="n-input">
-    </div>
-
-    <button type="submit" class="btn btn-primary">Save</button>
-  </form>
-
-  <div class="space-y-6">
-    <div class="n-card p-5">
-      <div class="text-sm font-semibold mb-3" style="color: var(--text);">Environment variables</div>
-      <div class="space-y-2 text-sm">
-        {% for key, ok in env_status.items() %}
-        <div class="flex items-center justify-between">
-          <code>{{ key }}</code>
-          <span class="chip {% if ok %}chip-green{% else %}chip-red{% endif %}">{{ '✓ set' if ok else 'missing' }}</span>
-        </div>
-        {% endfor %}
+    <form method="post" class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+      <div>
+        <label class="n-label" for="sender_name">Your name</label>
+        <input id="sender_name" name="sender_name" type="text" placeholder="Khush Mutha" value="{{ settings.sender_name }}" class="n-input">
       </div>
-      <div class="mt-4 text-xs" style="color: var(--text-mute);">Set in <code>.env</code> at project root. Restart the app after changing.</div>
-    </div>
+      <div>
+        <label class="n-label" for="sender_title">Title</label>
+        <input id="sender_title" name="sender_title" type="text" placeholder="Founder" value="{{ settings.sender_title }}" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="company_name">Company</label>
+        <input id="company_name" name="company_name" type="text" placeholder="Alter Flog AI" value="{{ settings.company_name }}" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="website_url">Website URL</label>
+        <input id="website_url" name="website_url" type="url" placeholder="https://alterflog.ai" value="{{ settings.website_url }}" class="n-input">
+      </div>
+      <div class="md:col-span-2">
+        <label class="n-label" for="booking_url">Booking link</label>
+        <input id="booking_url" name="booking_url" type="url" placeholder="https://cal.com/khush/intro" value="{{ settings.booking_url }}" class="n-input">
+      </div>
+      <div class="md:col-span-2 flex justify-end pt-1">
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </section>
 
-    <div class="n-card p-5">
-      <div class="text-sm font-semibold mb-2" style="color: var(--text);">Google connection</div>
-      {% if google_connected %}
-        <div class="flex items-center gap-2 text-sm mb-2">
-          <span class="chip chip-green">Connected</span>
-          <span style="color: var(--text-soft);">Sheets + Gmail send enabled</span>
+  {# ---------- Block 2 — Connections ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="n-block-title mb-4">Connections</div>
+
+    <div class="divide-y" style="border-color: var(--line);">
+      {# Google #}
+      <div class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-3">
+          <span class="dot inline-block" style="width:7px;height:7px;border-radius:50%;background: {{ 'var(--accent)' if google_connected else 'transparent' }}; {{ '' if google_connected else 'border:1.5px solid var(--ink-faint);' }}"></span>
+          <div>
+            <div style="color: var(--ink); font-weight: 500;">Google</div>
+            <div class="text-xs" style="color: var(--ink-mute);">
+              {% if google_connected %}Sheets + Gmail send enabled{% else %}Connect to sync the master Sheet and scan Gmail for replies.{% endif %}
+            </div>
+          </div>
         </div>
-        <a href="/auth/disconnect" class="text-xs" style="color: var(--red);">Disconnect</a>
-      {% elif has_oauth_config %}
-        <a href="/auth/google" class="btn btn-primary btn-sm inline-flex">Connect Google</a>
-      {% else %}
-        <div class="text-xs" style="color: var(--text-mute);">Add <code>GOOGLE_CLIENT_ID</code> + <code>GOOGLE_CLIENT_SECRET</code> to <code>.env</code> first.</div>
-      {% endif %}
-    </div>
+        {% if google_connected %}
+          <a href="/auth/disconnect" class="text-xs" style="color: var(--ink-mute);">Disconnect</a>
+        {% elif has_oauth_config %}
+          <a href="/auth/google" class="btn btn-sm">Connect</a>
+        {% else %}
+          <span class="text-xs" style="color: var(--ink-mute);">env not set</span>
+        {% endif %}
+      </div>
 
-    <div class="n-card p-5">
-      <div class="text-sm font-semibold mb-2" style="color: var(--text);">Asana</div>
-      {% if asana_enabled %}
-        <div id="asana-info" class="text-xs" style="color: var(--text-soft);">Loading projects + users…</div>
-      {% else %}
-        <div class="text-xs" style="color: var(--text-mute);">Add <code>ASANA_PAT</code> (and optional <code>ASANA_WORKSPACE_GID</code>) to <code>.env</code>. Get a PAT at <a class="underline" target="_blank" rel="noopener noreferrer" href="https://app.asana.com/0/my-apps" style="color: var(--accent);">app.asana.com/0/my-apps</a>.</div>
-      {% endif %}
+      {# Claude #}
+      <div class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-3">
+          <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background: {{ 'var(--accent)' if claude_enabled else 'transparent' }}; {{ '' if claude_enabled else 'border:1.5px solid var(--ink-faint);' }}"></span>
+          <div>
+            <div style="color: var(--ink); font-weight: 500;">Claude</div>
+            <div class="text-xs" style="color: var(--ink-mute);">
+              {% if claude_enabled %}AI personalization & lead scoring enabled.{% else %}Set <code>ANTHROPIC_API_KEY</code> in <code>.env</code>.{% endif %}
+            </div>
+          </div>
+        </div>
+        <span class="text-xs" style="color: var(--ink-mute);">{{ 'on' if claude_enabled else 'off' }}</span>
+      </div>
+
+      {# Resend #}
+      <div class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-3">
+          <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background: {{ 'var(--accent)' if resend_enabled else 'transparent' }}; {{ '' if resend_enabled else 'border:1.5px solid var(--ink-faint);' }}"></span>
+          <div>
+            <div style="color: var(--ink); font-weight: 500;">Resend</div>
+            <div class="text-xs" style="color: var(--ink-mute);">
+              {% if resend_enabled %}Outbound email + webhooks enabled.{% else %}Set <code>RESEND_API_KEY</code> + <code>RESEND_FROM</code>.{% endif %}
+            </div>
+          </div>
+        </div>
+        <span class="text-xs" style="color: var(--ink-mute);">{{ 'on' if resend_enabled else 'off' }}</span>
+      </div>
+
+      {# Asana #}
+      <div class="flex items-center justify-between py-3">
+        <div class="flex items-center gap-3">
+          <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background: {{ 'var(--accent)' if asana_enabled else 'transparent' }}; {{ '' if asana_enabled else 'border:1.5px solid var(--ink-faint);' }}"></span>
+          <div>
+            <div style="color: var(--ink); font-weight: 500;">Asana</div>
+            <div class="text-xs" id="asana-info" style="color: var(--ink-mute);">
+              {% if asana_enabled %}Loading projects + users…{% else %}Set <code>ASANA_PAT</code> in <code>.env</code>. Get a PAT at <a href="https://app.asana.com/0/my-apps" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">app.asana.com/0/my-apps</a>.{% endif %}
+            </div>
+          </div>
+        </div>
+        <span class="text-xs" style="color: var(--ink-mute);">{{ 'on' if asana_enabled else 'off' }}</span>
+      </div>
     </div>
-  </div>
+  </section>
+
+  {# ---------- Block 3 — Environment variables ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="n-block-title mb-4">Environment variables</div>
+
+    <div class="flex flex-wrap gap-2">
+      {% for key, ok in env_status.items() %}
+        <span class="chip {% if ok %}chip-green{% else %}chip-gray{% endif %}" style="font-family: var(--font-mono); font-size: 11px;">
+          {{ '✓' if ok else '○' }}&nbsp;{{ key }}
+        </span>
+      {% endfor %}
+    </div>
+    <div class="mt-4 text-xs" style="color: var(--ink-mute);">
+      Set in <code>.env</code> at project root. Restart the app after changing.
+    </div>
+  </section>
+
 </div>
 
 {% endblock %}

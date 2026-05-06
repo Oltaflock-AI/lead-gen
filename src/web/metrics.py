@@ -9,7 +9,7 @@ OUTPUTS_DIR = PROJECT_ROOT / "data" / "outputs"
 
 COLUMN_ALIASES = {
     "business_name": ["business_name", "Business Name", "prospect_company_name"],
-    "email": ["email", "contact_emails", "contact_professions_email"],
+    "email": ["email", "Email", "contact_emails", "contact_professions_email"],
     "phone": ["phone_number", "phone", "Phone", "contact_mobile_phone", "contact_phone_numbers"],
     "address": ["verified_address", "address", "Address"],
     "rating": ["rating", "Rating"],
@@ -136,22 +136,7 @@ def csv_summary(csv_path):
 
 
 def dashboard_summary(settings, outreach):
-    """Build the metrics shown on the dashboard.
-
-    close_rate / avg_deal_value default to 0 when unset so the pipeline
-    tiles read $0 (and the UI shows a hint to configure them) instead of
-    pretending we have a real revenue projection.
-    """
-    try:
-        close_rate = float(settings.get("close_rate") or 0)
-    except (TypeError, ValueError):
-        close_rate = 0.0
-    try:
-        avg_deal = float(settings.get("avg_deal_value") or 0)
-    except (TypeError, ValueError):
-        avg_deal = 0.0
-    revenue_configured = close_rate > 0 and avg_deal > 0
-
+    """Build the metrics shown on the dashboard."""
     csvs = list_csvs()
     per_csv = [csv_summary(c["path"]) for c in csvs]
 
@@ -161,25 +146,12 @@ def dashboard_summary(settings, outreach):
         sum(c["avg_score"] * c["rows"] for c in per_csv) / total_leads, 1
     ) if total_leads else 0
 
-    sent = outreach["sent"]
-    replied = outreach["replied"]
-
-    projected_revenue = total_qualified * close_rate * avg_deal
-    contacted_revenue = sent * close_rate * avg_deal
-    replied_revenue = replied * (close_rate * 5) * avg_deal
-
     return {
         "total_leads": total_leads,
         "total_qualified": total_qualified,
         "avg_score": avg_score,
-        "emails_sent": sent,
+        "emails_sent": outreach["sent"],
         "emails_failed": outreach["failed"],
-        "replies": replied,
-        "projected_revenue": round(projected_revenue, 2),
-        "contacted_revenue": round(contacted_revenue, 2),
-        "replied_revenue": round(replied_revenue, 2),
-        "close_rate": close_rate,
-        "avg_deal_value": avg_deal,
-        "revenue_configured": revenue_configured,
+        "replies": outreach["replied"],
         "per_csv": per_csv,
     }

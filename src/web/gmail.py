@@ -88,14 +88,10 @@ def check_replies(creds_dict, days=30, max_messages=300):
             if not sender or sender in seen_senders:
                 continue
             seen_senders.add(sender)
-            with sqlite3.connect(db.DB_PATH) as c:
-                cur = c.execute(
-                    "UPDATE outreach_log SET status = 'replied' "
-                    "WHERE lead_email = ? AND status = 'sent'",
-                    (sender,),
-                )
-                if cur.rowcount:
-                    marked += cur.rowcount
+            # Flip every prior outreach to this sender to status='replied',
+            # regardless of whether the row is currently sent / opened /
+            # clicked. The new helper records replied_at + last_event_at.
+            marked += db.mark_outreach_replied_by_email(sender)
         except Exception:
             continue
 

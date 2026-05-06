@@ -1,213 +1,170 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — lead-gen{% endblock %}
-{% block breadcrumb %}Workspace / Dashboard{% endblock %}
-{% block heading %}Dashboard{% endblock %}
-{% block subheading %}Pipeline value, lead quality, and outreach activity.{% endblock %}
+{% block breadcrumb %}workspace / dashboard{% endblock %}
+{% block heading %}Today{% endblock %}
+{% block subheading %}{{ today_label }} · {{ summary.queued_today }} emails queued</p>{% endblock %}
 
 {% block content %}
+
+{# ---------- Brand strip ---------- #}
+<section class="n-card mb-6" style="background: linear-gradient(135deg, #FFFFFF 0%, var(--accent-soft) 100%); border-color: var(--accent-2);">
+  <div class="flex items-center gap-4 px-5 py-4">
+    <img src="{{ url_for('static', filename='img/favicon.png') }}" alt="Oltaflock"
+         style="width: 48px; height: 48px; object-fit: contain; flex-shrink: 0;">
+    <div class="leading-tight">
+      <div style="font-family: var(--font-serif); font-size: 22px; font-weight: 500; color: var(--accent); letter-spacing: -0.02em;">Oltaflock</div>
+      <div style="font-size: 12px; color: var(--ink-mute); margin-top: 2px;">lead-gen workspace</div>
+    </div>
+  </div>
+</section>
+
+{# ---------- Stat row ---------- #}
+<section class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+  <div class="n-tile">
+    <div class="n-tile-label">Total leads</div>
+    <div class="n-tile-value">{{ '{:,}'.format(summary.total_leads) }}</div>
+    <div class="n-tile-sub">across imports + outputs</div>
+  </div>
+  <div class="n-tile">
+    <div class="n-tile-label">Qualified</div>
+    <div class="n-tile-value">{{ '{:,}'.format(summary.total_qualified) }}</div>
+    <div class="n-tile-sub">
+      {% if summary.total_leads %}
+        {{ ((summary.total_qualified / summary.total_leads) * 100) | round(0, 'floor') | int }}% of total
+      {% else %}—{% endif %}
+    </div>
+  </div>
+  <div class="n-tile">
+    <div class="n-tile-label">Sent today</div>
+    <div class="n-tile-value">{{ summary.sent_today }}</div>
+    <div class="n-tile-sub" style="color: var(--ink-mute);">{{ summary.niches_today }} niches</div>
+  </div>
+  <div class="n-tile">
+    <div class="n-tile-label">Replies</div>
+    <div class="n-tile-value">{{ summary.replies }}</div>
+    <div class="n-tile-sub">
+      {% if summary.emails_sent %}
+        {{ ((summary.replies / summary.emails_sent) * 100) | round(1) }}% rate
+      {% else %}—{% endif %}
+    </div>
+  </div>
+</section>
+
+{# ---------- Today's queue ---------- #}
 <section class="mb-8">
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-    <div class="n-tile">
-      <div class="n-tile-label">Total leads</div>
-      <div class="n-tile-value">{{ summary.total_leads }}</div>
-      <div class="n-tile-sub">across imports + outputs</div>
-    </div>
-    <div class="n-tile">
-      <div class="n-tile-label">Qualified</div>
-      <div class="n-tile-value">{{ summary.total_qualified }}</div>
-      <div class="n-tile-sub">score ≥ 60</div>
-    </div>
-    <div class="n-tile">
-      <div class="n-tile-label">Avg quality</div>
-      <div class="n-tile-value">{{ summary.avg_score }}</div>
-      <div class="n-tile-sub">weighted</div>
-    </div>
-    <div class="n-tile">
-      <div class="n-tile-label">Emails sent</div>
-      <div class="n-tile-value">{{ summary.emails_sent }}</div>
-      <div class="n-tile-sub">{{ summary.replies }} replies</div>
-    </div>
+  <h2 class="n-section-title">Today's queue</h2>
+  <div class="n-card overflow-hidden">
+    {% if today_queue %}
+      <table class="n-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Lead</th>
+            <th>Niche</th>
+            <th>Step</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for q in today_queue %}
+          <tr>
+            <td class="text-mono" style="color: var(--ink-mute); font-size: 11px;">{{ q.when }}</td>
+            <td>{{ q.business_name or q.lead_email }}</td>
+            <td style="color: var(--ink-soft);">{{ q.niche or '—' }}</td>
+            <td>
+              <div class="dot-progress">
+                {% for i in range(1, 5) %}<span class="d {% if i <= q.step %}on{% endif %}"></span>{% endfor %}
+              </div>
+              <span class="text-xs ml-2" style="color: var(--ink-mute);">{{ q.step_label }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div style="padding: 40px 24px; text-align: center;">
+        <div style="font-family: var(--font-serif); font-size: 18px; color: var(--ink); margin-bottom: 4px;">Nothing queued</div>
+        <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 14px;">Load a CSV from <a href="/outreach" style="color: var(--accent);">Outreach</a> to start sending.</p>
+      </div>
+    {% endif %}
   </div>
 </section>
 
-{% if claude_enabled %}
-<section class="mb-8 n-card">
-  <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
-    <div>
-      <div class="flex items-center gap-2 text-sm font-semibold" style="color: var(--text);">
-        AI revenue forecast
-        <span class="chip chip-purple">Claude</span>
-      </div>
-      <div class="text-xs mt-0.5" id="forecast-meta" style="color: var(--text-mute);">
-        {% if cached_forecast %}Cached at {{ cached_forecast.computed_at[:16].replace('T', ' ') }} UTC{% else %}Not run yet — click "Run forecast" to compute.{% endif %}
-      </div>
-    </div>
-    <button type="button" onclick="runForecast()" id="forecast-btn" class="btn btn-primary btn-sm">{% if cached_forecast %}Re-run{% else %}Run forecast{% endif %}</button>
-  </div>
-  <div class="p-5">
-    <div id="forecast-tiles" class="{% if not cached_forecast %}hidden {% endif %}grid grid-cols-2 md:grid-cols-4 gap-3">
-      {% if cached_forecast %}
-        {% set f = cached_forecast.forecast %}
-        <div class="n-tile">
-          <div class="n-tile-label">Projected MRR</div>
-          <div class="n-tile-value">${{ '{:,.0f}'.format(f.projected_monthly_mrr or 0) }}</div>
-        </div>
-        <div class="n-tile">
-          <div class="n-tile-label">Annualized</div>
-          <div class="n-tile-value">${{ '{:,.0f}'.format(f.projected_annual_revenue or 0) }}</div>
-        </div>
-        <div class="n-tile">
-          <div class="n-tile-label">Expected deals</div>
-          <div class="n-tile-value">{{ f.expected_deals or 0 }}</div>
-          <div class="n-tile-sub">at {{ '{:.1%}'.format(f.expected_close_rate or 0) }} close</div>
-        </div>
-        <div class="n-tile">
-          <div class="n-tile-label">Avg deal / mo</div>
-          <div class="n-tile-value">${{ '{:,.0f}'.format(f.expected_deal_value_monthly or 0) }}</div>
-          <div class="n-tile-sub">confidence: {{ f.confidence or '—' }}</div>
-        </div>
-      {% endif %}
-    </div>
-    <div class="mt-4 text-sm italic {% if not (cached_forecast and cached_forecast.forecast.reasoning) %}hidden{% endif %}" id="f-reason" style="color: var(--text-soft);">{% if cached_forecast and cached_forecast.forecast.reasoning %}"{{ cached_forecast.forecast.reasoning }}"{% endif %}</div>
-  </div>
-</section>
-{% else %}
-<section class="mb-8 n-card p-4 flex items-center justify-between" style="background: var(--bg-soft);">
-  <div class="text-sm" style="color: var(--text-soft);">AI revenue forecast disabled. Set <code>ANTHROPIC_API_KEY</code> in <code>.env</code> + restart.</div>
-  <a href="/settings" class="btn btn-sm">Settings →</a>
-</section>
-{% endif %}
-
-{% if summary.revenue_configured %}
+{# ---------- Recent outreach ---------- #}
 <section class="mb-8">
-  <div class="n-section-title">Manual override</div>
-  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-    <div class="n-tile">
-      <div class="n-tile-label">Projected pipeline</div>
-      <div class="n-tile-value">${{ '{:,.0f}'.format(summary.projected_revenue) }}</div>
-      <div class="n-tile-sub">{{ summary.total_qualified }} × {{ '{:.0%}'.format(summary.close_rate) }} × ${{ '{:,.0f}'.format(summary.avg_deal_value) }}</div>
-    </div>
-    <div class="n-tile">
-      <div class="n-tile-label">Contacted pipeline</div>
-      <div class="n-tile-value">${{ '{:,.0f}'.format(summary.contacted_revenue) }}</div>
-      <div class="n-tile-sub">{{ summary.emails_sent }} sent</div>
-    </div>
-    <div class="n-tile">
-      <div class="n-tile-label">Replied pipeline</div>
-      <div class="n-tile-value">${{ '{:,.0f}'.format(summary.replied_revenue) }}</div>
-      <div class="n-tile-sub">{{ summary.replies }} replies</div>
-    </div>
+  <h2 class="n-section-title">Recent outreach</h2>
+  <div class="n-card overflow-hidden">
+    {% if recent %}
+    <table class="n-table">
+      <thead>
+        <tr>
+          <th>When</th>
+          <th>To</th>
+          <th>Business</th>
+          <th>Subject</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in recent %}
+        <tr>
+          <td class="text-mono" style="color: var(--ink-mute); font-size: 11px;">{{ r.sent_at[:16].replace('T', ' ') }}</td>
+          <td>{{ r.lead_email }}</td>
+          <td>{{ r.business_name or '—' }}</td>
+          <td class="truncate" style="max-width: 22rem;">{{ r.subject }}</td>
+          <td>
+            {% if r.status == 'sent' %}<span class="chip chip-blue">Sent</span>
+            {% elif r.status == 'replied' %}<span class="chip chip-green">Replied</span>
+            {% elif r.status == 'opened' %}<span class="chip chip-blue">Opened</span>
+            {% else %}<span class="chip chip-red">{{ r.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+      <div style="padding: 40px 24px; text-align: center;">
+        <div style="font-family: var(--font-serif); font-size: 18px; color: var(--ink); margin-bottom: 4px;">No outreach yet</div>
+        <p class="text-xs" style="color: var(--ink-mute); margin: 0 0 14px;">Pick a CSV in Outreach and send the first batch.</p>
+        <a href="/outreach" class="btn btn-primary btn-sm">Go to Outreach</a>
+      </div>
+    {% endif %}
   </div>
 </section>
-{% endif %}
 
-<section class="mb-8 n-card overflow-hidden">
-  <div class="px-5 py-4" style="border-bottom: 1px solid var(--border);">
-    <div class="text-sm font-semibold" style="color: var(--text);">Per-CSV breakdown</div>
-  </div>
-  <table class="n-table">
-    <thead>
-      <tr>
-        <th>CSV</th>
-        <th class="text-right">Rows</th>
-        <th class="text-right">Avg score</th>
-        <th class="text-right">Qualified</th>
-        <th class="text-right">w/ email</th>
-        <th class="text-right">w/ phone</th>
-        <th class="text-right">AI fit</th>
-        <th class="text-right">Fit checked</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for c in summary.per_csv %}
-      <tr>
-        <td><a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">{{ c.name }}</a></td>
-        <td class="text-right">{{ c.rows }}</td>
-        <td class="text-right">{{ c.avg_score }}</td>
-        <td class="text-right">{{ c.qualified }}</td>
-        <td class="text-right">{{ c.with_email }}</td>
-        <td class="text-right">{{ c.with_phone }}</td>
-        <td class="text-right">{{ c.avg_fit if c.avg_fit else '—' }}</td>
-        <td class="text-right">{{ c.fit_checked }}/{{ c.rows }}</td>
-        <td class="text-right"><a href="/outreach?csv={{ c.name }}" style="color: var(--accent);" class="text-xs hover:underline">outreach →</a></td>
-      </tr>
-      {% else %}
-      <tr><td colspan="9" class="text-center" style="padding: 32px; color: var(--text-mute);">No CSVs yet — go to <a href="/scrape" style="color: var(--accent);" class="hover:underline">Scrape</a>.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+{# ---------- Per-CSV breakdown (collapsed) ---------- #}
+<section>
+  <details class="disclosure n-card" style="padding: 14px 20px;">
+    <summary>Per-CSV breakdown <span style="color: var(--ink-mute); margin-left: 6px;">{{ summary.per_csv | length }} files</span></summary>
+    <div style="margin-top: 8px; margin-left: -20px; margin-right: -20px;">
+      <table class="n-table">
+        <thead>
+          <tr>
+            <th>CSV</th>
+            <th class="text-right">Rows</th>
+            <th class="text-right">Avg score</th>
+            <th class="text-right">Qualified</th>
+            <th class="text-right">w/ email</th>
+            <th class="text-right">w/ phone</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in summary.per_csv %}
+          <tr>
+            <td><a href="/leads/{{ c.name }}" style="color: var(--accent);" class="hover:underline">{{ c.name }}</a></td>
+            <td class="text-right">{{ c.rows }}</td>
+            <td class="text-right">{{ c.avg_score }}</td>
+            <td class="text-right">{{ c.qualified }}</td>
+            <td class="text-right">{{ c.with_email }}</td>
+            <td class="text-right">{{ c.with_phone }}</td>
+            <td class="text-right text-xs"><a href="/outreach?csv={{ c.name }}" style="color: var(--accent);" class="hover:underline">outreach →</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7" class="text-center" style="padding: 32px; color: var(--ink-mute);">No CSVs yet — go to <a href="/scrape" style="color: var(--accent);">Scrape</a>.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
 </section>
-
-<section class="n-card overflow-hidden">
-  <div class="px-5 py-4" style="border-bottom: 1px solid var(--border);">
-    <div class="text-sm font-semibold" style="color: var(--text);">Recent outreach</div>
-  </div>
-  <table class="n-table">
-    <thead>
-      <tr>
-        <th>When</th>
-        <th>To</th>
-        <th>Business</th>
-        <th>Subject</th>
-        <th>Status</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in recent %}
-      <tr>
-        <td style="color: var(--text-mute);" class="text-xs">{{ r.sent_at[:16].replace('T', ' ') }}</td>
-        <td>{{ r.lead_email }}</td>
-        <td>{{ r.business_name or '—' }}</td>
-        <td class="truncate" style="max-width: 18rem;">{{ r.subject }}</td>
-        <td>
-          <span class="chip {% if r.status == 'sent' %}chip-blue{% elif r.status == 'replied' %}chip-green{% else %}chip-red{% endif %}">{{ r.status }}</span>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="text-center" style="padding: 32px; color: var(--text-mute);">No outreach yet.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-{% endblock %}
-
-{% block scripts %}
-{% if claude_enabled %}
-<script>
-async function runForecast() {
-  const btn = document.getElementById('forecast-btn');
-  const meta = document.getElementById('forecast-meta');
-  const tiles = document.getElementById('forecast-tiles');
-  btn.disabled = true;
-  btn.textContent = 'Asking Claude…';
-  meta.textContent = 'Running…';
-  try {
-    const r = await fetch('/api/ai/forecast', {method: 'POST'});
-    const data = await r.json();
-    const f = data.forecast || {};
-    if (f.error) {
-      meta.innerHTML = '<span style="color: var(--red);">' + escapeHtml(f.error) + '</span>';
-    } else {
-      tiles.classList.remove('hidden');
-      tiles.innerHTML = `
-        <div class="n-tile"><div class="n-tile-label">Projected MRR</div><div class="n-tile-value">$${(f.projected_monthly_mrr||0).toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
-        <div class="n-tile"><div class="n-tile-label">Annualized</div><div class="n-tile-value">$${(f.projected_annual_revenue||0).toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
-        <div class="n-tile"><div class="n-tile-label">Expected deals</div><div class="n-tile-value">${f.expected_deals||0}</div><div class="n-tile-sub">at ${((f.expected_close_rate||0)*100).toFixed(1)}% close</div></div>
-        <div class="n-tile"><div class="n-tile-label">Avg deal / mo</div><div class="n-tile-value">$${(f.expected_deal_value_monthly||0).toLocaleString(undefined,{maximumFractionDigits:0})}</div><div class="n-tile-sub">confidence: ${escapeHtml(f.confidence||'—')}</div></div>`;
-      const reason = document.getElementById('f-reason');
-      if (f.reasoning) {
-        reason.classList.remove('hidden');
-        reason.textContent = '"' + f.reasoning + '"';
-      }
-      meta.textContent = 'Computed just now.';
-    }
-  } catch (e) {
-    meta.innerHTML = '<span style="color: var(--red);">' + escapeHtml(e.message) + '</span>';
-  }
-  btn.disabled = false;
-  btn.textContent = 'Re-run';
-}
-</script>
-{% endif %}
 {% endblock %}

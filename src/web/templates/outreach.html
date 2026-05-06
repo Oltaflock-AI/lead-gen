@@ -1,89 +1,110 @@
 {% extends "base.html" %}
 {% block title %}Outreach — lead-gen{% endblock %}
-{% block breadcrumb %}Workspace / Outreach{% endblock %}
+{% block breadcrumb %}workspace / outreach{% endblock %}
 {% block heading %}Outreach{% endblock %}
-{% block subheading %}Personalize and send cold emails via Resend. {% if not claude_enabled %}<span style="color: var(--amber);">ANTHROPIC_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
-
-{% block header_actions %}
-{% if google_connected %}
-<button type="button" onclick="checkReplies()" class="btn btn-sm">Check for replies (Gmail)</button>
-{% endif %}
-{% endblock %}
+{% block subheading %}Personalize and send cold emails via Resend.{% if not claude_enabled %} <span style="color: var(--warn);">ANTHROPIC_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
 
 {% block content %}
+
 {% if not resend_enabled %}
-<div class="n-card p-4 mb-5" style="background: rgba(224,62,62,0.08); border-color: rgba(224,62,62,0.3); color: #a52a2a;">
-  <div class="text-sm">Resend not configured — outreach send is disabled. Set <code>RESEND_API_KEY</code> + <code>RESEND_FROM</code> in <code>.env</code>.</div>
+<div class="n-callout warn mb-5">
+  <div class="icon">⚠</div>
+  <div><p>Resend not configured — sending is disabled. Set <code>RESEND_API_KEY</code> + <code>RESEND_FROM</code> in <code>.env</code>.</p></div>
 </div>
 {% endif %}
-{% if resend_enabled and not google_connected %}
-<div class="n-card p-4 mb-5" style="background: rgba(203,145,47,0.08); border-color: rgba(203,145,47,0.3); color: #8a6020;">
-  <div class="text-sm">Tip: <a href="/auth/google" class="underline font-medium">connect Google</a> so we can scan your Gmail inbox for replies to outreach you sent through Resend.</div>
-</div>
-{% endif %}
-<div id="reply-status" class="hidden n-card p-3 mb-5 text-sm" style="background: var(--bg-soft);"></div>
 
-<div class="n-card p-4 mb-5">
-  <form method="get" action="/outreach" class="flex items-center gap-3 text-sm">
-    <label for="csv-select" style="color: var(--text-soft);">CSV:</label>
-    <select id="csv-select" name="csv" aria-label="Pick CSV" class="n-select" style="max-width: 24rem;">
-      <option value="">— select —</option>
-      {% for c in all_csvs %}
-        <option value="{{ c.name }}" {% if c.name == selected %}selected{% endif %}>{{ c.name }} ({{ c.rows }})</option>
-      {% endfor %}
-    </select>
-    <button type="submit" class="btn btn-primary btn-sm">Load</button>
-  </form>
-</div>
+<div id="reply-status" class="hidden n-callout info mb-5"><div class="icon">ℹ</div><div id="reply-status-text"></div></div>
 
-{% if selected %}
-<div class="mb-5 n-card p-4 flex items-center justify-between" style="background: var(--bg-soft);">
-  <div class="text-sm">
+{# ---------- Block 1 — CSV picker ---------- #}
+<section class="n-card mb-5" style="padding: 16px 22px;">
+  <div class="flex flex-wrap items-center gap-3">
+    <form method="get" action="/outreach" class="flex items-center gap-2">
+      <label for="csv-select" class="n-label" style="margin: 0;">Source CSV</label>
+      <select id="csv-select" name="csv" class="n-select" style="max-width: 22rem;">
+        <option value="">— select —</option>
+        {% for c in all_csvs %}
+          <option value="{{ c.name }}" {% if c.name == selected %}selected{% endif %}>{{ c.name }} ({{ c.rows }})</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-primary btn-sm">Load</button>
+    </form>
+    <div class="ml-auto">
+      {% if google_connected %}
+      <button type="button" onclick="checkReplies()" class="btn btn-sm">Check replies (Gmail)</button>
+      {% endif %}
+    </div>
+  </div>
+  {% if selected %}
+  <div class="mt-3 text-xs flex items-center gap-3" style="color: var(--ink-mute);">
+    <span class="chip chip-gray text-mono">{{ selected }}</span>
     {% if sheet %}
-      <span style="color: var(--text);">Connected Sheet for <code>{{ selected }}</code></span>
-      <a href="{{ sheet.sheet_url }}" target="_blank" rel="noopener" style="color: var(--accent);" class="hover:underline ml-1">open ↗</a>
-      <span class="text-xs ml-2" style="color: var(--text-mute);">last synced {{ sheet.updated_at[:16].replace('T', ' ') }}</span>
-    {% else %}
-      <span style="color: var(--text-soft);">No Sheet connected to <code>{{ selected }}</code> yet.</span>
+      <span>· master Sheet synced {{ sheet.updated_at[:16].replace('T', ' ') }}</span>
+      <a href="{{ sheet.sheet_url }}" target="_blank" rel="noopener" style="color: var(--accent);">open ↗</a>
     {% endif %}
+    <button type="button" onclick="syncSheet('{{ selected }}')" class="btn btn-ghost btn-sm" style="margin-left: auto;">{{ 'Sync Sheet' if sheet else 'Create + sync Sheet' }}</button>
+    <span id="sheet-status" class="text-xs"></span>
   </div>
-  <div class="flex items-center gap-2">
-    <button type="button" onclick="syncSheet('{{ selected }}')" class="btn {% if sheet %}btn-sm{% else %}btn-primary btn-sm{% endif %}">{{ 'Sync to Sheet' if sheet else 'Create + sync Sheet' }}</button>
-    <span id="sheet-status" class="text-xs" style="color: var(--text-mute);"></span>
+  {% endif %}
+</section>
+
+{% if campaign and campaign.sent %}
+<section class="n-card mb-5" style="padding: 14px 22px;">
+  <div class="flex flex-wrap items-center gap-5">
+    <div class="n-block-title" style="margin: 0;">Campaign analytics</div>
+    <div class="text-xs flex flex-wrap gap-4" style="color: var(--ink-soft);">
+      <span><strong style="color: var(--ink);">{{ campaign.sent }}</strong> sent</span>
+      <span><strong style="color: var(--ink);">{{ campaign.unique_opened }}</strong> opened ({{ campaign.open_rate }}%)</span>
+      <span><strong style="color: var(--ink);">{{ campaign.unique_clicked }}</strong> clicked ({{ campaign.click_rate }}%)</span>
+      <span><strong style="color: var(--ink);">{{ campaign.replied }}</strong> replied ({{ campaign.reply_rate }}%)</span>
+      <span><strong style="color: var(--warn);">{{ campaign.bounced }}</strong> bounced ({{ campaign.bounce_rate }}%)</span>
+      {% if campaign.failed %}<span><strong style="color: var(--warn);">{{ campaign.failed }}</strong> failed</span>{% endif %}
+    </div>
+    <div class="ml-auto text-xs" style="color: var(--ink-faint);">Auto-refreshed via Resend webhook + 15-min Gmail reply scan</div>
   </div>
-</div>
+</section>
 {% endif %}
 
 {% if rows %}
-<section class="n-card overflow-hidden mb-5">
-  <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
-    <div class="text-sm font-semibold" style="color: var(--text);">{{ rows|length }} leads with email</div>
-    <div class="flex items-center gap-2">
-      <label class="text-xs flex items-center gap-1.5" style="color: var(--text-soft);">
+{# ---------- Block 2 — Lead picker + drafts ---------- #}
+<section class="n-card mb-5" style="padding: 0; overflow: hidden;">
+  <div style="padding: 14px 22px; border-bottom: 1px solid var(--line);" class="flex items-center justify-between">
+    <div class="n-block-title">{{ rows|length }} leads with email
+      {% set saved_count = drafts_by_email|length %}
+      {% if saved_count %}<span class="text-xs ml-2" style="color: var(--ink-mute);">· {{ saved_count }} saved draft{{ '' if saved_count == 1 else 's' }}</span>{% endif %}
+    </div>
+    <div class="flex items-center gap-3">
+      <label class="text-xs flex items-center gap-1.5" style="color: var(--ink-soft);">
         <input type="checkbox" id="select-all" onchange="toggleAll(this)"> select all
       </label>
-      <button type="button" onclick="generateDrafts()" class="btn btn-primary btn-sm">Generate drafts</button>
+      <button type="button" onclick="generateDrafts(false)" class="btn btn-primary btn-sm" id="gen-btn">Generate drafts</button>
+      <button type="button" onclick="generateDrafts(true)" class="btn btn-ghost btn-sm" id="regen-btn" title="Re-run Claude on every selected lead even if a draft is saved">Re-generate</button>
+      <button type="button" onclick="sendAll()" id="send-btn" class="btn btn-primary btn-sm" {% if not resend_enabled %}disabled{% endif %}>Send all</button>
     </div>
   </div>
-  <div class="max-h-96 overflow-auto">
+  <div id="gen-status" class="text-xs" style="padding: 8px 22px; color: var(--ink-mute);"></div>
+  <div class="overflow-auto" style="max-height: 70vh;">
     <table class="n-table">
-      <thead class="sticky top-0">
+      <thead>
         <tr>
-          <th aria-label="select"></th>
+          <th></th>
           <th class="text-right">Score</th>
           <th>Business</th>
           <th>Email</th>
           <th>City</th>
-          <th class="text-right">Rating</th>
-          <th class="text-right">Reviews</th>
+          <th>Status</th>
+          <th style="min-width: 280px;">Subject</th>
+          <th style="min-width: 360px;">Draft</th>
+          <th style="min-width: 260px;">Refine</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
         {% set n = r._normalized %}
-        <tr>
+        {% set d = drafts_by_email.get(n.email|lower) %}
+        {% set st = status_by_email.get(n.email|lower) %}
+        <tr data-row-email="{{ n.email|lower }}" data-row-business="{{ n.business_name }}">
           <td>
-            <input type="checkbox" class="lead-cb" aria-label="Select lead"
+            <input type="checkbox" class="lead-cb"
               data-business="{{ n.business_name }}"
               data-email="{{ n.email }}"
               data-city="{{ n.city }}"
@@ -96,37 +117,67 @@
           <td class="text-right">
             <span class="chip {% if r._score >= 75 %}chip-green{% elif r._score >= 60 %}chip-amber{% else %}chip-gray{% endif %}">{{ r._score }}</span>
           </td>
-          <td>{{ n.business_name }}</td>
-          <td style="color: var(--text-soft);">{{ n.email }}{% if r._contacted %} <span class="chip chip-blue ml-1">contacted</span>{% endif %}</td>
-          <td style="color: var(--text-soft);">{{ n.city }}</td>
-          <td class="text-right">{{ n.rating or '—' }}</td>
-          <td class="text-right">{{ n.review_count or '—' }}</td>
+          <td>
+            {{ n.business_name }}
+            {% if r._contacted %}<br><span class="chip chip-blue mt-1">contacted</span>{% endif %}
+          </td>
+          <td>{{ n.email }}</td>
+          <td>{{ n.city }}</td>
+          <td>
+            {% if st %}
+              {% if st.status == 'replied' %}<span class="chip chip-green" title="Reply detected via Gmail">↩ replied</span>
+              {% elif st.status == 'clicked' %}<span class="chip chip-green" title="{{ st.clicks }} click(s)">✓ clicked</span>
+              {% elif st.status == 'opened' %}<span class="chip chip-blue" title="{{ st.opens }} open(s)">opened</span>
+              {% elif st.status == 'delivered' %}<span class="chip chip-blue">delivered</span>
+              {% elif st.status == 'sent' %}<span class="chip chip-gray">sent</span>
+              {% elif st.status == 'bounced' %}<span class="chip chip-red">bounced</span>
+              {% elif st.status == 'failed' %}<span class="chip chip-red">failed</span>
+              {% else %}<span class="chip chip-gray">{{ st.status }}</span>
+              {% endif %}
+              {% if st.opens %}<div class="text-xs mt-0.5" style="color: var(--ink-faint);">{{ st.opens }} open · {{ st.clicks }} click</div>{% endif %}
+            {% else %}
+              <span class="chip chip-gray" style="opacity: 0.5;">not sent</span>
+            {% endif %}
+          </td>
+          <td>
+            <input class="draft-subject n-input" data-saved="{{ '1' if d else '0' }}" aria-label="Subject for {{ n.business_name }}" title="Subject" placeholder="—" value="{{ d.subject if d else '' }}">
+            <button type="button" class="btn btn-ghost btn-sm mt-1" onclick="regenField(this, 'subject')" title="Regenerate ONLY the subject line">↻ subject</button>
+          </td>
+          <td>
+            <textarea class="draft-body n-textarea" rows="6" data-saved="{{ '1' if d else '0' }}" placeholder="—">{{ d.body if d else '' }}</textarea>
+            <div class="flex items-center gap-1 mt-1">
+              <button type="button" class="btn btn-ghost btn-sm" onclick="regenField(this, 'body')" title="Regenerate ONLY the body, keep subject">↻ body</button>
+            </div>
+            {% if signature_preview %}
+            <div class="text-xs mt-1" style="color: var(--ink-faint); border-top: 1px dashed var(--line); padding-top: 6px; white-space: pre-line; font-family: var(--font-mono);" title="Appended automatically when you click Send">+ signature on send:
+{{ signature_preview|join('\n') }}</div>
+            {% endif %}
+          </td>
+          <td>
+            <textarea class="draft-refine n-textarea" rows="3" placeholder="e.g. 'shorter, punchier opener; mention their 4.9 rating'"></textarea>
+            <div class="flex gap-1 mt-1">
+              <button type="button" class="btn btn-ghost btn-sm" onclick="refineRow(this)">Apply</button>
+              <button type="button" class="btn btn-ghost btn-sm" onclick="clearRowDraft(this)" title="Delete saved draft">Clear</button>
+              <span class="row-status text-xs" style="color: var(--ink-faint);">{% if d %}saved {{ (d.updated_at or '')[:10] }}{% endif %}</span>
+            </div>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </section>
-
-<section id="drafts-section" class="hidden n-card overflow-hidden mb-5">
-  <div class="px-5 py-4 flex items-center justify-between" style="border-bottom: 1px solid var(--border);">
-    <div class="text-sm font-semibold" style="color: var(--text);">Drafts</div>
-    <div class="flex items-center gap-2">
-      <span class="text-xs" style="color: var(--text-mute);">sending via Resend · Georgia 12pt + auto-signature</span>
-      <button type="button" onclick="sendAll()" id="send-btn" class="btn btn-primary btn-sm" style="background: var(--green); border-color: var(--green);" {% if not resend_enabled %}disabled{% endif %}>Send all</button>
-    </div>
-  </div>
-  <div id="drafts-list"></div>
-  <div id="send-status" class="px-5 py-3 text-xs" style="color: var(--text-mute);"></div>
-</section>
+<div id="send-status" class="text-xs mb-5" style="padding: 4px 4px; color: var(--ink-mute);"></div>
 {% elif selected %}
-<div class="n-card p-4 mb-5" style="background: rgba(203,145,47,0.1); border-color: rgba(203,145,47,0.3); color: #8a6020;">
-  <div class="text-sm">No leads with an email in this CSV. Run <code>Enrich</code> first.</div>
+<div class="n-callout warn mb-5">
+  <div class="icon">⚠</div>
+  <div><p>No leads with an email in this CSV. Run <code>Enrich</code> first.</p></div>
 </div>
 {% endif %}
 
-<section class="n-card overflow-hidden">
-  <div class="px-5 py-4 text-sm font-semibold" style="border-bottom: 1px solid var(--border); color: var(--text);">Outreach log (last 50)</div>
+{# ---------- Block 3 — Log ---------- #}
+<section class="n-card" style="padding: 0; overflow: hidden;">
+  <div style="padding: 14px 22px; border-bottom: 1px solid var(--line);" class="n-block-title">Outreach log <span style="color: var(--ink-mute); font-weight: 400; margin-left: 6px;">last 50</span></div>
   <table class="n-table">
     <thead>
       <tr>
@@ -135,27 +186,30 @@
         <th>Business</th>
         <th>Subject</th>
         <th>Status</th>
-        <th aria-label="actions"></th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
       {% for r in log %}
       <tr>
-        <td class="text-xs" style="color: var(--text-mute);">{{ r.sent_at[:16].replace('T', ' ') }}</td>
+        <td class="text-xs text-mono" style="color: var(--ink-mute);">{{ r.sent_at[:16].replace('T', ' ') }}</td>
         <td>{{ r.lead_email }}</td>
         <td>{{ r.business_name or '—' }}</td>
-        <td class="truncate" style="max-width: 18rem;">{{ r.subject }}</td>
+        <td class="truncate" style="max-width: 22rem;">{{ r.subject }}</td>
         <td>
-          <span class="chip {% if r.status == 'sent' %}chip-blue{% elif r.status == 'replied' %}chip-green{% else %}chip-red{% endif %}">{{ r.status }}</span>
+          {% if r.status == 'sent' %}<span class="chip chip-blue">Sent</span>
+          {% elif r.status == 'replied' %}<span class="chip chip-green">Replied</span>
+          {% elif r.status == 'opened' %}<span class="chip chip-blue">Opened</span>
+          {% else %}<span class="chip chip-red">{{ r.status }}</span>{% endif %}
         </td>
         <td class="text-right">
           {% if r.status == 'sent' %}
-          <button type="button" onclick="markReplied({{ r.id }})" style="color: var(--accent);" class="hover:underline text-xs">mark replied</button>
+          <button type="button" onclick="markReplied({{ r.id }})" class="btn btn-ghost btn-sm">mark replied</button>
           {% endif %}
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="text-center" style="padding: 32px; color: var(--text-mute);">No outreach yet.</td></tr>
+      <tr><td colspan="6" style="padding: 32px; text-align: center; color: var(--ink-mute);">No outreach yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -183,46 +237,197 @@ function selectedLeads() {
   }));
 }
 
-async function generateDrafts() {
+async function generateDrafts(force) {
   const leads = selectedLeads();
   if (!leads.length) { alert('Select at least one lead.'); return; }
-  document.getElementById('drafts-section').classList.remove('hidden');
-  document.getElementById('drafts-list').innerHTML = '<div class="px-5 py-3 text-sm" style="color: var(--text-soft);">Generating…</div>';
-  const r = await fetch('/api/outreach/preview', {
+  const status = document.getElementById('gen-status');
+  status.textContent = `Generating drafts for ${leads.length} lead${leads.length===1?'':'s'}…`;
+  document.getElementById('gen-btn').disabled = true;
+  document.getElementById('regen-btn').disabled = true;
+  try {
+    const r = await fetch('/api/outreach/preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({leads, csv_name: CSV_PATH, force: !!force}),
+    });
+    const data = await r.json();
+    if (data.error) { status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(data.error)}</span>`; return; }
+    applyDraftsToTable(data.drafts || []);
+    status.textContent = `Done · ${data.generated} generated, ${data.from_cache} reused from saved · ${data.elapsed_sec}s`;
+  } catch (e) {
+    status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(e.message)}</span>`;
+  } finally {
+    document.getElementById('gen-btn').disabled = false;
+    document.getElementById('regen-btn').disabled = false;
+  }
+}
+
+function applyDraftsToTable(drafts) {
+  drafts.forEach(d => {
+    if (!d || !d.lead) return;
+    const tr = document.querySelector(`tr[data-row-email="${(d.lead.email || '').toLowerCase()}"]`);
+    if (!tr) return;
+    tr.querySelector('.draft-subject').value = d.subject || '';
+    tr.querySelector('.draft-body').value = d.body || '';
+    tr.querySelector('.draft-subject').dataset.saved = '1';
+    tr.querySelector('.draft-body').dataset.saved = '1';
+    const status = tr.querySelector('.row-status');
+    if (status) status.textContent = d.cached ? 'saved' : 'just generated';
+  });
+}
+
+function rowToLead(tr) {
+  const cb = tr.querySelector('.lead-cb');
+  return {
+    business_name: cb.dataset.business,
+    email: cb.dataset.email,
+    city: cb.dataset.city,
+    business_type: cb.dataset.type,
+    address: cb.dataset.address,
+    rating: parseFloat(cb.dataset.rating) || 0,
+    review_count: parseInt(cb.dataset.reviews) || 0,
+    website: cb.dataset.website,
+  };
+}
+
+async function refineRow(btn) {
+  const tr = btn.closest('tr');
+  const refineEl = tr.querySelector('.draft-refine');
+  const subjectEl = tr.querySelector('.draft-subject');
+  const bodyEl = tr.querySelector('.draft-body');
+  const statusEl = tr.querySelector('.row-status');
+  const instr = (refineEl.value || '').trim();
+  if (!instr) { alert('Type a tweak instruction first.'); return; }
+  if (!bodyEl.value.trim()) { alert('Generate a draft for this row first.'); return; }
+  btn.disabled = true;
+  statusEl.textContent = 'refining…';
+  try {
+    const r = await fetch('/api/outreach/refine', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        csv_name: CSV_PATH,
+        lead: rowToLead(tr),
+        subject: subjectEl.value,
+        body: bodyEl.value,
+        instruction: instr,
+      }),
+    });
+    const data = await r.json();
+    if (data.error) { statusEl.innerHTML = `<span style="color: var(--warn);">${escapeHtml(data.error)}</span>`; return; }
+    subjectEl.value = data.subject || subjectEl.value;
+    bodyEl.value = data.body || bodyEl.value;
+    refineEl.value = '';
+    statusEl.textContent = 'refined · saved';
+  } catch (e) {
+    statusEl.innerHTML = `<span style="color: var(--warn);">${escapeHtml(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function regenField(btn, field) {
+  const tr = btn.closest('tr');
+  const subjectEl = tr.querySelector('.draft-subject');
+  const bodyEl = tr.querySelector('.draft-body');
+  const statusEl = tr.querySelector('.row-status');
+  if (field === 'body' && !subjectEl.value.trim()) {
+    alert('Generate a draft first so there is a subject to keep.');
+    return;
+  }
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = `regenerating ${field}…`;
+  try {
+    const r = await fetch('/api/outreach/regen-field', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        csv_name: CSV_PATH,
+        lead: rowToLead(tr),
+        field,
+        subject: subjectEl.value,
+        body: bodyEl.value,
+      }),
+    });
+    const data = await r.json();
+    if (data.error) {
+      if (statusEl) statusEl.innerHTML = `<span style="color: var(--warn);">${escapeHtml(data.error)}</span>`;
+      return;
+    }
+    if (field === 'subject') subjectEl.value = data.subject || subjectEl.value;
+    else bodyEl.value = data.body || bodyEl.value;
+    if (statusEl) statusEl.textContent = `${field} regenerated · saved`;
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<span style="color: var(--warn);">${escapeHtml(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function clearRowDraft(btn) {
+  const tr = btn.closest('tr');
+  const email = tr.dataset.rowEmail;
+  if (!confirm(`Clear saved draft for ${email}?`)) return;
+  const subjectEl = tr.querySelector('.draft-subject');
+  const bodyEl = tr.querySelector('.draft-body');
+  const statusEl = tr.querySelector('.row-status');
+  await fetch('/api/outreach/draft/clear', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({leads}),
+    body: JSON.stringify({csv_name: CSV_PATH, lead_email: email}),
   });
-  const data = await r.json();
-  renderDrafts(data.drafts || [], data.personalized_engine);
+  subjectEl.value = '';
+  bodyEl.value = '';
+  if (statusEl) statusEl.textContent = '';
 }
 
-function renderDrafts(drafts, engine) {
-  const list = document.getElementById('drafts-list');
-  list.innerHTML = '';
-  drafts.forEach((d) => {
-    const div = document.createElement('div');
-    div.className = 'px-5 py-4';
-    div.style.borderTop = '1px solid var(--border)';
-    div.dataset.email = d.lead.email;
-    div.dataset.business = d.lead.business_name;
-    div.innerHTML = `
-      <div class="text-xs mb-2" style="color: var(--text-mute);">→ ${escapeHtml(d.lead.business_name)} &lt;${escapeHtml(d.lead.email)}&gt; · engine: ${engine}${d.error ? ' · <span style="color: var(--red);">'+escapeHtml(d.error)+'</span>' : ''}</div>
-      <input class="draft-subject n-input mb-2" value="${escapeHtml(d.subject)}">
-      <textarea class="draft-body n-textarea" rows="6">${escapeHtml(d.body)}</textarea>
-    `;
-    list.appendChild(div);
-  });
+// Auto-save manual edits to subject / body (debounced).
+const _saveTimers = new WeakMap();
+function scheduleAutosave(tr) {
+  clearTimeout(_saveTimers.get(tr));
+  _saveTimers.set(tr, setTimeout(() => persistRow(tr), 700));
 }
+
+async function persistRow(tr) {
+  const email = tr.dataset.rowEmail;
+  const business = tr.dataset.rowBusiness;
+  const subject = tr.querySelector('.draft-subject').value;
+  const body = tr.querySelector('.draft-body').value;
+  if (!subject && !body) return;
+  const status = tr.querySelector('.row-status');
+  try {
+    await fetch('/api/outreach/draft', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        csv_name: CSV_PATH, lead_email: email, business_name: business,
+        subject, body,
+      }),
+    });
+    if (status) status.textContent = 'saved · just now';
+  } catch (e) { /* swallow */ }
+}
+
+document.addEventListener('input', (e) => {
+  if (!e.target.classList) return;
+  if (e.target.classList.contains('draft-subject') ||
+      e.target.classList.contains('draft-body')) {
+    const tr = e.target.closest('tr');
+    if (tr && tr.dataset.rowEmail) scheduleAutosave(tr);
+  }
+});
 
 async function sendAll() {
-  const items = Array.from(document.querySelectorAll('#drafts-list > div')).map(div => ({
-    to: div.dataset.email,
-    business_name: div.dataset.business,
-    subject: div.querySelector('.draft-subject').value,
-    body: div.querySelector('.draft-body').value,
-  }));
-  if (!items.length) return;
+  const items = Array.from(document.querySelectorAll('tr[data-row-email]'))
+    .filter(tr => (tr.querySelector('.draft-body').value || '').trim())
+    .map(tr => ({
+      to: tr.dataset.rowEmail,
+      business_name: tr.dataset.rowBusiness,
+      subject: tr.querySelector('.draft-subject').value,
+      body: tr.querySelector('.draft-body').value,
+    }));
+  if (!items.length) { alert('No drafts to send. Generate some first.'); return; }
+  if (!confirm(`Send ${items.length} email${items.length===1?'':'s'} via Resend?`)) return;
   const status = document.getElementById('send-status');
   status.textContent = `Sending ${items.length} via Resend…`;
   document.getElementById('send-btn').disabled = true;
@@ -234,7 +439,7 @@ async function sendAll() {
     });
     const data = await r.json();
     if (data.error) {
-      status.innerHTML = `<span style="color: var(--red);">${escapeHtml(data.error)}</span>`;
+      status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(data.error)}</span>`;
     } else {
       const ok = (data.results || []).filter(x => x.ok).length;
       const fail = (data.results || []).filter(x => !x.ok).length;
@@ -250,9 +455,10 @@ async function markReplied(id) {
 }
 
 async function checkReplies() {
-  const status = document.getElementById('reply-status');
-  status.classList.remove('hidden');
-  status.textContent = 'Scanning Gmail inbox for replies (last 30 days)…';
+  const wrap = document.getElementById('reply-status');
+  const text = document.getElementById('reply-status-text');
+  wrap.classList.remove('hidden');
+  text.textContent = 'Scanning Gmail inbox for replies (last 30 days)…';
   try {
     const r = await fetch('/api/outreach/check-replies', {
       method: 'POST',
@@ -261,13 +467,13 @@ async function checkReplies() {
     });
     const data = await r.json();
     if (data.error) {
-      status.innerHTML = `<span style="color: var(--red);">${escapeHtml(data.error)}</span>`;
+      text.innerHTML = `<span style="color: var(--warn);">${escapeHtml(data.error)}</span>`;
       return;
     }
-    status.innerHTML = `Scanned ${data.addresses} contacted addresses · matched ${data.matched} messages · marked <strong>${data.marked_replied}</strong> rows as replied.`;
+    text.innerHTML = `Scanned ${data.addresses} contacted addresses · matched ${data.matched} messages · marked <strong>${data.marked_replied}</strong> rows as replied.`;
     if (data.marked_replied > 0) setTimeout(() => location.reload(), 2000);
   } catch (e) {
-    status.innerHTML = `<span style="color: var(--red);">${escapeHtml(e.message)}</span>`;
+    text.innerHTML = `<span style="color: var(--warn);">${escapeHtml(e.message)}</span>`;
   }
 }
 

@@ -6,9 +6,12 @@
 
 # Data
 data/outputs/*.csv
+data/outputs/*.csv.bak
 data/imports/*.csv
 data/cache/
 data/*.db
+data/*.db.bak.*
+*.bak
 
 # Python
 __pycache__/

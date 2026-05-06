@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 
@@ -5,6 +6,8 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
@@ -211,7 +214,20 @@ NICHE_PRESETS = {
 }
 
 
-def search_places(query, api_key, region_code="US", page_token=None):
+def search_places(query, api_key, region_code="US", page_token=None, on_event=None):
+    """Call Google Places Text Search.
+
+    Returns the JSON dict on success, or `{"_error": {...}}` on failure so the
+    caller can distinguish "API failed" from "API returned 0 places".
+    Optional `on_event(kind, payload)` reports retries / errors upstream.
+    """
+    if not api_key:
+        err = {"status": 0, "reason": "missing_api_key", "body": "GOOGLE_PLACES_API_KEY empty"}
+        log.error("places search aborted — %s", err["body"])
+        if on_event:
+            on_event("query_error", {"query": query, **err})
+        return {"_error": err}
+
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
@@ -226,33 +242,62 @@ def search_places(query, api_key, region_code="US", page_token=None):
     if page_token:
         body["pageToken"] = page_token
 
+    last_err = None
     for attempt in range(5):
         try:
             resp = requests.post(SEARCH_URL, headers=headers, json=body, timeout=15)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError:
-            return {}
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            time.sleep(10 * (attempt + 1))
-    return {}
+            status = resp.status_code
+            if 200 <= status < 300:
+                return resp.json()
+            # 4xx: don't retry auth/quota/bad-request — surface immediately
+            if 400 <= status < 500 and status not in (408, 429):
+                snippet = (resp.text or "")[:400]
+                log.error("places search %s [%s] %s — %s", query, region_code, status, snippet)
+                err = {"status": status, "reason": "http_error", "body": snippet}
+                if on_event:
+                    on_event("query_error", {"query": query, **err})
+                return {"_error": err}
+            # 408/429/5xx: retry with backoff
+            log.warning(
+                "places search %s [%s] transient %s (attempt %d/5)",
+                query, region_code, status, attempt + 1,
+            )
+            last_err = {"status": status, "reason": "transient", "body": (resp.text or "")[:200]}
+            time.sleep(2 * (attempt + 1))
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            log.warning(
+                "places search %s [%s] network error (attempt %d/5): %s",
+                query, region_code, attempt + 1, e,
+            )
+            last_err = {"status": 0, "reason": "network", "body": str(e)}
+            time.sleep(2 * (attempt + 1))
+
+    if on_event and last_err:
+        on_event("query_error", {"query": query, **last_err})
+    return {"_error": last_err or {"status": 0, "reason": "unknown", "body": "exhausted retries"}}
+
+
+FILTER_REASONS = (
+    "duplicate", "has_website", "not_operational", "below_rating", "below_reviews",
+)
 
 
 def filter_place(place, min_reviews, min_rating, seen_ids, require_no_website=True):
+    """Return (lead_dict, None) if kept, or (None, reason) if filtered out."""
     pid = place.get("id")
     if not pid or pid in seen_ids:
-        return None
+        return None, "duplicate"
     if require_no_website and place.get("websiteUri", ""):
-        return None
+        return None, "has_website"
     status = place.get("businessStatus", "N/A")
     if status not in ("OPERATIONAL", "N/A"):
-        return None
+        return None, "not_operational"
     rating = place.get("rating", 0)
     if rating < min_rating:
-        return None
+        return None, "below_rating"
     reviews = place.get("userRatingCount", 0)
     if reviews < min_reviews:
-        return None
+        return None, "below_reviews"
     return {
         "Business Name": place.get("displayName", {}).get("text", "N/A"),
         "Address": place.get("formattedAddress", "N/A"),
@@ -261,15 +306,60 @@ def filter_place(place, min_reviews, min_rating, seen_ids, require_no_website=Tr
         "Reviews": reviews,
         "Business Type": "",
         "Google Maps URL": place.get("googleMapsUri", ""),
-    }
+    }, None
 
 
 def run_search(cities, business_types, api_key, region_code="US",
                min_reviews=50, min_rating=4.0, target_leads=100,
-               require_no_website=True):
+               require_no_website=True, on_event=None):
+    """Yield (lead, progress) tuples. Optional `on_event(kind, payload)` reports
+    per-query diagnostics so callers can show real-time progress even when no
+    lead survives filtering.
+    """
     seen_ids = set()
     leads_found = 0
     api_calls = 0
+    total_raw = 0
+    total_filtered = 0
+    filter_counts = {r: 0 for r in FILTER_REASONS}
+
+    log.info(
+        "run_search start: cities=%d types=%d target=%d region=%s "
+        "min_reviews=%d min_rating=%.1f require_no_website=%s",
+        len(cities), len(business_types), target_leads, region_code,
+        min_reviews, min_rating, require_no_website,
+    )
+    if on_event:
+        on_event("search_start", {
+            "cities": len(cities), "types": len(business_types),
+            "target": target_leads, "region": region_code,
+        })
+
+    def _process(places, query, city, biz_type):
+        nonlocal leads_found, total_raw, total_filtered
+        for place in places:
+            total_raw += 1
+            if leads_found >= target_leads:
+                return
+            lead, reason = filter_place(
+                place, min_reviews, min_rating, seen_ids, require_no_website,
+            )
+            if lead is None:
+                total_filtered += 1
+                if reason in filter_counts:
+                    filter_counts[reason] += 1
+                continue
+            seen_ids.add(place["id"])
+            lead["Business Type"] = biz_type
+            lead["City"] = city
+            leads_found += 1
+            yield lead, {
+                "leads_found": leads_found,
+                "total_target": target_leads,
+                "current_city": city,
+                "current_type": biz_type,
+                "api_calls": api_calls,
+            }
 
     for city in cities:
         if leads_found >= target_leads:
@@ -278,46 +368,61 @@ def run_search(cities, business_types, api_key, region_code="US",
             if leads_found >= target_leads:
                 break
             query = f"{biz_type} in {city}"
-            data = search_places(query, api_key, region_code)
+            log.info("query: %s", query)
+            if on_event:
+                on_event("query_start", {
+                    "city": city, "type": biz_type, "query": query,
+                    "leads_so_far": leads_found,
+                })
+
+            data = search_places(query, api_key, region_code, on_event=on_event)
             api_calls += 1
+            if "_error" in data:
+                # Error already logged + reported via on_event by search_places.
+                continue
 
-            for place in data.get("places", []):
-                if leads_found >= target_leads:
-                    break
-                lead = filter_place(place, min_reviews, min_rating, seen_ids, require_no_website)
-                if lead:
-                    seen_ids.add(place["id"])
-                    lead["Business Type"] = biz_type
-                    lead["City"] = city
-                    leads_found += 1
-                    yield lead, {
-                        "leads_found": leads_found,
-                        "total_target": target_leads,
-                        "current_city": city,
-                        "current_type": biz_type,
-                        "api_calls": api_calls,
-                    }
+            places = data.get("places", []) or []
+            kept_before = leads_found
+            yield from _process(places, query, city, biz_type)
 
+            # Pagination — Google returns up to 60 results across 3 pages.
             next_token = data.get("nextPageToken")
-            while next_token and leads_found < target_leads:
+            page = 1
+            while next_token and leads_found < target_leads and page < 3:
                 time.sleep(0.1)
-                data = search_places(query, api_key, region_code, page_token=next_token)
+                data = search_places(
+                    query, api_key, region_code,
+                    page_token=next_token, on_event=on_event,
+                )
                 api_calls += 1
+                if "_error" in data:
+                    break
                 next_token = data.get("nextPageToken")
-                for place in data.get("places", []):
-                    if leads_found >= target_leads:
-                        break
-                    lead = filter_place(place, min_reviews, min_rating, seen_ids, require_no_website)
-                    if lead:
-                        seen_ids.add(place["id"])
-                        lead["Business Type"] = biz_type
-                        lead["City"] = city
-                        leads_found += 1
-                        yield lead, {
-                            "leads_found": leads_found,
-                            "total_target": target_leads,
-                            "current_city": city,
-                            "current_type": biz_type,
-                            "api_calls": api_calls,
-                        }
+                page_places = data.get("places", []) or []
+                places.extend(page_places)
+                yield from _process(page_places, query, city, biz_type)
+                page += 1
+
+            kept_this_query = leads_found - kept_before
+            log.info(
+                "query done: %s — raw=%d kept=%d total_kept=%d",
+                query, len(places), kept_this_query, leads_found,
+            )
+            if on_event:
+                on_event("query_done", {
+                    "city": city, "type": biz_type,
+                    "raw": len(places), "kept": kept_this_query,
+                    "total_kept": leads_found,
+                })
             time.sleep(0.1)
+
+    log.info(
+        "run_search end: kept=%d raw=%d filtered=%d api_calls=%d filters=%s",
+        leads_found, total_raw, total_filtered, api_calls, filter_counts,
+    )
+    if on_event:
+        on_event("search_end", {
+            "kept": leads_found, "raw": total_raw,
+            "filtered": total_filtered, "api_calls": api_calls,
+            "filter_counts": filter_counts,
+        })

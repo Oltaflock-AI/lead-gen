@@ -1,37 +1,45 @@
 {# Reusable Asana task creation modal — included once from base.html and
    triggered by JS via window.openAsanaTask({title, notes, csv, business}). #}
-<div id="asana-modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-  <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="font-semibold text-base">Create Asana task</h3>
-      <button type="button" onclick="closeAsana()" class="text-slate-400 hover:text-slate-700 text-lg leading-none" aria-label="Close">×</button>
+<div id="asana-modal" class="hidden fixed inset-0 n-modal-backdrop flex items-center justify-center z-50 p-4">
+  <div class="n-modal w-full max-w-md">
+    <div class="n-modal-header">
+      <h3 class="font-semibold" style="font-size: var(--fs-lg);">Create Asana task</h3>
+      <button type="button" onclick="closeAsana()" class="n-close" aria-label="Close">×</button>
     </div>
-    <p class="text-xs text-slate-500 mb-3" id="asana-target"></p>
-    <label class="block text-sm">
-      <span class="text-xs text-slate-600">Title <span class="text-red-500">*</span></span>
-      <input id="asana-name" class="w-full border border-slate-300 rounded px-2 py-1.5 mt-1 text-sm" placeholder="Short, action-oriented title">
-    </label>
-    <label class="block text-sm mt-2">
-      <span class="text-xs text-slate-600">Notes</span>
-      <textarea id="asana-notes" rows="5" class="w-full border border-slate-300 rounded px-2 py-1.5 mt-1 text-sm" placeholder="Context, link, who to contact"></textarea>
-    </label>
-    <div class="grid grid-cols-2 gap-3 mt-2">
-      <label class="block text-sm">
-        <span class="text-xs text-slate-600">Project</span>
-        <select id="asana-project" aria-label="Asana project" class="w-full border border-slate-300 rounded px-2 py-1.5 mt-1 text-sm"></select>
-      </label>
-      <label class="block text-sm">
-        <span class="text-xs text-slate-600">Assignee</span>
-        <select id="asana-assignee" aria-label="Asana assignee" class="w-full border border-slate-300 rounded px-2 py-1.5 mt-1 text-sm"></select>
-      </label>
+
+    <div class="n-modal-body">
+      <p class="n-meta mb-3" id="asana-target"></p>
+
+      <div class="n-field">
+        <label class="n-label" for="asana-name">Title <span style="color: var(--red);">*</span></label>
+        <input id="asana-name" class="n-input" placeholder="Short, action-oriented title">
+      </div>
+
+      <div class="n-field">
+        <label class="n-label" for="asana-notes">Notes</label>
+        <textarea id="asana-notes" rows="5" class="n-textarea" placeholder="Context, link, who to contact"></textarea>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div class="n-field" style="margin-bottom: 0;">
+          <label class="n-label" for="asana-project">Project</label>
+          <select id="asana-project" aria-label="Asana project" class="n-select"></select>
+        </div>
+        <div class="n-field" style="margin-bottom: 0;">
+          <label class="n-label" for="asana-assignee">Assignee</label>
+          <select id="asana-assignee" aria-label="Asana assignee" class="n-select"></select>
+        </div>
+      </div>
+
+      <div id="asana-status" class="n-meta mt-3" style="min-height: 1.25rem;"></div>
+      <div id="asana-config-hint" class="hidden mt-2" style="font-size: var(--fs-xs); color: #8a6020; background: rgba(203,145,47,0.10); padding: 8px 10px; border-radius: var(--r-md); border: 1px solid rgba(203,145,47,0.25);">
+        Asana not configured. Add <code>ASANA_PAT</code> to <code>.env</code> and restart.
+      </div>
     </div>
-    <div class="mt-4 flex items-center justify-end gap-2">
-      <button type="button" onclick="closeAsana()" class="text-xs px-3 py-1.5 rounded border border-slate-300">Cancel</button>
-      <button type="button" id="asana-submit" onclick="submitAsana()" class="text-xs px-3 py-1.5 rounded bg-slate-900 text-white">Create task</button>
-    </div>
-    <div id="asana-status" class="text-xs text-slate-500 mt-3 min-h-[1.25rem]"></div>
-    <div id="asana-config-hint" class="text-xs text-amber-700 mt-2 hidden">
-      Asana not configured. Add <code>ASANA_PAT</code> to <code>.env</code> and restart.
+
+    <div class="n-modal-footer">
+      <button type="button" onclick="closeAsana()" class="btn btn-sm">Cancel</button>
+      <button type="button" id="asana-submit" onclick="submitAsana()" class="btn btn-primary btn-sm">Create task</button>
     </div>
   </div>
 </div>
