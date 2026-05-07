@@ -44,6 +44,7 @@ def verify_lead_email(
     drop_role=None,
     probe_smtp=None,
     skip_search=False,
+    deep=False,
 ):
     """Return a rich verification record:
 
@@ -119,11 +120,18 @@ def verify_lead_email(
     if skip_search:
         return _empty("none")
 
-    # 2. DDG search.
-    found = find_email(business_name, region, country) if business_name else ""
+    # 2. Search.
+    if not business_name:
+        return _empty("none")
+    if deep:
+        from .email_finder import deep_find_email
+        found, src = deep_find_email(business_name, region, country)
+        if found:
+            return _build(found, src or "deep_search")
+        return _empty("none")
+    found = find_email(business_name, region, country)
     if found:
         return _build(found, "search")
-
     return _empty("none")
 
 

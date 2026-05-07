@@ -1038,11 +1038,20 @@ def api_scrape_interactive():
         else:
             cities = [state]
 
-    # When verifying emails, we need to OVER-scrape because many leads will not
-    # have a discoverable email. Search a larger pool, but stop appending once
-    # we've collected `target_leads` rows that actually carry an email.
-    internal_target = target_leads * 6 if verify_emails else target_leads
-    internal_target = min(internal_target, 1000)
+    # When verifying emails, we OVER-scrape heavily because email yield from
+    # DDG search is low (~10-20%) — especially with require_no_website=True
+    # since the lead has no site to scrape. We keep iterating until we've
+    # collected `target_leads` rows that actually carry an email; the worker
+    # `break`s as soon as that target is met. Multiplier sized so even a
+    # ~5% hit rate still satisfies the user's target.
+    if verify_emails:
+        # Bias the multiplier higher when the no-website filter is on,
+        # since those leads have the worst email-yield.
+        per_target = 30 if require_no_website else 20
+        internal_target = max(target_leads * per_target, target_leads + 200)
+        internal_target = min(internal_target, 5000)
+    else:
+        internal_target = target_leads
 
     label = f"Scrape · {niche} · {city or state}"
     jid = jobs.create_job("interactive_scrape", label)
@@ -1985,6 +1994,93 @@ def api_bulk_verify_emails():
             "found": found,
             "missing": missing,
             "persisted": persisted,
+        }
+        jobs.append(jid, {"type": "done", **result})
+        jobs.finish(jid, result=result)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
+
+
+@app.route("/api/bulk-deep-enrich", methods=["POST"])
+def api_bulk_deep_enrich():
+    """Deep email enrichment: same shape as bulk-verify-emails but the
+    underlying lookup fetches top result URLs + Facebook About instead of
+    only scanning DDG snippets. Slower per-lead (~10-20s) but ~2-3× hit
+    rate on no-website businesses. Skips rows that already have an email."""
+    if not GOOGLE_PLACES_API_KEY:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY required"}), 400
+    data = request.json or {}
+    csv_name = data.get("csv_name", "")
+    only_missing = bool(data.get("only_missing", True))
+    path = _safe_csv_path(csv_name)
+    if not path:
+        return jsonify({"error": f"CSV not found: {csv_name}"}), 404
+
+    _, rows = metrics.read_csv_with_scores(path)
+    total = len(rows)
+
+    label = f"Deep enrich · {csv_name}"
+    jid = jobs.create_job("deep_enrich", label)
+
+    def worker():
+        verified, found, missing, persisted, skipped = 0, 0, 0, 0, 0
+        for i, r in enumerate(rows, 1):
+            if jobs.is_cancelled(jid):
+                jobs.append(jid, {"type": "log",
+                                  "line": f"✋ cancelled — processed {i-1}/{total}"})
+                break
+            n = r["_normalized"]
+            name = n["business_name"]
+            current = n["email"]
+            region = n["city"]
+            if not name:
+                continue
+            if only_missing and current:
+                skipped += 1
+                continue
+            try:
+                v = verify_lead_email(name, current, region, "", deep=True)
+            except Exception as e:
+                log.exception("deep enrich row %d failed", i)
+                v = {"email": "", "verified": False, "kind": "unknown",
+                     "legit": False, "smtp_check": "skipped"}
+                jobs.append(jid, {"type": "log",
+                                  "line": f"  ✗ {name} — {e}"})
+            if v.get("verified"):
+                verified += 1
+            elif v.get("email"):
+                found += 1
+            else:
+                missing += 1
+            if v.get("email") or current:
+                ok = update_csv_email(
+                    path, name, new_email=v.get("email", current),
+                    verified=v.get("verified"),
+                    kind=v.get("kind"),
+                    legit=v.get("legit"),
+                    smtp_check=v.get("smtp_check"),
+                )
+                if ok:
+                    persisted += 1
+            jobs.append(jid, {
+                "type": "progress",
+                "i": i, "total": total,
+                "name": name,
+                "email": v.get("email", ""),
+                "verified": v.get("verified"),
+                "verified_count": verified,
+                "found_count": found,
+                "missing_count": missing,
+                "skipped_count": skipped,
+            })
+        result = {
+            "total": total,
+            "verified": verified,
+            "found": found,
+            "missing": missing,
+            "persisted": persisted,
+            "skipped": skipped,
         }
         jobs.append(jid, {"type": "done", **result})
         jobs.finish(jid, result=result)
