@@ -50,16 +50,34 @@ def append(jid, event):
             j["events"].append(event)
 
 
-def finish(jid, result=None):
+def cancel(jid):
+    """Request cooperative cancel. Worker must poll `is_cancelled(jid)`
+    between units of work and break out — partial results are kept."""
+    with _lock:
+        j = _jobs.get(jid)
+        if j is None or j["status"] != "running":
+            return False
+        j["cancel_requested"] = True
+    log.info("job cancel requested: %s", jid)
+    return True
+
+
+def is_cancelled(jid):
+    with _lock:
+        j = _jobs.get(jid)
+        return bool(j and j.get("cancel_requested"))
+
+
+def finish(jid, result=None, status="done"):
     with _lock:
         j = _jobs.get(jid)
         if j is None:
             return
-        j["status"] = "done"
+        j["status"] = status
         j["result"] = result
         j["finished_at"] = _now()
         kind = j["kind"]
-    log.info("job done: %s [%s]", jid, kind)
+    log.info("job %s: %s [%s]", status, jid, kind)
     _trim_completed()
 
 

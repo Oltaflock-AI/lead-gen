@@ -172,8 +172,8 @@
 {# ---------- Send quota ---------- #}
 <section class="n-card mb-6" style="padding: 16px 22px;">
   <div class="flex items-baseline justify-between mb-3">
-    <div class="n-block-title" style="margin: 0;">Send quota (Resend free tier)</div>
-    <div class="text-xs" style="color: var(--ink-mute);">Caps configurable via <code>LEADGEN_DAILY_CAP</code> / <code>LEADGEN_MONTHLY_CAP</code></div>
+    <div class="n-block-title" style="margin: 0;">Send volume (advisory)</div>
+    <div class="text-xs" style="color: var(--ink-mute);">Indicator only — not a hard limit. Sending continues until Resend rate-limits us. Reference values via <code>LEADGEN_DAILY_CAP</code> / <code>LEADGEN_MONTHLY_CAP</code>.</div>
   </div>
   <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
     <div>
@@ -382,12 +382,14 @@ async function refreshQuota(){
     document.getElementById('q-today-bar').style.background = colorOf(q.today_pct);
     document.getElementById('q-month-bar').style.background = colorOf(q.month_pct);
     const warn = document.getElementById('q-warning');
+    // Caps are advisory indicators only — sends keep going until Resend
+    // itself rate-limits us. The bar just signals where we are.
     if (q.daily_blocked) {
       warn.style.display = 'block';
-      warn.textContent = `Daily cap hit (${q.today}/${q.today_cap}). New sends will be queued until tomorrow.`;
+      warn.textContent = `Past daily indicator (${q.today}/${q.today_cap}). Sending continues until Resend pushes back.`;
     } else if (q.monthly_blocked) {
       warn.style.display = 'block';
-      warn.textContent = `Monthly cap hit (${q.month}/${q.month_cap}). New sends paused until next month.`;
+      warn.textContent = `Past monthly indicator (${q.month}/${q.month_cap}). Sending continues until Resend pushes back.`;
     } else {
       warn.style.display = 'none';
     }

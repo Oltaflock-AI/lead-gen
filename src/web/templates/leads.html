@@ -6,6 +6,54 @@
 
 {% block content %}
 
+<section class="n-card mb-4" style="padding: 14px 18px;">
+  <div class="flex items-center justify-between gap-3" style="flex-wrap: wrap;">
+    <div>
+      <div class="n-block-title" style="margin: 0 0 4px;">Upload your own CSV</div>
+      <div class="text-xs" style="color: var(--ink-mute);">
+        Drop a .csv with at minimum an <code>email</code> (or <code>Email</code>) column.
+        Optional columns help personalisation: <code>Business Name</code>, <code>City</code>,
+        <code>Business Type</code>, <code>website</code>, <code>phone</code>.
+        Saved into <code>data/imports/</code>.
+      </div>
+    </div>
+    <form id="csv-upload-form" enctype="multipart/form-data" class="flex items-center gap-2">
+      <input type="file" name="file" accept=".csv,text/csv" required
+             aria-label="CSV file to upload"
+             title="Choose a .csv file with at least an email column"
+             style="font-size: 12px;">
+      <button type="submit" class="btn btn-primary">Upload</button>
+      <span id="csv-upload-status" class="text-xs" style="color: var(--ink-mute);"></span>
+    </form>
+  </div>
+</section>
+
+<script>
+document.getElementById('csv-upload-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const status = document.getElementById('csv-upload-status');
+  const fd = new FormData(form);
+  status.textContent = 'uploading…';
+  status.style.color = 'var(--ink-mute)';
+  try {
+    const r = await fetch('/api/leads/upload', { method: 'POST', body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      status.textContent = d.error || ('failed: ' + r.status);
+      status.style.color = 'var(--red,#b00)';
+      return;
+    }
+    status.textContent = `saved ${d.name} (${d.rows} rows) — opening…`;
+    status.style.color = 'var(--green)';
+    setTimeout(() => { window.location = d.next_url; }, 600);
+  } catch (err) {
+    status.textContent = 'upload failed: ' + err.message;
+    status.style.color = 'var(--red,#b00)';
+  }
+});
+</script>
+
 {% if csvs %}
 <section class="csv-grid">
   {% for c in csvs %}

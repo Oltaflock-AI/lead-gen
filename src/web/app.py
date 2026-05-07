@@ -17,6 +17,7 @@ from flask import (
     Flask, Response, jsonify, redirect, render_template, request,
     session, stream_with_context, url_for,
 )
+from werkzeug.utils import secure_filename
 from google_auth_oauthlib.flow import Flow
 
 from . import ai_metrics
@@ -758,6 +759,60 @@ def leads_index():
     return render_template("leads.html", csvs=summaries, **_ctx())
 
 
+@app.route("/api/leads/upload", methods=["POST"])
+def api_leads_upload():
+    """Accept a user-supplied CSV. File saved into data/imports/ with a
+    sanitised name. Email column may be any of: email, Email,
+    contact_emails, contact_professions_email — see metrics.COLUMN_ALIASES."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "no file uploaded (form field 'file')"}), 400
+    raw_name = secure_filename(f.filename)
+    if not raw_name.lower().endswith(".csv"):
+        return jsonify({"error": "only .csv files are accepted"}), 400
+
+    imports_dir = PROJECT_ROOT / "data" / "imports"
+    imports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Disambiguate clashes so an upload never silently overwrites a prior one.
+    dest = imports_dir / raw_name
+    if dest.exists():
+        stem, suffix = dest.stem, dest.suffix
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        dest = imports_dir / f"{stem}_{ts}{suffix}"
+
+    f.save(str(dest))
+
+    # Validate CSV is parseable + has at least one email column.
+    try:
+        with open(dest, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            headers = list(reader.fieldnames or [])
+            n_rows = sum(1 for _ in reader)
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        return jsonify({"error": f"unparseable CSV: {e}"}), 400
+
+    email_aliases = {"email", "Email", "contact_emails", "contact_professions_email"}
+    if not (set(headers) & email_aliases):
+        dest.unlink(missing_ok=True)
+        return jsonify({
+            "error": "CSV must contain one of these email columns: "
+                     + ", ".join(sorted(email_aliases)),
+            "headers": headers,
+        }), 400
+
+    log.info("uploaded leads CSV %s rows=%d headers=%s",
+             dest.name, n_rows, headers)
+    return jsonify({
+        "ok": True,
+        "name": dest.name,
+        "rows": n_rows,
+        "headers": headers,
+        "next_url": url_for("leads_detail", name=dest.name),
+    })
+
+
 @app.route("/leads/<name>")
 def leads_detail(name):
     path = _safe_csv_path(name)
@@ -924,13 +979,22 @@ def api_scrape_canonical(key):
 
     def worker():
         try:
-            for line in run_scraper_stream(key):
-                jobs.append(jid, {"type": "log", "line": line})
-            jobs.append(jid, {"type": "done"})
-            jobs.finish(jid, result={"key": key})
+            gen = run_scraper_stream(key)
+            try:
+                for line in gen:
+                    if jobs.is_cancelled(jid):
+                        jobs.append(jid, {"type": "log", "line": "✋ cancelled by user — stopping scraper"})
+                        break
+                    jobs.append(jid, {"type": "log", "line": line})
+            finally:
+                gen.close()  # triggers proc.terminate()
+            cancelled = jobs.is_cancelled(jid)
+            final_status = "cancelled" if cancelled else "done"
+            jobs.append(jid, {"type": "done", "cancelled": cancelled})
+            jobs.finish(jid, result={"key": key, "cancelled": cancelled}, status=final_status)
             j = jobs.get(jid)
             db.record_scrape_finish(
-                scrape_id, "done",
+                scrape_id, final_status,
                 events=(j or {}).get("events", []),
             )
         except Exception as e:
@@ -1046,6 +1110,12 @@ def api_scrape_interactive():
             require_no_website=require_no_website,
             on_event=on_event,
         ):
+            if jobs.is_cancelled(jid):
+                jobs.append(jid, {
+                    "type": "log",
+                    "line": f"✋ cancelled by user — keeping {len(leads)} lead(s) collected so far",
+                })
+                break
             if verify_emails:
                 v = verify_lead_email(
                     business_name=lead.get("Business Name", ""),
@@ -1130,12 +1200,16 @@ def api_scrape_interactive():
                 "line": "⚠ scrape finished with 0 leads — check filter thresholds, API key, "
                         "or query results above for error details",
             })
-        jobs.append(jid, {"type": "done", **{k: v for k, v in result.items() if k != "leads"}})
-        jobs.finish(jid, result=result)
+        cancelled = jobs.is_cancelled(jid)
+        final_status = "cancelled" if cancelled else "done"
+        result["cancelled"] = cancelled
+        jobs.append(jid, {"type": "done", "cancelled": cancelled,
+                          **{k: v for k, v in result.items() if k != "leads"}})
+        jobs.finish(jid, result=result, status=final_status)
 
         # Persist a snapshot of this scrape so it survives Flask restart.
         db.record_scrape_finish(
-            scrape_id, "done",
+            scrape_id, final_status,
             leads_count=len(leads),
             csv_basename=Path(csv_path).name if csv_path else None,
             sheet_url=(sheet_info or {}).get("sheet_url"),
@@ -1505,12 +1579,11 @@ def api_outreach_check_replies():
 
 @app.route("/api/outreach/send", methods=["POST"])
 def api_outreach_send():
-    """Send step 1 AND auto-enrol every lead in a 7-step drip sequence.
+    """Kick off Send-All as a background job and return a job_id.
 
-    Replaces the old one-shot send path. The operator's edited subject/body
-    is used for step 1 verbatim; steps 2-7 are LLM-drafted from CSV facts
-    (rating, review count, city, business type, niche). Already-active
-    leads are skipped so duplicate clicks of "Send all" are idempotent.
+    The actual send loop runs in jobs.run_in_thread so a Werkzeug reload
+    or client navigate-away can't kill the batch mid-flight. Frontend
+    polls /api/jobs/<jid>/events for per-lead progress.
     """
     if not resend_send.is_configured():
         return jsonify({"error": "Resend not configured. Set RESEND_API_KEY and RESEND_FROM in .env"}), 400
@@ -1518,41 +1591,19 @@ def api_outreach_send():
     data = request.json or {}
     sends = data.get("sends", [])
     csv_path = data.get("csv_path", "")
+    if not sends:
+        return jsonify({"error": "no sends in batch"}), 400
+
     settings = db.get_settings()
     sender = settings.get("sender_name", "")
 
-    # Resend free-tier guard: 100/day, 3000/month. Refuse the whole batch
-    # rather than half-send and silently drop the rest.
-    quota = db.send_quota_status(
-        daily_cap=int(os.getenv("LEADGEN_DAILY_CAP", "100")),
-        monthly_cap=int(os.getenv("LEADGEN_MONTHLY_CAP", "3000")),
-    )
-    if quota["daily_blocked"]:
-        return jsonify({
-            "error": f"Daily cap reached ({quota['today']}/{quota['today_cap']}). "
-                     "Try again tomorrow or raise LEADGEN_DAILY_CAP.",
-            "quota": quota,
-        }), 429
-    if quota["monthly_blocked"]:
-        return jsonify({
-            "error": f"Monthly cap reached ({quota['month']}/{quota['month_cap']}).",
-            "quota": quota,
-        }), 429
-    if len(sends) > quota["today_remaining"]:
-        return jsonify({
-            "error": f"Batch of {len(sends)} would exceed today's cap. "
-                     f"Only {quota['today_remaining']} sends remain. "
-                     "Trim the selection and try again.",
-            "quota": quota,
-        }), 429
+    # The daily/monthly caps in /api/quota are advisory indicators only —
+    # the user wants to keep sending until Resend itself rate-limits us.
+    # We do not block batches here; per-send Resend errors are surfaced
+    # via the worker's results array.
 
-    # Load the CSV once so the sequencer can personalize steps 2-7.
     leads_by_email = _load_leads_by_email(csv_path) if csv_path else {}
 
-    # Collapse duplicate failed-history: if any of these recipients already
-    # have a 'failed' row in outreach_log for this CSV, drop those before
-    # we attempt the new send. That way each lead has at most ONE row in
-    # the log no matter how many times the user clicks Retry.
     if csv_path:
         retry_emails = [s.get("to") or s.get("email") for s in sends if s.get("to") or s.get("email")]
         if retry_emails:
@@ -1562,94 +1613,145 @@ def api_outreach_send():
     suppressed_set = db.filter_suppressed(all_addrs)
     verify_on_send = os.getenv("LEADGEN_VERIFY_ON_SEND", "0") in ("1", "true", "yes")
 
-    results = []
-    for s in sends:
-        to_addr = s.get("to") or s.get("email")
-        subject = s.get("subject", "")
-        body = s.get("body", "")
-        business_name = s.get("business_name", "")
-        if not (to_addr and subject and body):
-            results.append({"to": to_addr, "ok": False, "error": "missing fields"})
-            continue
+    total = len(sends)
+    label = f"Send {total} email{'s' if total != 1 else ''} · {csv_path or 'mixed'}"
+    jid = jobs.create_job("outreach_send", label)
 
-        addr_lower = (to_addr or "").strip().lower()
-        if addr_lower in suppressed_set:
-            results.append({
-                "to": to_addr, "ok": False,
-                "error": "suppressed (previously bounced or complained)",
-                "skipped": "suppressed",
-            })
-            continue
+    def worker():
+        sent_ok, failed, skipped = 0, 0, 0
+        results = []
+        for i, s in enumerate(sends, 1):
+            to_addr = s.get("to") or s.get("email")
+            subject = s.get("subject", "")
+            body = s.get("body", "")
+            business_name = s.get("business_name", "")
 
-        if verify_on_send:
-            try:
-                v = verify_lead_email(business_name, to_addr, "", "",
-                                      probe_smtp=True, skip_search=True)
-                if not v.get("legit"):
-                    smtp_check = v.get("smtp_check") or "unknown"
-                    diag = "; ".join(v.get("reasons", [])) or smtp_check
-                    db.upsert_suppression(
-                        to_addr, reason="manual",
-                        bounce_type="PreSendVerify",
-                        bounce_subtype=smtp_check, diagnostic=diag,
-                    )
-                    results.append({
-                        "to": to_addr, "ok": False,
-                        "error": f"failed pre-send verify ({smtp_check})",
-                        "skipped": "verify_failed",
-                    })
-                    continue
-            except Exception as e:
-                log.warning("pre-send verify error for %s: %s", to_addr, e)
+            def progress(status, note=""):
+                jobs.append(jid, {
+                    "type": "lead",
+                    "i": i, "total": total,
+                    "to": to_addr, "business_name": business_name,
+                    "status": status, "note": note,
+                    "sent_count": sent_ok, "failed_count": failed,
+                    "skipped_count": skipped,
+                    "progress": {"i": i, "total": total},
+                })
 
-        csv_lead = leads_by_email.get(to_addr.strip().lower(), {})
-        lead = {
-            **csv_lead,
-            "email": to_addr,
-            "business_name": business_name or csv_lead.get("business_name", ""),
-            "niche": csv_lead.get("niche") or csv_lead.get("business_type", ""),
-            "city": csv_lead.get("city", ""),
-            "rating": csv_lead.get("rating", 0),
-            "review_count": csv_lead.get("review_count", 0),
-            "website": csv_lead.get("website", ""),
-        }
+            if not (to_addr and subject and body):
+                failed += 1
+                results.append({"to": to_addr, "ok": False, "error": "missing fields"})
+                progress("failed", "missing fields")
+                continue
 
-        result = sequencer.enqueue_lead_with_first_send(
-            lead, csv_name=csv_path, sender_name=sender,
-            override_subject=subject, override_body=body,
-        )
+            addr_lower = (to_addr or "").strip().lower()
+            if addr_lower in suppressed_set:
+                skipped += 1
+                results.append({
+                    "to": to_addr, "ok": False,
+                    "error": "suppressed (previously bounced or complained)",
+                    "skipped": "suppressed",
+                })
+                progress("skipped", "suppressed")
+                continue
 
-        if result["status"] == "queued":
-            if result["resend_id"]:
-                db.log_outreach(
-                    to_addr, business_name, csv_path, subject, body,
-                    gmail_message_id=f"resend:{result['resend_id']}",
-                    status="sent", resend_id=result["resend_id"],
-                )
+            if verify_on_send:
                 try:
-                    from . import supabase_leads
-                    supabase_leads.mark_sent(to_addr, business_name, subject)
-                except Exception:
-                    log.exception("supabase_leads mark_sent failed for %s", to_addr)
-            results.append({
-                "to": to_addr, "ok": True,
-                "message_id": result["resend_id"],
-                "sequence_id": result["sequence_id"],
-                "note": "enrolled in 7-step sequence",
-            })
-        elif result["status"] == "already_active":
-            results.append({
-                "to": to_addr, "ok": True,
-                "message_id": None,
-                "sequence_id": result["sequence_id"],
-                "note": "already in active sequence",
-            })
-        else:
-            db.log_outreach(to_addr, business_name, csv_path, subject, body,
-                            gmail_message_id=None, status="failed")
-            results.append({"to": to_addr, "ok": False,
-                            "error": result["error"]})
-    return jsonify({"results": results})
+                    v = verify_lead_email(business_name, to_addr, "", "",
+                                          probe_smtp=True, skip_search=True)
+                    if not v.get("legit"):
+                        smtp_check = v.get("smtp_check") or "unknown"
+                        diag = "; ".join(v.get("reasons", [])) or smtp_check
+                        db.upsert_suppression(
+                            to_addr, reason="manual",
+                            bounce_type="PreSendVerify",
+                            bounce_subtype=smtp_check, diagnostic=diag,
+                        )
+                        skipped += 1
+                        results.append({
+                            "to": to_addr, "ok": False,
+                            "error": f"failed pre-send verify ({smtp_check})",
+                            "skipped": "verify_failed",
+                        })
+                        progress("skipped", f"verify failed ({smtp_check})")
+                        continue
+                except Exception as e:
+                    log.warning("pre-send verify error for %s: %s", to_addr, e)
+
+            csv_lead = leads_by_email.get(to_addr.strip().lower(), {})
+            lead = {
+                **csv_lead,
+                "email": to_addr,
+                "business_name": business_name or csv_lead.get("business_name", ""),
+                "niche": csv_lead.get("niche") or csv_lead.get("business_type", ""),
+                "city": csv_lead.get("city", ""),
+                "rating": csv_lead.get("rating", 0),
+                "review_count": csv_lead.get("review_count", 0),
+                "website": csv_lead.get("website", ""),
+            }
+
+            try:
+                result = sequencer.enqueue_lead_with_first_send(
+                    lead, csv_name=csv_path, sender_name=sender,
+                    override_subject=subject, override_body=body,
+                )
+            except Exception as e:
+                log.exception("enqueue_lead_with_first_send crashed for %s", to_addr)
+                failed += 1
+                db.log_outreach(to_addr, business_name, csv_path, subject, body,
+                                gmail_message_id=None, status="failed")
+                results.append({"to": to_addr, "ok": False, "error": str(e)})
+                progress("failed", str(e)[:120])
+                continue
+
+            if result["status"] == "queued":
+                if result["resend_id"]:
+                    db.log_outreach(
+                        to_addr, business_name, csv_path, subject, body,
+                        gmail_message_id=f"resend:{result['resend_id']}",
+                        status="sent", resend_id=result["resend_id"],
+                    )
+                    try:
+                        from . import supabase_leads
+                        supabase_leads.mark_sent(to_addr, business_name, subject)
+                    except Exception:
+                        log.exception("supabase_leads mark_sent failed for %s", to_addr)
+                sent_ok += 1
+                results.append({
+                    "to": to_addr, "ok": True,
+                    "message_id": result["resend_id"],
+                    "sequence_id": result["sequence_id"],
+                    "note": "enrolled in 7-step sequence",
+                })
+                progress("sent", "step 1 sent + enrolled")
+            elif result["status"] == "already_active":
+                skipped += 1
+                results.append({
+                    "to": to_addr, "ok": True,
+                    "message_id": None,
+                    "sequence_id": result["sequence_id"],
+                    "note": "already in active sequence",
+                })
+                progress("skipped", "already in active sequence")
+            else:
+                failed += 1
+                db.log_outreach(to_addr, business_name, csv_path, subject, body,
+                                gmail_message_id=None, status="failed")
+                results.append({"to": to_addr, "ok": False,
+                                "error": result["error"]})
+                progress("failed", (result.get("error") or "")[:120])
+
+        summary = {
+            "total": total,
+            "sent": sent_ok,
+            "failed": failed,
+            "skipped": skipped,
+            "results": results,
+        }
+        jobs.append(jid, {"type": "done", **{k: v for k, v in summary.items() if k != "results"}})
+        jobs.finish(jid, result=summary)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label, "total": total})
 
 
 @app.route("/api/outreach/clear-failed", methods=["POST"])
@@ -2120,6 +2222,23 @@ def scrapes_history_page():
 def api_scrapes_list():
     status = request.args.get("status")
     return jsonify({"scrapes": db.list_scrapes(status=status)})
+
+
+@app.route("/api/scrapes/<int:sid>/cancel", methods=["POST"])
+def api_scrape_cancel(sid):
+    """Cooperatively cancel a running scrape. Leads collected so far are
+    saved; the rest of the search is discarded. History row transitions
+    `running` → `cancelled` once the worker drops out."""
+    s = db.get_scrape(sid)
+    if not s:
+        return jsonify({"error": "not found"}), 404
+    if s.get("status") != "running":
+        return jsonify({"error": f"scrape is {s.get('status')} — nothing to cancel"}), 400
+    jid = s.get("job_id")
+    if not jid:
+        return jsonify({"error": "no job_id on this scrape"}), 400
+    ok = jobs.cancel(jid)
+    return jsonify({"ok": ok, "job_id": jid, "scrape_id": sid})
 
 
 @app.route("/api/scrapes/<int:sid>", methods=["DELETE"])
@@ -2655,4 +2774,9 @@ if __name__ == "__main__":
         print("WARNING: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — Sheets + Gmail disabled")
     if not ANTHROPIC_API_KEY:
         print("INFO: ANTHROPIC_API_KEY not set — outreach will use static template")
-    app.run(debug=True, port=5001)
+    # use_reloader=False: Werkzeug's file-watcher restarts the whole process
+    # on any source save, which kills in-flight background jobs (Send All,
+    # scrape, bulk verify). Override with LEADGEN_RELOAD=1 if you want the
+    # auto-restart back while editing UI templates.
+    use_reloader = os.getenv("LEADGEN_RELOAD", "0") in ("1", "true", "yes")
+    app.run(debug=True, port=5001, use_reloader=use_reloader)

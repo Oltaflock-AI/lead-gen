@@ -84,66 +84,78 @@
 </div>
 
 {% if campaign and campaign.sent %}
-{# Funnel + 14-day volume — replaces the 5-tile metrics block. Live counters
-   referenced by the polling JS still exist further down (id='cm-*'). #}
+{# Simple metric tiles. The cm-* element IDs are kept so the live-poll JS
+   below still updates these counters in place. #}
 {% set _camp_sent      = campaign.sent or 0 %}
 {% set _camp_failed    = campaign.failed or 0 %}
 {% set _camp_delivered = _camp_sent - _camp_failed %}
 {% set _camp_opened    = campaign.unique_opened or 0 %}
 {% set _camp_replied   = campaign.replied or 0 %}
-<section id="campaign-banner" class="mb-5" style="max-width: 560px;">
-  <div class="dash-block">
-    <div class="dash-block-head" style="padding:12px 18px;">
-      <div>
-        <div class="dash-block-title" style="font-size:15px;">Funnel</div>
-        <div class="dash-block-sub" style="color: var(--ink-faint);">
-          <span id="live-status">● live</span> · refreshed <span id="live-tick">just now</span>
-        </div>
-      </div>
+<section id="campaign-banner" class="mb-5">
+  <div class="text-xs mb-2" style="color: var(--ink-faint);">
+    <span id="live-status">● live</span> · refreshed <span id="live-tick">just now</span>
+  </div>
+  <span id="cm-sent" style="display:none;">{{ _camp_sent }}</span>
+  {% set _delivery_rate = ((100 * _camp_delivered / _camp_sent) | round(1)) if _camp_sent else 0 %}
+  <style>
+    .metric-tile { padding: 12px 14px; }
+    .metric-tile .n-label { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-mute); }
+    .metric-tile .metric-num { font-size: 22px; font-weight: 600; color: var(--ink); line-height: 1.1; margin-top: 2px; }
+    .metric-tile .metric-pct { display: block; margin-top: 6px; font-size: 18px; font-weight: 700; line-height: 1; }
+    .metric-good { color: #1a8556; }
+    .metric-warn { color: #b8860b; }
+    .metric-bad  { color: #c0392b; }
+    .metric-mute { color: var(--ink-faint); }
+  </style>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div class="n-card metric-tile">
+      <div class="n-label">Delivered</div>
+      <div class="metric-num"><span id="cm-delivered">{{ _camp_delivered }}</span></div>
+      <span id="cm-delivery-rate-tile" class="metric-pct" data-metric="delivery" data-value="{{ _delivery_rate }}">{{ _delivery_rate }}%</span>
     </div>
-    <div class="dash-block-body" style="padding:14px 18px;">
-      {% set _bar_delivered = ((100 * _camp_delivered // _camp_sent) if _camp_sent else 0) %}
-      {% set _bar_opened    = ((100 * _camp_opened    // _camp_sent) if _camp_sent else 0) %}
-      {% set _bar_replied   = ((100 * _camp_replied   // _camp_sent) if _camp_sent else 0) %}
-      {% set _delivery_low  = (_camp_sent and (_camp_delivered * 100 / _camp_sent) < 70) %}
-      <div class="funnel">
-        <div class="funnel-row">
-          <div class="funnel-label">Sent</div>
-          <div class="funnel-bar-wrap"><div class="funnel-bar ok" style="width:100%"></div></div>
-          <div class="funnel-num" id="cm-sent">{{ _camp_sent }}</div>
-          <div class="funnel-pct">100%</div>
-        </div>
-        <div class="funnel-row">
-          <div class="funnel-label">Delivered</div>
-          <div class="funnel-bar-wrap"><div class="funnel-bar {% if _delivery_low %}warn{% else %}ok{% endif %}" style="width: {{ _bar_delivered }}%"></div></div>
-          <div class="funnel-num">{{ _camp_delivered }}</div>
-          <div class="funnel-pct {% if _delivery_low %}warn{% endif %}">{{ _bar_delivered }}%</div>
-        </div>
-        <div class="funnel-row">
-          <div class="funnel-label">Opened</div>
-          <div class="funnel-bar-wrap"><div class="funnel-bar ok" style="width: {{ _bar_opened }}%"></div></div>
-          <div class="funnel-num"><span id="cm-opened">{{ _camp_opened }}</span></div>
-          <div class="funnel-pct"><span id="cm-open-rate">{{ campaign.open_rate }}</span>%</div>
-        </div>
-        <div class="funnel-row">
-          <div class="funnel-label">Replied</div>
-          <div class="funnel-bar-wrap"><div class="funnel-bar dim" style="width: {{ _bar_replied }}%"></div></div>
-          <div class="funnel-num"><span id="cm-replied">{{ _camp_replied }}</span></div>
-          <div class="funnel-pct"><span id="cm-reply-rate">{{ campaign.reply_rate }}</span>%</div>
-        </div>
-      </div>
-      <div class="text-xs mt-3" style="color: var(--ink-mute);">
-        <span id="cm-clicked">{{ campaign.unique_clicked }}</span> clicks ·
-        <span id="cm-click-rate">{{ campaign.click_rate }}</span>% click rate ·
-        <span id="cm-bounced" style="{% if campaign.bounced %}color:var(--warn);font-weight:600;{% endif %}">{{ campaign.bounced }}</span> bounced ·
-        <span id="cm-bounce-rate" style="{% if campaign.bounce_rate >= 5 %}color:var(--warn);font-weight:600;{% endif %}">{{ campaign.bounce_rate }}</span>% bounce rate
-        <span id="cm-failed-wrap" {% if not campaign.failed %}style="display:none;"{% endif %}>·
-          <span id="cm-failed">{{ campaign.failed }}</span> failed
-        </span>
-      </div>
+    <div class="n-card metric-tile">
+      <div class="n-label">Opened</div>
+      <div class="metric-num"><span id="cm-opened">{{ _camp_opened }}</span></div>
+      <span id="cm-open-rate-tile" class="metric-pct" data-metric="open" data-value="{{ campaign.open_rate }}"><span id="cm-open-rate">{{ campaign.open_rate }}</span>%</span>
+    </div>
+    <div class="n-card metric-tile">
+      <div class="n-label">Replied</div>
+      <div class="metric-num"><span id="cm-replied">{{ _camp_replied }}</span></div>
+      <span id="cm-reply-rate-tile" class="metric-pct" data-metric="reply" data-value="{{ campaign.reply_rate }}"><span id="cm-reply-rate">{{ campaign.reply_rate }}</span>%</span>
+    </div>
+    <div class="n-card metric-tile">
+      <div class="n-label">Bounced</div>
+      <div class="metric-num"><span id="cm-bounced">{{ campaign.bounced }}</span></div>
+      <span id="cm-bounce-rate-tile" class="metric-pct" data-metric="bounce" data-value="{{ campaign.bounce_rate }}"><span id="cm-bounce-rate">{{ campaign.bounce_rate }}</span>%</span>
     </div>
   </div>
-
+  <div class="text-xs mt-2" style="color: var(--ink-mute);">
+    <span id="cm-clicked">{{ campaign.unique_clicked }}</span> clicks ·
+    <span id="cm-click-rate">{{ campaign.click_rate }}</span>% click rate
+    <span id="cm-failed-wrap" {% if not campaign.failed %}style="display:none;"{% endif %}>·
+      <span id="cm-failed">{{ campaign.failed }}</span> failed
+    </span>
+  </div>
+  <script>
+    // Color thresholds: green = healthy, amber = watch, red = problem.
+    // Bounce is inverted (low is good).
+    function _metricClass(metric, v) {
+      v = Number(v) || 0;
+      if (metric === 'delivery') return v >= 97 ? 'metric-good' : v >= 90 ? 'metric-warn' : 'metric-bad';
+      if (metric === 'open')     return v >= 30 ? 'metric-good' : v >= 15 ? 'metric-warn' : 'metric-bad';
+      if (metric === 'reply')    return v >= 3  ? 'metric-good' : v >= 1  ? 'metric-warn' : 'metric-bad';
+      if (metric === 'bounce')   return v < 2   ? 'metric-good' : v < 5   ? 'metric-warn' : 'metric-bad';
+      return 'metric-mute';
+    }
+    function applyMetricColors() {
+      document.querySelectorAll('.metric-pct[data-metric]').forEach(el => {
+        const v = parseFloat(el.dataset.value || '0');
+        el.classList.remove('metric-good','metric-warn','metric-bad','metric-mute');
+        el.classList.add(_metricClass(el.dataset.metric, v));
+      });
+    }
+    applyMetricColors();
+  </script>
 </section>
 {% endif %}
 
@@ -263,7 +275,12 @@
     </table>
   </div>
 </section>
-<div id="send-status" class="text-xs mb-5" style="padding: 4px 4px; color: var(--ink-mute);"></div>
+<div id="send-progress" class="mb-5" style="padding: 4px 4px;">
+  <div id="send-status" class="text-xs" style="color: var(--ink-mute); margin-bottom: 6px;"></div>
+  <div id="send-bar-wrap" class="hidden" style="height: 8px; background: var(--bg-sunken); border: 1px solid var(--line); border-radius: 999px; overflow: hidden;">
+    <div id="send-bar" style="height: 100%; width: 0%; background: var(--accent); transition: width 0.25s ease;"></div>
+  </div>
+</div>
 {% elif selected %}
 <div class="n-callout warn mb-5">
   <div class="icon">⚠</div>
@@ -644,52 +661,112 @@ async function retryFailed() {
 }
 
 async function _runSendBatch(items, btn) {
+  // POST the whole batch once; backend runs it as a background job so a
+  // Werkzeug reload or page navigation can't kill it mid-flight. We poll
+  // /api/jobs/<jid>/events for per-lead progress events.
+  const total = items.length;
   const status = document.getElementById('send-status');
-  status.textContent = `Sending ${items.length} via Resend…`;
+  const barWrap = document.getElementById('send-bar-wrap');
+  const bar = document.getElementById('send-bar');
+  let processed = 0, ok = 0, fail = 0, enrolled = 0;
+  const failRows = [];
+  let aborted = null;
+
+  const renderProgress = () => {
+    const pct = total ? Math.round((processed / total) * 100) : 0;
+    bar.style.width = pct + '%';
+    status.textContent = `Sending ${processed} / ${total} via Resend… (${pct}%) — ${ok} ok, ${fail} failed`;
+  };
+
   if (btn) btn.disabled = true;
   document.getElementById('send-btn').disabled = true;
+  barWrap.classList.remove('hidden');
+  bar.style.width = '0%';
+  status.textContent = `Sending 0 / ${total} via Resend… (0%)`;
+
   try {
     const r = await fetch('/api/outreach/send', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({sends: items, csv_path: CSV_PATH}),
     });
-    const data = await r.json();
-    if (data.error) {
-      status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(data.error)}</span>`;
-    } else {
-      const results = data.results || [];
-      const ok = results.filter(x => x.ok).length;
-      const fail = results.filter(x => !x.ok).length;
-      // Surface per-row failure reasons inline so the user knows why each one bounced.
-      results.forEach(res => {
-        if (!res.ok && res.to) {
-          const tr = document.querySelector(`tr[data-row-email="${res.to.toLowerCase()}"]`);
-          if (tr) {
-            const cell = tr.querySelector('.status-cell');
-            if (cell) {
-              const note = document.createElement('div');
-              note.className = 'text-xs mt-1';
-              note.style.color = 'var(--warn)';
-              note.title = res.error || '';
-              note.textContent = (res.error || 'failed').slice(0, 80);
-              cell.appendChild(note);
-            }
+    const startData = await r.json().catch(() => ({}));
+    if (!r.ok || startData.error || !startData.job_id) {
+      aborted = startData.error || ('HTTP ' + r.status);
+      status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(aborted)}</span>`;
+      if (btn) btn.disabled = false;
+      document.getElementById('send-btn').disabled = false;
+      return;
+    }
+
+    const jid = startData.job_id;
+    let cursor = 0;
+
+    // Poll loop: 1s cadence is fine because each send is ~1s on the wire
+    // and the user just wants to see the bar move.
+    while (true) {
+      const er = await fetch(`/api/jobs/${jid}/events?cursor=${cursor}`);
+      const evd = await er.json().catch(() => ({}));
+      if (!er.ok) {
+        aborted = evd.error || ('events HTTP ' + er.status);
+        break;
+      }
+      cursor = evd.cursor || cursor;
+      for (const ev of (evd.events || [])) {
+        if (ev.type === 'lead') {
+          processed = ev.i || processed + 1;
+          if (ev.status === 'sent') {
+            ok++;
+            enrolled++;
+          } else if (ev.status === 'skipped') {
+            // already-active counts as ok-ish for the user; keep ok.
+            if ((ev.note || '').includes('already in active')) ok++;
+            else { fail++; failRows.push({to: ev.to, error: ev.note || 'skipped'}); }
+          } else if (ev.status === 'failed') {
+            fail++;
+            failRows.push({to: ev.to, error: ev.note || 'failed'});
           }
+          renderProgress();
         }
-      });
-      const enrolled = results.filter(x => x.note === 'enrolled in 7-step sequence').length;
-      const note = enrolled
+      }
+      if (evd.status !== 'running') {
+        if (evd.status === 'failed') aborted = evd.error || 'job failed';
+        break;
+      }
+      await new Promise(res => setTimeout(res, 1000));
+    }
+
+    // Paint inline failure reasons next to each row.
+    failRows.forEach(res => {
+      if (!res.to) return;
+      const tr = document.querySelector(`tr[data-row-email="${res.to.toLowerCase()}"]`);
+      if (!tr) return;
+      const cell = tr.querySelector('.status-cell');
+      if (!cell) return;
+      const note = document.createElement('div');
+      note.className = 'text-xs mt-1';
+      note.style.color = 'var(--warn)';
+      note.title = res.error || '';
+      note.textContent = (res.error || 'failed').slice(0, 80);
+      cell.appendChild(note);
+    });
+
+    if (aborted) {
+      status.innerHTML = `<span style="color: var(--warn);">${escapeHtml(aborted)}</span> — stopped at ${processed}/${total}. ${ok} ok, ${fail} failed.`;
+    } else {
+      const enrolNote = enrolled
         ? ` ${enrolled} enrolled in sequence — <a href="/sequences" style="color: var(--accent);" class="underline">view</a>.`
         : '';
       const failNote = fail
         ? ` <span style="color: var(--warn);">${fail} failed (hover the row's error message for details).</span>`
         : '';
-      status.innerHTML = `Sent ${ok}, failed ${fail}.${note}${failNote} <a href="javascript:location.reload()" style="color: var(--accent);" class="underline">Reload</a>`;
-      // Trigger a live status refresh so the chips repaint immediately.
-      if (typeof refreshLiveStatus === 'function') refreshLiveStatus();
+      status.innerHTML = `Sent ${ok} of ${total} (100%), failed ${fail}.${enrolNote}${failNote} <a href="javascript:location.reload()" style="color: var(--accent);" class="underline">Reload</a>`;
+      bar.style.width = '100%';
     }
-  } catch (e) { status.textContent = e.message; }
+    if (typeof refreshLiveStatus === 'function') refreshLiveStatus();
+  } catch (e) {
+    status.textContent = e.message;
+  }
   if (btn) btn.disabled = false;
   document.getElementById('send-btn').disabled = false;
 }
@@ -811,6 +888,9 @@ async function refreshLiveStatus() {
     const c = data.campaign || {};
 
     setText('cm-sent',        c.sent ?? 0);
+    const _delivered = (c.sent ?? 0) - (c.failed ?? 0);
+    setText('cm-delivered',   _delivered);
+    const _deliveryRate = c.sent ? Math.round((_delivered * 1000) / c.sent) / 10 : 0;
     setText('cm-opened',      c.unique_opened ?? 0);
     setText('cm-clicked',     c.unique_clicked ?? 0);
     setText('cm-replied',     c.replied ?? 0);
@@ -819,6 +899,22 @@ async function refreshLiveStatus() {
     setText('cm-click-rate',  c.click_rate ?? 0);
     setText('cm-reply-rate',  c.reply_rate ?? 0);
     setText('cm-bounce-rate', c.bounce_rate ?? 0);
+    // Refresh colored % tiles. data-value drives the threshold class.
+    const _setTile = (id, val, text) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.dataset.value = val;
+      // Replace text content but keep inner spans for delivered/open/reply/bounce IDs.
+      if (text != null) el.textContent = text;
+    };
+    _setTile('cm-delivery-rate-tile', _deliveryRate, _deliveryRate + '%');
+    const _orEl = document.getElementById('cm-open-rate-tile');
+    if (_orEl) _orEl.dataset.value = c.open_rate ?? 0;
+    const _rrEl = document.getElementById('cm-reply-rate-tile');
+    if (_rrEl) _rrEl.dataset.value = c.reply_rate ?? 0;
+    const _brEl = document.getElementById('cm-bounce-rate-tile');
+    if (_brEl) _brEl.dataset.value = c.bounce_rate ?? 0;
+    if (typeof applyMetricColors === 'function') applyMetricColors();
     const failedWrap = document.getElementById('cm-failed-wrap');
     if (failedWrap) {
       failedWrap.style.display = (c.failed && c.failed > 0) ? '' : 'none';

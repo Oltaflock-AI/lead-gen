@@ -378,9 +378,16 @@ def _lead_snapshot(lead):
 
 
 def _refresh_step_with_engagement(seq, step):
-    """Just before sending step N (where N > 1), redraft it using the latest
-    open/click signals from prior sent steps. No-op for step 1 or when the
-    sequence has no stored lead facts (legacy enrollments)."""
+    """Just before sending step N (where N > 1), draft or redraft the step.
+
+    Two paths:
+    1. Pending body is empty (lazy-enrolled placeholder) — draft it from
+       scratch with whatever prior signals exist. This is the lazy-draft
+       path used by enqueue_lead_with_first_send to avoid burning ~6 LLM
+       calls per lead at Send-All time.
+    2. Pending body already drafted — redraft with open/click signals from
+       prior sent steps. No-op if no prior steps yet.
+    """
     if step <= 1:
         return None
     facts_json = seq.get("lead_facts_json") or ""
@@ -390,20 +397,26 @@ def _refresh_step_with_engagement(seq, step):
         lead = json.loads(facts_json)
     except Exception:
         return None
+    pending = db.get_pending_message(seq["id"], step)
+    needs_draft = bool(pending and not (pending.get("body") or "").strip())
     prior = db.list_sent_sequence_messages(seq["id"], before_step=step)
-    if not prior:
-        return None  # nothing to learn from yet
+    if not needs_draft and not prior:
+        return None  # already drafted and no engagement signals to incorporate
     offer_record = db.get_niche_offer(lead.get("niche", "") or seq.get("niche", ""))
     sender_name = db.get_setting("sender_name", "") or ""
-    redraft = _draft_one(step, lead, offer_record, sender_name, prior_msgs=prior)
-    pending = db.get_pending_message(seq["id"], step)
+    redraft = _draft_one(step, lead, offer_record, sender_name,
+                         prior_msgs=prior or None)
     if pending and redraft.get("body"):
         db.update_sequence_message(pending["id"], redraft["subject"], redraft["body"])
-        log.info("seq %s step %s redrafted with engagement context "
-                 "(opens=%s clicks=%s on prior steps)",
-                 seq["id"], step,
-                 sum((m.get("opens") or 0) for m in prior),
-                 sum((m.get("clicks") or 0) for m in prior))
+        if needs_draft:
+            log.info("seq %s step %s lazy-drafted (prior_steps=%d)",
+                     seq["id"], step, len(prior))
+        else:
+            log.info("seq %s step %s redrafted with engagement context "
+                     "(opens=%s clicks=%s on prior steps)",
+                     seq["id"], step,
+                     sum((m.get("opens") or 0) for m in prior),
+                     sum((m.get("clicks") or 0) for m in prior))
     return redraft
 
 
@@ -527,9 +540,16 @@ def enqueue_lead_with_first_send(lead, csv_name="", sender_name="",
     db.update_sequence(sid, status="active", current_step=0,
                        paused_reason=None, next_send_at=None)
 
-    drafts = draft_all_steps(lead, niche, sender_name=sender_name)
+    # Lazy-draft path: when the operator already has step 1 drafted (the UI
+    # always passes override_subject/body), skip the ~6 upfront LLM calls
+    # for steps 2-7. Steps 2-7 are stored as empty placeholders and drafted
+    # just-in-time inside tick() via _refresh_step_with_engagement.
     if override_subject and override_body:
-        drafts[0] = {"subject": override_subject, "body": override_body}
+        drafts = [{"subject": override_subject, "body": override_body}]
+        for _ in range(2, NUM_STEPS + 1):
+            drafts.append({"subject": "[draft pending]", "body": ""})
+    else:
+        drafts = draft_all_steps(lead, niche, sender_name=sender_name)
 
     base = datetime.now(timezone.utc)
     for step in range(1, NUM_STEPS + 1):
@@ -560,6 +580,10 @@ def _send_step(seq, step):
     msg = db.get_pending_message(seq["id"], step)
     if not msg:
         return False, f"no pending message for step {step}"
+    if not (msg.get("subject") and (msg.get("body") or "").strip()):
+        # Lazy-draft missing or LLM redraft failed — leave pending so the
+        # next tick retries instead of shipping an empty email.
+        return False, f"step {step} draft incomplete — will retry next tick"
     if not resend_send.is_configured():
         return False, "resend not configured (RESEND_API_KEY/RESEND_FROM)"
 
@@ -618,34 +642,47 @@ def advance_after_send(seq, step):
 
 
 def tick():
-    """Process all sequences whose next_send_at has elapsed. Honors the
-    Resend free-tier daily/monthly caps — when capped, due steps are left
-    queued and re-attempted on the next tick.
+    """Process all sequences whose next_send_at has elapsed. Daily/monthly
+    quota is reported for telemetry but does not block sends — the worker
+    keeps sending until Resend itself rate-limits a request.
 
     Returns dict with counts.
     """
     now = _now_iso()
     due = db.due_sequences(now, limit=50)
-    sent, failed, skipped_quota = 0, 0, 0
+    sent, failed, skipped_quota, skipped_no_opens = 0, 0, 0, 0
+    # Steps 1..(GATE-1) reach everyone delivered. From GATE onward we only
+    # email leads who opened at least one prior step — keeps the long tail
+    # focused on engaged prospects. Tunable via env.
+    open_gate_from_step = int(os.getenv("LEADGEN_OPEN_GATE_FROM_STEP", "4"))
 
+    # Quota is advisory — read for telemetry but don't block. We send
+    # everything that's due and let Resend's own rate limiter push back
+    # via per-send errors (which auto-pause the sequence below).
     daily_cap = int(os.getenv("LEADGEN_DAILY_CAP", "100"))
     monthly_cap = int(os.getenv("LEADGEN_MONTHLY_CAP", "3000"))
     quota = db.send_quota_status(daily_cap=daily_cap, monthly_cap=monthly_cap)
-    if quota["daily_blocked"] or quota["monthly_blocked"]:
-        if due:
-            log.info("tick: %d due but quota blocked (%s)", len(due), quota)
-        return {"due": len(due), "sent": 0, "failed": 0,
-                "skipped_quota": len(due), "quota": quota}
-    remaining = quota["today_remaining"]
 
     for seq in due:
         next_step = seq["current_step"] + 1
         if next_step > NUM_STEPS:
             db.update_sequence(seq["id"], status="done", next_send_at=None)
             continue
-        if remaining <= 0:
-            skipped_quota += 1
-            continue  # leave queued for tomorrow
+        # Open-gate: from `open_gate_from_step` onward, only continue the
+        # sequence for leads that have opened at least one prior email.
+        # Non-engaged leads are marked done (no further sends).
+        if next_step >= open_gate_from_step:
+            prior = db.list_sent_sequence_messages(seq["id"], before_step=next_step)
+            total_opens = sum((m.get("opens") or 0) for m in prior)
+            if total_opens == 0:
+                db.update_sequence(
+                    seq["id"], status="done", next_send_at=None,
+                    paused_reason=f"stopped before step {next_step} — no opens through step {next_step - 1}",
+                )
+                skipped_no_opens += 1
+                log.info("seq %s gated at step %s — no opens on steps 1..%s",
+                         seq["id"], next_step, next_step - 1)
+                continue
         # Redraft step >1 with engagement context (opens/clicks from prior
         # steps) so the email reflects what the prospect has actually done.
         try:
@@ -657,7 +694,6 @@ def tick():
         if ok:
             advance_after_send(seq, next_step)
             sent += 1
-            remaining -= 1
         else:
             failed += 1
             if err and ("not configured" in err or "INVALID" in err.upper()):
@@ -665,7 +701,8 @@ def tick():
                                    paused_reason=f"send error: {err[:120]}",
                                    next_send_at=None)
     return {"due": len(due), "sent": sent, "failed": failed,
-            "skipped_quota": skipped_quota, "quota": quota}
+            "skipped_quota": skipped_quota,
+            "skipped_no_opens": skipped_no_opens, "quota": quota}
 
 
 # ─────────────────────────── scheduler thread ───────────────────────────

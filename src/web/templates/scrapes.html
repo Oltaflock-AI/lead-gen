@@ -13,7 +13,7 @@
 </section>
 
 <section class="flex gap-2 mb-3 text-xs">
-  {% for s in ['all','running','done','failed','interrupted'] %}
+  {% for s in ['all','running','done','cancelled','failed','interrupted'] %}
     <a href="/scrapes{% if s != 'all' %}?status={{ s }}{% endif %}"
        class="chip {% if active_filter == s %}chip-blue{% endif %}">{{ s }}</a>
   {% endfor %}
@@ -87,6 +87,7 @@ async function showScrape(id){
       ${dl('csv', s.csv_basename)}
     </div>
     ${s.csv_basename ? `<div class="mb-3"><a class="n-btn" href="/leads/${encodeURIComponent(s.csv_basename)}">Open CSV → leads</a></div>` : ''}
+    ${s.status === 'running' ? `<div class="mb-3"><button class="n-btn" style="border-color:var(--red,#b00); color:var(--red,#b00);" onclick="cancelScrape(${s.id})">Cancel scrape (keep ${s.leads_count || 0} collected)</button></div>` : ''}
     ${s.error ? `<div class="text-xs" style="color:var(--red,#b00);">error: ${escapeHtml(s.error)}</div>` : ''}
   `;
   const evHtml = events.length === 0
@@ -121,6 +122,7 @@ async function refreshList(){
 function rowHtml(s){
   const statusChip = s.status === 'running' ? 'chip-yellow'
     : s.status === 'done' ? 'chip-green'
+    : s.status === 'cancelled' ? 'chip-blue'
     : 'chip-gray';
   const csvLink = s.csv_basename
     ? `<a href="/leads/${encodeURIComponent(s.csv_basename)}" class="underline">${escapeHtml(s.csv_basename)}</a>`
@@ -150,6 +152,15 @@ function rowHtml(s){
       ${delBtn}
     </td>
   </tr>`;
+}
+
+async function cancelScrape(id){
+  if (!confirm(`Cancel scrape #${id}?\n\nLeads already collected will be saved to CSV. The remaining search work is discarded.`)) return;
+  const r = await fetch(`/api/scrapes/${id}/cancel`, {method: 'POST'});
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(d.error || ('failed: ' + r.status)); return; }
+  document.getElementById('scrape-modal').close();
+  refreshList();
 }
 
 async function deleteScrape(id){
