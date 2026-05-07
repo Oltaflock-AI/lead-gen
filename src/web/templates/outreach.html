@@ -249,7 +249,7 @@
               <span class="chip chip-status chip-status-notsent">not sent</span>
             {% endif %}
             </span>
-            <div class="status-counts text-xs mt-0.5" style="color: var(--ink-faint);">{% if st and st.opens %}{{ st.opens }} open · {{ st.clicks }} click{% endif %}</div>
+            <div class="status-counts text-xs mt-0.5" style="color: var(--ink-faint);"></div>
           </td>
           <td class="cell-subject">
             <input class="draft-subject n-input n-input-sm" data-saved="{{ '1' if d else '0' }}" aria-label="Subject for {{ n.business_name }}" title="Subject" placeholder="—" value="{{ d.subject if d else '' }}">
@@ -928,11 +928,7 @@ async function refreshLiveStatus() {
       const chipWrap = tr.querySelector('.status-chip');
       const counts = tr.querySelector('.status-counts');
       if (chipWrap) chipWrap.innerHTML = chipFor(st && st.status);
-      if (counts) {
-        counts.textContent = (st && st.opens)
-          ? `${st.opens} open · ${st.clicks || 0} click`
-          : '';
-      }
+      if (counts) counts.textContent = '';
     });
 
     if (tickEl) tickEl.textContent = new Date().toLocaleTimeString();

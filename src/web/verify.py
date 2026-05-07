@@ -144,6 +144,52 @@ def _empty(source):
     }
 
 
+def update_csv_website(csv_path, business_name, website_url):
+    """Persist a discovered website URL on the row matching `business_name`.
+    Sets `Website` and `Has Website` columns (creating them if missing).
+    Returns True iff a row matched and was rewritten."""
+    csv_path = Path(csv_path)
+    if not csv_path.exists() or not website_url:
+        return False
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    lower = {f.lower(): f for f in fieldnames}
+
+    def _resolve(canonical, *legacy):
+        for c in (canonical, *legacy):
+            if c.lower() in lower:
+                return lower[c.lower()]
+        fieldnames.append(canonical)
+        return canonical
+
+    name_col = None
+    for c in ("business_name", "Business Name", "prospect_company_name"):
+        if c.lower() in lower:
+            name_col = lower[c.lower()]
+            break
+    if name_col is None:
+        return False
+    site_col = _resolve("Website", "website", "business_website")
+    has_col = _resolve("Has Website", "has_website")
+
+    target = (business_name or "").strip()
+    updated = False
+    for r in rows:
+        if (r.get(name_col) or "").strip() == target:
+            r[site_col] = website_url
+            r[has_col] = "yes"
+            updated = True
+    if not updated:
+        return False
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    return True
+
+
 def update_csv_email(csv_path, business_name, new_email, verified=None,
                      kind=None, legit=None, smtp_check=None):
     """Write `new_email` and quality fields into the row matching `business_name`.

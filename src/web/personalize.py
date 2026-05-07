@@ -70,6 +70,19 @@ def _template(lead, sender_name=""):
     city = lead.get("city", "")
     city_str = f" in {city}" if city else ""
     rating = lead.get("rating", 0)
+    if (lead.get("has_website") or "").lower() == "no":
+        body = (
+            f"Hi, noticed {name}{city_str} doesn't have a website yet, so "
+            "I mocked one up for you — mobile-friendly, click-to-call, "
+            "hours, services. Free demo + 7-day trial; small monthly fee "
+            "only if you keep it.\n\n"
+            "Want me to send the live preview link?"
+        )
+        return {
+            "subject": f"built a quick site for {name.lower()}",
+            "body": body,
+            "personalized": False,
+        }
     reviews = lead.get("review_count", 0)
     intro = ""
     if rating and reviews:
@@ -110,6 +123,11 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
     chosen_model = model or MODEL
 
+    hw_flag = (lead.get("has_website") or "").lower()
+    if hw_flag in ("yes", "no"):
+        has_website = (hw_flag == "yes")
+    else:
+        has_website = bool(lead.get("website"))
     facts = (
         f"business_name: {lead.get('business_name', '')}\n"
         f"city: {lead.get('city', '')}\n"
@@ -117,7 +135,7 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
         f"business_type / niche: {lead.get('business_type', '')}\n"
         f"google_rating: {lead.get('rating', 0)}\n"
         f"review_count: {lead.get('review_count', 0)}\n"
-        f"has_website: {bool(lead.get('website'))}\n"
+        f"has_website: {has_website}\n"
         f"sender_name: {sender_name}\n"
     )
 
@@ -139,10 +157,21 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
     angle_idx = (hash((lead.get("business_name", ""), lead.get("email", ""))) & 0xffff) % len(_angles)
     angle_label, angle_desc = _angles[angle_idx]
 
-    user_msg = (
+    pitch_intro = (
+        "Write a personalized cold outreach email pitching that we already "
+        "MOCKED UP A WORKING WEBSITE for this business (mobile-friendly, "
+        "click-to-call, hours, services). Free demo + 7-day trial; small "
+        "monthly fee only if they keep it. Subject lines must hint at the "
+        "prebuilt site (e.g. 'built you a quick site', 'preview link?'). "
+        "The whole email pivots around the website hook. Use only the "
+        "facts below. Output JSON only."
+        if not has_website else
         "Write a personalized cold outreach email pitching our AI services "
         "(voice agent, chatbot, missed-call recovery) to this business. "
-        "Use only the facts below. Output JSON only.\n\n"
+        "Use only the facts below. Output JSON only."
+    )
+    user_msg = (
+        f"{pitch_intro}\n\n"
         f"{facts}\n"
         f"Subject angle for THIS lead: {angle_label} — {angle_desc}. "
         f"Apply that angle in the subject line; the body still follows the "

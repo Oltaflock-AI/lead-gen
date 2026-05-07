@@ -1291,10 +1291,22 @@ def api_outreach_preview():
         for d in db.get_outreach_drafts(csv_name):
             cached[d["lead_email"]] = d
 
+    def _stale_no_website_draft(lead, draft):
+        """Cached draft was made before the no-website pivot existed.
+        If the lead has no website but the saved subject+body never mention
+        a website / site / preview, it's still the old AI-services pitch —
+        regen it so the website angle takes over."""
+        if (lead.get("has_website") or "").lower() != "no":
+            return False
+        text = ((draft.get("subject") or "") + " " +
+                (draft.get("body") or "")).lower()
+        keywords = ("website", "site", "homepage", "preview", "demo")
+        return not any(k in text for k in keywords)
+
     out = [None] * len(norms)
     for i, n in enumerate(norms):
         em = (n.get("email") or "").lower()
-        if em in cached and not force:
+        if em in cached and not force and not _stale_no_website_draft(n, cached[em]):
             c = cached[em]
             out[i] = {
                 "subject": c["subject"], "body": c["body"],
@@ -2004,10 +2016,14 @@ def api_bulk_verify_emails():
 
 @app.route("/api/bulk-deep-enrich", methods=["POST"])
 def api_bulk_deep_enrich():
-    """Deep email enrichment: same shape as bulk-verify-emails but the
-    underlying lookup fetches top result URLs + Facebook About instead of
-    only scanning DDG snippets. Slower per-lead (~10-20s) but ~2-3× hit
-    rate on no-website businesses. Skips rows that already have an email."""
+    """Per-lead deep enrichment:
+      1. Search the open web for the business's official website. If the
+         site is found with high confidence, write `Website` + `Has Website
+         = yes` back to the CSV (this corrects scrapes where Google Places
+         had no websiteUri but the business actually has a public site).
+      2. Pull emails from the discovered site's home/contact/about pages,
+         plus DDG snippets and directory pages (Facebook /about, Yelp,
+         BBB, YellowPages). Score, MX-verify, persist."""
     if not GOOGLE_PLACES_API_KEY:
         return jsonify({"error": "GOOGLE_PLACES_API_KEY required"}), 400
     data = request.json or {}
@@ -2017,14 +2033,20 @@ def api_bulk_deep_enrich():
     if not path:
         return jsonify({"error": f"CSV not found: {csv_name}"}), 404
 
+    from .email_finder import deep_enrich_lead
+    from .verify import update_csv_website
+
     _, rows = metrics.read_csv_with_scores(path)
     total = len(rows)
 
     label = f"Deep enrich · {csv_name}"
     jid = jobs.create_job("deep_enrich", label)
 
+    from .email_finder import find_business_website, deep_find_email
+
     def worker():
-        verified, found, missing, persisted, skipped = 0, 0, 0, 0, 0
+        verified, found, missing, persisted = 0, 0, 0, 0
+        websites_found, skipped = 0, 0
         for i, r in enumerate(rows, 1):
             if jobs.is_cancelled(jid):
                 jobs.append(jid, {"type": "log",
@@ -2034,45 +2056,108 @@ def api_bulk_deep_enrich():
             name = n["business_name"]
             current = n["email"]
             region = n["city"]
+            country_guess = n.get("country", "") or ""
+            has_site_already = (n.get("has_website") or "").lower() == "yes" \
+                                or bool((n.get("website") or "").strip())
+            need_email = not current
+            need_website = not has_site_already
             if not name:
                 continue
-            if only_missing and current:
+            # Skip only when the row needs neither website nor email.
+            # When only_missing is False, every row gets re-checked.
+            if only_missing and not need_email and not need_website:
                 skipped += 1
+                jobs.append(jid, {
+                    "type": "progress",
+                    "i": i, "total": total, "name": name,
+                    "email": current, "verified": True,
+                    "website": n.get("website") or "",
+                    "website_score": 0,
+                    "verified_count": verified, "found_count": found,
+                    "missing_count": missing, "websites_found": websites_found,
+                    "skipped_count": skipped,
+                })
                 continue
+
+            site_url, site_score = "", 0
+            email_addr, email_src = "", ""
+            v = {"email": current, "verified": False, "kind": "unknown",
+                 "legit": False, "smtp_check": "skipped"}
             try:
-                v = verify_lead_email(name, current, region, "", deep=True)
+                # Website discovery — always run when needed, even if email
+                # is already on file. Cheap and orthogonal to email lookup.
+                if need_website:
+                    site_url, site_score = find_business_website(
+                        name, region, country_guess,
+                    )
+                # Email lookup only when missing (or when only_missing=False
+                # forces a refresh).
+                if need_email or not only_missing:
+                    enr = deep_find_email(name, region, country_guess)
+                    found_email = enr[0] if isinstance(enr, tuple) else ""
+                    if found_email:
+                        v = verify_lead_email(
+                            name, found_email, region, country_guess,
+                            skip_search=True,
+                        )
+                        email_src = enr[1] if isinstance(enr, tuple) else "search"
+                    else:
+                        v = verify_lead_email(
+                            name, current, region, country_guess,
+                            deep=True,
+                        )
+                        email_src = v.get("source", "")
+                    email_addr = v.get("email", "")
+                else:
+                    email_addr = current
+                    email_src = "existing"
             except Exception as e:
                 log.exception("deep enrich row %d failed", i)
-                v = {"email": "", "verified": False, "kind": "unknown",
-                     "legit": False, "smtp_check": "skipped"}
                 jobs.append(jid, {"type": "log",
                                   "line": f"  ✗ {name} — {e}"})
-            if v.get("verified"):
-                verified += 1
-            elif v.get("email"):
-                found += 1
-            else:
-                missing += 1
-            if v.get("email") or current:
-                ok = update_csv_email(
-                    path, name, new_email=v.get("email", current),
-                    verified=v.get("verified"),
-                    kind=v.get("kind"),
-                    legit=v.get("legit"),
-                    smtp_check=v.get("smtp_check"),
-                )
-                if ok:
-                    persisted += 1
+
+            if site_url:
+                if update_csv_website(path, name, site_url):
+                    websites_found += 1
+            if need_email:
+                if v.get("verified"):
+                    verified += 1
+                elif v.get("email"):
+                    found += 1
+                else:
+                    missing += 1
+                if v.get("email") or current:
+                    ok = update_csv_email(
+                        path, name, new_email=v.get("email", current),
+                        verified=v.get("verified"),
+                        kind=v.get("kind"),
+                        legit=v.get("legit"),
+                        smtp_check=v.get("smtp_check"),
+                    )
+                    if ok:
+                        persisted += 1
             jobs.append(jid, {
                 "type": "progress",
                 "i": i, "total": total,
                 "name": name,
-                "email": v.get("email", ""),
+                "email": email_addr,
                 "verified": v.get("verified"),
+                "website": site_url,
+                "website_score": site_score,
                 "verified_count": verified,
                 "found_count": found,
                 "missing_count": missing,
+                "websites_found": websites_found,
                 "skipped_count": skipped,
+            })
+            jobs.append(jid, {
+                "type": "log",
+                "line": (
+                    f"  [{i}/{total}] {name} — "
+                    f"site: {('yes (' + (site_url or '') + ', score=' + str(site_score) + ')') if site_url else ('skip' if not need_website else 'none')} · "
+                    f"email: {email_addr or 'none'}"
+                    + (f" via {email_src}" if email_src else "")
+                ),
             })
         result = {
             "total": total,
@@ -2080,6 +2165,7 @@ def api_bulk_deep_enrich():
             "found": found,
             "missing": missing,
             "persisted": persisted,
+            "websites_found": websites_found,
             "skipped": skipped,
         }
         jobs.append(jid, {"type": "done", **result})

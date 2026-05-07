@@ -238,9 +238,6 @@
               {% elif _bucket == 'failed' %}<span class="chip chip-status chip-status-failed">failed</span>
               {% else %}<span class="chip chip-status chip-status-delivered">delivered</span>
               {% endif %}
-              {% if st.opens or st.clicks %}
-              <div class="text-[10px] mt-0.5" style="color: var(--text-mute);">{{ st.opens or 0 }} open · {{ st.clicks or 0 }} click</div>
-              {% endif %}
             {% else %}
               <span class="chip chip-status chip-status-notsent">not sent</span>
             {% endif %}
@@ -371,20 +368,21 @@ async function bulkVerifyEmails(name) {
 }
 
 async function bulkDeepEnrich(name) {
-  if (!confirm(`Deep enrich every lead missing an email in ${name}?\n\nFetches top search result URLs + Facebook About pages and scans HTML. Slower (~10-20s/lead) but ~2-3× hit rate. Skips rows that already have an email.`)) return;
+  if (!confirm(`Deep enrich every lead missing an email in ${name}?\n\nFor each row: searches the open web for the business's official website, scrapes its contact/about pages for emails, then falls back to Facebook/Yelp/BBB/YellowPages. Discovered websites are written back to the CSV (Has Website flips to yes). Slower (~15-25s/lead). Skips rows that already have an email.`)) return;
   document.getElementById('log-wrap').classList.remove('hidden');
   clearLog();
-  appendLog(`▶ Deep enriching ${name} (page-fetch + FB About)…`);
+  appendLog(`▶ Deep enriching ${name} (website discovery + email scrape)…`);
   const status = document.getElementById('action-status');
   await startJob('/api/bulk-deep-enrich', {csv_name: name, only_missing: true}, (ev) => {
     if (ev.type === 'progress') {
       const tag = ev.verified ? '✓' : (ev.email ? '~' : '✗');
-      appendLog(`  [${ev.i}/${ev.total}] ${tag} ${ev.name} — ${ev.email || 'no email'}`);
-      status.textContent = `${ev.i}/${ev.total} · ${ev.verified_count} verified · ${ev.found_count} found · ${ev.missing_count} missing · ${ev.skipped_count} already had email`;
+      const siteTag = ev.website ? ` · site:${ev.website}` : '';
+      appendLog(`  [${ev.i}/${ev.total}] ${tag} ${ev.name} — ${ev.email || 'no email'}${siteTag}`);
+      status.textContent = `${ev.i}/${ev.total} · ${ev.verified_count} verified · ${ev.found_count} found · ${ev.missing_count} missing · ${ev.websites_found} websites · ${ev.skipped_count} skipped`;
       paintEmailStatus(ev);
     } else if (ev.type === 'done') {
-      appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found unverified, ${ev.missing} missing, ${ev.skipped} already had email. Persisted ${ev.persisted}.`);
-      status.innerHTML = `Deep enrich: ${ev.verified + ev.found} new emails on ${ev.total - ev.skipped} attempts. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;
+      appendLog(`✔ Done — ${ev.verified} verified, ${ev.found} found, ${ev.missing} missing, ${ev.websites_found} websites discovered, ${ev.skipped} already had email. Persisted ${ev.persisted}.`);
+      status.innerHTML = `Deep enrich: ${ev.verified + ev.found} emails + ${ev.websites_found} websites on ${ev.total - ev.skipped} attempts. <a href="" style="color: var(--accent);" class="underline">Reload</a>`;
     }
   });
 }

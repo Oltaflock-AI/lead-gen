@@ -15,6 +15,7 @@ COLUMN_ALIASES = {
     "rating": ["rating", "Rating"],
     "review_count": ["review_count", "Reviews", "total_reviews"],
     "website": ["business_website", "website", "Website", "prospect_company_website"],
+    "has_website": ["Has Website", "has_website"],
     "city": ["City", "business_region", "prospect_country_name"],
     "business_type": ["Business Type", "business_naics_description", "prospect_job_title"],
     "google_maps_url": ["google_maps_url", "Google Maps URL"],
@@ -40,6 +41,20 @@ def normalize_lead(row):
         reviews = int(float(reviews))
     except (TypeError, ValueError):
         reviews = 0
+    # Has Website resolution: explicit column wins, then website URL presence,
+    # then assume "no" — every CSV in this project either came from a
+    # require_no_website scrape or from a hand-curated import where missing
+    # website is the norm. The "no" default is what triggers the website-
+    # pivot in the drafter, which is the safer assumption to make.
+    has_website_raw = (_pick(row, "has_website") or "").strip().lower()
+    if has_website_raw in ("no", "false", "0"):
+        has_website = "no"
+    elif has_website_raw in ("yes", "true", "1"):
+        has_website = "yes"
+    elif _pick(row, "website"):
+        has_website = "yes"
+    else:
+        has_website = "no"
     return {
         "business_name": _pick(row, "business_name"),
         "email": _pick(row, "email"),
@@ -48,6 +63,7 @@ def normalize_lead(row):
         "rating": rating,
         "review_count": reviews,
         "website": _pick(row, "website"),
+        "has_website": has_website,
         "city": _pick(row, "city"),
         "business_type": _pick(row, "business_type"),
         "google_maps_url": _pick(row, "google_maps_url"),

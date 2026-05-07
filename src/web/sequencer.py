@@ -146,17 +146,104 @@ _STEP_INSTRUCTIONS = {
 
 
 def _facts_block(lead):
+    # Prefer the explicit Has Website CSV column when scraped with the
+    # no-website filter; fall back to website-string presence.
+    hw_flag = (lead.get("has_website") or "").lower()
+    if hw_flag in ("yes", "no"):
+        hw = (hw_flag == "yes")
+    else:
+        hw = bool(lead.get("website"))
     return (
         f"business_name: {lead.get('business_name', '')}\n"
         f"city: {lead.get('city', '')}\n"
         f"niche: {lead.get('niche', '')}\n"
         f"google_rating: {lead.get('rating', 0)}\n"
         f"review_count: {lead.get('review_count', 0)}\n"
-        f"has_website: {bool(lead.get('website'))}\n"
+        f"has_website: {hw}\n"
     )
 
 
+def _fallback_draft_no_website(step, lead, sender_name):
+    """Hardcoded website-pivot fallbacks used when there's no Anthropic key.
+    Works in tandem with _no_website_pivot when the LLM IS available."""
+    name = lead.get("business_name", "your business")
+    city = lead.get("city", "")
+    where = f" in {city}" if city else ""
+    if step == 1:
+        return {
+            "subject": f"built a quick site for {name.lower()}",
+            "body": (
+                f"Hi, noticed {name}{where} doesn't have a website yet, so I "
+                "mocked one up — mobile-friendly, click-to-call, hours, services. "
+                "Free to look at, and only a small monthly fee if you keep it.\n\n"
+                "Want me to send the live preview link?"
+            ),
+        }
+    if step == 2:
+        return {
+            "subject": "preview link still on hold",
+            "body": (
+                f"Bumping this. The demo I built for {name} is just sitting "
+                "on a private link — takes 30 seconds to look at and tells you "
+                "more than I can over email.\n\n"
+                "Reply 'yes' and I'll send it."
+            ),
+        }
+    if step == 3:
+        return {
+            "subject": f"3 callers Googled {name.lower()} this week",
+            "body": (
+                f"Most folks who hear about {name} pull out their phone and "
+                "search the name. With no site, they land on a Google profile "
+                "with no hours, no services, no quick way to reach you. A "
+                "competitor with even a basic page wins those clicks every "
+                "time. The demo I built fixes that — preview is yours, no "
+                "obligation. Send the link?"
+            ),
+        }
+    if step == 4:
+        return {
+            "subject": "live in 7 days, $0 to start",
+            "body": (
+                f"Setup is on me. The site I built for {name} can go live "
+                "this week. 7-day trial, then a small monthly fee only if "
+                "you want to keep it. No setup, no contract, just say go.\n\n"
+                "Want the preview link first?"
+            ),
+        }
+    if step == 5:
+        return {
+            "subject": "the math on going without a site",
+            "body": (
+                f"A handful of search clicks per week × the average job at "
+                f"{name} is the part of the books nobody writes down. The "
+                "demo I built turns those into bookings. $0 setup, $0 month "
+                "one, cancel anytime.\n\n"
+                "10 minutes this week to walk through it?"
+            ),
+        }
+    if step == 6:
+        return {
+            "subject": "spam or not interested?",
+            "body": (
+                "Either my emails are landing in spam or you don't want a "
+                "site, and I can't tell which. Reply 'show me' for the "
+                f"preview, or 'no thanks' and I'll close the loop on {name}."
+            ),
+        }
+    return {
+        "subject": "one word: pizza",
+        "body": (
+            "Last note from me. Reply with one word and I'll act on it. "
+            "PIZZA means stop, I won't email again. SHOW means send the "
+            "preview link. LATER means I circle back in 90 days."
+        ),
+    }
+
+
 def _fallback_draft(step, lead, offer, loom_url, sender_name):
+    if (lead.get("has_website") or "").lower() == "no":
+        return _fallback_draft_no_website(step, lead, sender_name)
     name = lead.get("business_name", "your business")
     city = lead.get("city", "")
     biz = lead.get("niche") or lead.get("business_type") or "tradies"
@@ -264,6 +351,33 @@ def _engagement_block(prior_msgs):
     return " ".join(bits)
 
 
+def _no_website_pivot(lead):
+    """Extra LLM directive used when the lead has no website. Steers every
+    step toward the 'I already mocked up a working homepage for you' angle.
+
+    Returns "" when the lead has a website (or the flag isn't set), so the
+    caller can append unconditionally."""
+    if (lead.get("has_website") or "").lower() != "no":
+        return ""
+    biz = lead.get("business_name", "") or "your business"
+    city = lead.get("city", "")
+    where = f"{biz} in {city}" if city else biz
+    return (
+        "\n\n--- PIVOT: no-website angle (overrides default offer) ---\n"
+        f"This business currently has NO website. The pitch is: 'I already "
+        f"mocked up a working homepage for {where}, mobile-friendly, with "
+        "a click-to-call button and a hours/services section. Reply and I'll "
+        "send you the live preview link.' Risk-reversal: free demo + 7-day "
+        "trial; only pays a small monthly fee if they want to keep it. "
+        "Subject lines must clearly hint at the prebuilt website (e.g. "
+        "'built you a quick site', 'preview link?', 'showed up to your demo'). "
+        "Steps 1-3 each pivot the website hook differently — lost calls "
+        "from people who Google'd them, looking less trustworthy than a "
+        "competitor with a site, missing free Google traffic, etc. Step 3 "
+        "should reframe the demo as a no-obligation 'see-it-first' link.\n"
+    )
+
+
 def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
     """Returns {subject, body}. Falls back to template on any LLM error.
     `prior_msgs` is a list of already-sent steps' rows (with opens/clicks)
@@ -281,6 +395,7 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
         return _fallback_draft(step, lead, offer_text, loom_url, sender_name)
 
     engagement = _engagement_block(prior_msgs or [])
+    pivot = _no_website_pivot(lead)
 
     user_msg = (
         f"{_STEP_INSTRUCTIONS[step]}\n\n"
@@ -291,6 +406,7 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
         f"--- loom_url (only used in step 3) ---\n{loom_url}\n\n"
         + (f"--- prior engagement on this prospect ---\n{engagement}\n\n"
            if engagement else "")
+        + pivot
         + "Output JSON only."
     )
 

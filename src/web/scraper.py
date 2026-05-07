@@ -298,6 +298,7 @@ def filter_place(place, min_reviews, min_rating, seen_ids, require_no_website=Tr
     reviews = place.get("userRatingCount", 0)
     if reviews < min_reviews:
         return None, "below_reviews"
+    has_site = bool(place.get("websiteUri", ""))
     return {
         "Business Name": place.get("displayName", {}).get("text", "N/A"),
         "Address": place.get("formattedAddress", "N/A"),
@@ -305,6 +306,8 @@ def filter_place(place, min_reviews, min_rating, seen_ids, require_no_website=Tr
         "Rating": rating,
         "Reviews": reviews,
         "Business Type": "",
+        "Has Website": "yes" if has_site else "no",
+        "Website": place.get("websiteUri", "") if has_site else "",
         "Google Maps URL": place.get("googleMapsUri", ""),
     }, None
 
