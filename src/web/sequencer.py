@@ -47,6 +47,16 @@ MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 _SYSTEM = """You write hyper-personalized cold-outreach emails as part of a 7-step drip sequence. Each email feels hand-written for ONE specific business, not a template.
 
+We sell AI services (24/7 voice-answering agent, chatbot that lives ON the prospect's existing site, missed-call recovery). We do NOT build, mock up, host, or design websites for prospects.
+
+HARD BAN — never write in subject or body:
+- "I built / mocked / designed / made you a website / site / homepage / landing page"
+- "preview link", "demo link to the site", "live in X days, $0 to start"
+- "noticed you don't have a website", "your business has no website"
+- "$29 / small monthly fee if you keep the site" or any pricing framed around a built site
+- Any sentence that implies we created or own a site for them
+Always assume they already have a site. Pitch the AI layer on top, framed by niche-specific ROI (recovered after-hours calls × average job value).
+
 Hard rules:
 - Plain text only. No markdown, no HTML, no emojis, no asterisks, no bullets, no numbered lists.
 - Word counts: steps 1, 3, 5 are 90 to 140 words. Step 4 (Loom) is 70 to 110 words. Step 6 (quirky) is 60 to 100 words. Steps 2 (bump) and 7 (pizza breakup) are 35 to 70 words.
@@ -146,104 +156,22 @@ _STEP_INSTRUCTIONS = {
 
 
 def _facts_block(lead):
-    # Prefer the explicit Has Website CSV column when scraped with the
-    # no-website filter; fall back to website-string presence.
-    hw_flag = (lead.get("has_website") or "").lower()
-    if hw_flag in ("yes", "no"):
-        hw = (hw_flag == "yes")
-    else:
-        hw = bool(lead.get("website"))
+    has_site = bool(lead.get("has_website")) or bool(lead.get("website"))
+    site_line = (
+        lead.get("website")
+        or ("confirmed (assume they have a live site)" if has_site else "unknown — STILL ASSUME they have a site; never pitch building one")
+    )
     return (
         f"business_name: {lead.get('business_name', '')}\n"
         f"city: {lead.get('city', '')}\n"
         f"niche: {lead.get('niche', '')}\n"
         f"google_rating: {lead.get('rating', 0)}\n"
         f"review_count: {lead.get('review_count', 0)}\n"
-        f"has_website: {hw}\n"
+        f"website: {site_line}\n"
     )
 
 
-def _fallback_draft_no_website(step, lead, sender_name):
-    """Hardcoded website-pivot fallbacks used when there's no Anthropic key.
-    Works in tandem with _no_website_pivot when the LLM IS available."""
-    name = lead.get("business_name", "your business")
-    city = lead.get("city", "")
-    where = f" in {city}" if city else ""
-    if step == 1:
-        return {
-            "subject": f"built a quick site for {name.lower()}",
-            "body": (
-                f"Hi, noticed {name}{where} doesn't have a website yet, so I "
-                "mocked one up — mobile-friendly, click-to-call, hours, services. "
-                "Free to look at, and only a small monthly fee if you keep it.\n\n"
-                "Want me to send the live preview link?"
-            ),
-        }
-    if step == 2:
-        return {
-            "subject": "preview link still on hold",
-            "body": (
-                f"Bumping this. The demo I built for {name} is just sitting "
-                "on a private link — takes 30 seconds to look at and tells you "
-                "more than I can over email.\n\n"
-                "Reply 'yes' and I'll send it."
-            ),
-        }
-    if step == 3:
-        return {
-            "subject": f"3 callers Googled {name.lower()} this week",
-            "body": (
-                f"Most folks who hear about {name} pull out their phone and "
-                "search the name. With no site, they land on a Google profile "
-                "with no hours, no services, no quick way to reach you. A "
-                "competitor with even a basic page wins those clicks every "
-                "time. The demo I built fixes that — preview is yours, no "
-                "obligation. Send the link?"
-            ),
-        }
-    if step == 4:
-        return {
-            "subject": "live in 7 days, $0 to start",
-            "body": (
-                f"Setup is on me. The site I built for {name} can go live "
-                "this week. 7-day trial, then a small monthly fee only if "
-                "you want to keep it. No setup, no contract, just say go.\n\n"
-                "Want the preview link first?"
-            ),
-        }
-    if step == 5:
-        return {
-            "subject": "the math on going without a site",
-            "body": (
-                f"A handful of search clicks per week × the average job at "
-                f"{name} is the part of the books nobody writes down. The "
-                "demo I built turns those into bookings. $0 setup, $0 month "
-                "one, cancel anytime.\n\n"
-                "10 minutes this week to walk through it?"
-            ),
-        }
-    if step == 6:
-        return {
-            "subject": "spam or not interested?",
-            "body": (
-                "Either my emails are landing in spam or you don't want a "
-                "site, and I can't tell which. Reply 'show me' for the "
-                f"preview, or 'no thanks' and I'll close the loop on {name}."
-            ),
-        }
-    return {
-        "subject": "one word: pizza",
-        "body": (
-            "Last note from me. Reply with one word and I'll act on it. "
-            "PIZZA means stop, I won't email again. SHOW means send the "
-            "preview link. LATER means I circle back in 90 days."
-        ),
-    }
-
-
 def _fallback_draft(step, lead, offer, loom_url, sender_name):
-    if (lead.get("has_website") or "").lower() == "no":
-        return _fallback_draft_no_website(step, lead, sender_name)
     name = lead.get("business_name", "your business")
     city = lead.get("city", "")
     biz = lead.get("niche") or lead.get("business_type") or "tradies"
@@ -352,30 +280,7 @@ def _engagement_block(prior_msgs):
 
 
 def _no_website_pivot(lead):
-    """Extra LLM directive used when the lead has no website. Steers every
-    step toward the 'I already mocked up a working homepage for you' angle.
-
-    Returns "" when the lead has a website (or the flag isn't set), so the
-    caller can append unconditionally."""
-    if (lead.get("has_website") or "").lower() != "no":
-        return ""
-    biz = lead.get("business_name", "") or "your business"
-    city = lead.get("city", "")
-    where = f"{biz} in {city}" if city else biz
-    return (
-        "\n\n--- PIVOT: no-website angle (overrides default offer) ---\n"
-        f"This business currently has NO website. The pitch is: 'I already "
-        f"mocked up a working homepage for {where}, mobile-friendly, with "
-        "a click-to-call button and a hours/services section. Reply and I'll "
-        "send you the live preview link.' Risk-reversal: free demo + 7-day "
-        "trial; only pays a small monthly fee if they want to keep it. "
-        "Subject lines must clearly hint at the prebuilt website (e.g. "
-        "'built you a quick site', 'preview link?', 'showed up to your demo'). "
-        "Steps 1-3 each pivot the website hook differently — lost calls "
-        "from people who Google'd them, looking less trustworthy than a "
-        "competitor with a site, missing free Google traffic, etc. Step 3 "
-        "should reframe the demo as a no-obligation 'see-it-first' link.\n"
-    )
+    return ""
 
 
 def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
@@ -789,8 +694,10 @@ def tick():
         # Non-engaged leads are marked done (no further sends).
         if next_step >= open_gate_from_step:
             prior = db.list_sent_sequence_messages(seq["id"], before_step=next_step)
-            total_opens = sum((m.get("opens") or 0) for m in prior)
-            if total_opens == 0:
+            # FIX 4: use confirmed_open (passes 30s bot filter) instead of
+            # raw opens count, which includes scanner/bot pixel hits.
+            confirmed_opens = sum(1 for m in prior if m.get("confirmed_open"))
+            if confirmed_opens == 0:
                 db.update_sequence(
                     seq["id"], status="done", next_send_at=None,
                     paused_reason=f"stopped before step {next_step} — no opens through step {next_step - 1}",
@@ -938,9 +845,40 @@ def record_event(payload):
                 "paused_sequence": None}
 
     paused_sid = None
+    bot_filtered = False
     metric = _RESEND_EVENT_TO_METRIC.get(event)
-    if metric:
+
+    # FIX 1: 30-second open time threshold — filter bot/scanner opens that
+    # fire within seconds of send (Gmail image proxy, Barracuda, etc.).
+    if event == "email.opened" and resend_id:
+        msg_row = db.get_message_by_resend_id(resend_id)
+        if msg_row and msg_row.get("sent_at"):
+            try:
+                sent_dt = datetime.fromisoformat(msg_row["sent_at"])
+                event_dt = (datetime.fromisoformat(created_at)
+                            if created_at else datetime.now(timezone.utc))
+                # Ensure both are tz-aware for comparison.
+                if sent_dt.tzinfo is None:
+                    sent_dt = sent_dt.replace(tzinfo=timezone.utc)
+                if event_dt.tzinfo is None:
+                    event_dt = event_dt.replace(tzinfo=timezone.utc)
+                delta_s = (event_dt - sent_dt).total_seconds()
+                if delta_s < 30:
+                    bot_filtered = True
+                    log.debug("Filtered bot open for %s: %.1fs after send",
+                              resend_id, delta_s)
+                    db.mark_event_filtered(resend_id, event, created_at)
+                    # Skip metric increment and outreach status update below,
+                    # but still let the raw event remain in email_events for audit.
+            except (ValueError, TypeError) as exc:
+                log.warning("open-filter timestamp parse failed rid=%s: %s",
+                            resend_id, exc)
+
+    if metric and not bot_filtered:
         db.increment_message_metric(resend_id, metric)
+        # FIX 3: set confirmed_open when a real (non-bot) first open passes
+        if event == "email.opened":
+            db.set_confirmed_open(resend_id)
     if event in ("email.bounced", "email.complained") and resend_id:
         # Resend's bounce payload carries the WHY we need for diagnosis.
         # `data.bounce` exists on email.bounced; complaints rarely have it.
@@ -996,10 +934,21 @@ def record_event(payload):
                 paused_sid = seq["id"]
 
     # One-shot outreach analytics: bumps opens/clicks/bounced + status.
-    outreach_updated = db.update_outreach_event(resend_id, event)
+    # Skip outreach status promotion for bot-filtered opens.
+    if bot_filtered:
+        outreach_updated = False
+    else:
+        outreach_updated = db.update_outreach_event(resend_id, event)
 
     # Mirror engagement onto the Supabase leads_master profile so the
     # long-term store reflects opens/clicks/replies for cohort analysis.
+    # Skip for bot-filtered opens — don't pollute the leads_master profile.
+    if bot_filtered:
+        log.info("resend event %s rid=%s BOT-FILTERED (skipped counters + outreach)",
+                 event, resend_id)
+        return {"ok": True, "event": event, "resend_id": resend_id,
+                "bot_filtered": True, "paused_sequence": None,
+                "outreach_updated": False}
     try:
         from . import supabase_leads
         if supabase_leads.is_configured() and resend_id:

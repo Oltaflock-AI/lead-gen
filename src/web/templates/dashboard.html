@@ -29,11 +29,12 @@
 
 {# ---------- Region 1 · 4 KPI tiles ---------- #}
 <div class="kpi-grid mb-6">
-  {# Tile 1 — Total leads (all-time, never windowed) #}
+  {# Tile 1 — Click rate (clicks / delivered in window) #}
+  {% set _click_rate = (new_kpis.click_count / new_kpis.delivered_in_window * 100) if new_kpis.delivered_in_window else 0 %}
   <div class="kpi">
-    <div class="kpi-label">Total leads</div>
-    <div class="kpi-num">{{ new_kpis.total_leads }}</div>
-    <div class="kpi-meta">across {{ new_kpis.csv_count }} CSV{{ '' if new_kpis.csv_count == 1 else 's' }}</div>
+    <div class="kpi-label">Click rate</div>
+    <div class="kpi-num">{{ '%.1f' % _click_rate }}<span class="unit">%</span></div>
+    <div class="kpi-meta">{{ new_kpis.click_count }} click{{ '' if new_kpis.click_count == 1 else 's' }} of {{ new_kpis.delivered_in_window }} delivered</div>
   </div>
 
   {# Tile 2 — Sent in window + sparkline #}
@@ -74,20 +75,20 @@
 
 {# ---------- Region 2 · ONE tabbed block (Activity / Pipeline / Issues) ---------- #}
 <div class="dash-block mb-6">
-  <div class="inner-tabs">
-    <button type="button" class="inner-tab active" data-panel="activity">
+  <div class="inner-tabs" role="tablist">
+    <button type="button" class="inner-tab active" data-panel="activity" role="tab" aria-selected="true" aria-controls="panel-activity">
       Activity <span class="count">{{ activity_counts.all }}</span>
     </button>
-    <button type="button" class="inner-tab" data-panel="pipeline">
+    <button type="button" class="inner-tab" data-panel="pipeline" role="tab" aria-selected="false" aria-controls="panel-pipeline">
       Pipeline <span class="count">{{ pipeline_total }}</span>
     </button>
-    <button type="button" class="inner-tab {% if issues_warn_count %}warn{% endif %}" data-panel="issues">
+    <button type="button" class="inner-tab {% if issues_warn_count %}warn{% endif %}" data-panel="issues" role="tab" aria-selected="false" aria-controls="panel-issues">
       Issues <span class="count">{{ issues_warn_count }}</span>
     </button>
   </div>
 
   {# ────── ACTIVITY PANEL ────── #}
-  <div class="inner-panel active" id="panel-activity">
+  <div class="inner-panel active" id="panel-activity" role="tabpanel">
     <div class="filter-row" style="padding:14px 22px;border-bottom:1px solid var(--line-soft);background:var(--bg);">
       {% set _statuses = [
         ('',         'All',      activity_counts.all),
@@ -158,7 +159,7 @@
   </div>
 
   {# ────── PIPELINE PANEL ────── #}
-  <div class="inner-panel" id="panel-pipeline">
+  <div class="inner-panel" id="panel-pipeline" role="tabpanel">
     <div style="padding:22px;">
       <div style="font-size:12px;color:var(--ink-mute);margin-bottom:14px;">Where every active lead currently sits in the 28-day cadence.</div>
       <div class="pipeline-grid">
@@ -187,7 +188,7 @@
   </div>
 
   {# ────── ISSUES PANEL ────── #}
-  <div class="inner-panel" id="panel-issues">
+  <div class="inner-panel" id="panel-issues" role="tabpanel">
     <div style="padding:22px;">
       {% for it in issues %}
       <div class="dash-alert {{ it.severity }}" style="margin-bottom:14px;{% if it.severity == 'ok' %}opacity:0.85;{% endif %}">
@@ -264,9 +265,10 @@
     if (!t) return;
     var panel = t.getAttribute('data-panel');
     if (!panel) return;
-    document.querySelectorAll('.inner-tab').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.inner-tab').forEach(function(b) { b.classList.remove('active'); b.setAttribute('aria-selected', 'false'); });
     document.querySelectorAll('.inner-panel').forEach(function(p) { p.classList.remove('active'); });
     t.classList.add('active');
+    t.setAttribute('aria-selected', 'true');
     var p = document.getElementById('panel-' + panel);
     if (p) p.classList.add('active');
   });

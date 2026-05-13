@@ -73,7 +73,22 @@ _configure_logging()
 log = logging.getLogger("leadgen.app")
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24).hex())
+
+_flask_debug = os.getenv("FLASK_DEBUG", "").lower() in ("1", "true")
+
+_secret = os.getenv("FLASK_SECRET_KEY", "")
+if not _secret:
+    if _flask_debug:
+        _secret = os.urandom(24).hex()
+        log.warning("FLASK_SECRET_KEY not set — using random key (dev mode)")
+    else:
+        raise RuntimeError(
+            "FLASK_SECRET_KEY environment variable is required in production. "
+            "Set FLASK_DEBUG=1 to allow a random fallback during development."
+        )
+app.secret_key = _secret
+
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
 
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -83,8 +98,19 @@ REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:5001/auth/callb
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM = os.getenv("RESEND_FROM", "")
 
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+if _flask_debug:
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
+
+
+@app.after_request
+def _set_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 
 db.init_db()
 # Any scrape that was 'running' when Flask was killed is now stale (its
@@ -858,8 +884,9 @@ def outreach_page():
     fieldnames = []
     drafts_by_email = {}
     if selected_path:
-        fieldnames, rows = metrics.read_csv_with_scores(selected_path)
-        rows = [r for r in rows if r["_normalized"]["email"]]
+        fieldnames, all_rows = metrics.read_csv_with_scores(selected_path)
+        rows = [r for r in all_rows if r["_normalized"]["email"]]
+        skipped_no_email = len(all_rows) - len(rows)
         # Pull existing drafts so the table cells pre-fill on reload.
         for d in db.get_outreach_drafts(csv_name):
             drafts_by_email[d["lead_email"]] = d
@@ -893,6 +920,7 @@ def outreach_page():
         range_key=range_key,
         range_label=range_label,
         range_days=range_days,
+        skipped_no_email=skipped_no_email if selected_path else 0,
         **_ctx(),
     )
 
@@ -1172,6 +1200,77 @@ def api_scrape_interactive():
             if len(leads) >= target_leads:
                 break
 
+        # ── Auto deep research per lead ────────────────────────────────────
+        # Before saving, run find_business_website + deep_find_email on every
+        # collected lead. This (a) verifies has_website for real (Google
+        # Places' websiteUri is often empty for businesses that DO have a
+        # site) so the drafter never mis-pitches and (b) fills missing emails
+        # from the discovered site / contact pages. Concurrent so a 50-lead
+        # scrape adds ~30-60s, not 10+ minutes.
+        if leads and not jobs.is_cancelled(jid):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from .email_finder import deep_enrich_lead
+
+            def _enrich_one(idx_lead):
+                idx, ld = idx_lead
+                name = ld.get("Business Name", "")
+                if not name:
+                    return idx, None
+                region = ld.get("City", "") or city or state
+                try:
+                    return idx, deep_enrich_lead(name, region, country)
+                except Exception as exc:
+                    log.warning(
+                        "scrape job %s deep_enrich failed for %r: %s",
+                        jid, name, exc,
+                    )
+                    return idx, None
+
+            jobs.append(jid, {
+                "type": "log",
+                "line": f"🔎 deep research: enriching {len(leads)} lead(s) "
+                        "(website + email discovery)...",
+            })
+            enriched_count = 0
+            websites_found = 0
+            emails_found = 0
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                futs = {ex.submit(_enrich_one, (i, l)): i
+                        for i, l in enumerate(leads)}
+                for fut in as_completed(futs):
+                    if jobs.is_cancelled(jid):
+                        break
+                    try:
+                        idx, enr = fut.result()
+                    except Exception:
+                        continue
+                    if not enr:
+                        continue
+                    ld = leads[idx]
+                    site = enr.get("website") or ""
+                    site_score = enr.get("website_score") or 0
+                    # Trust discovered site at score >= 5 (matches
+                    # find_business_website threshold).
+                    if site and site_score >= 5 and not ld.get("Website"):
+                        ld["Website"] = site
+                        ld["Has Website"] = "yes"
+                        websites_found += 1
+                    elif not site and not ld.get("Website"):
+                        # Verified: deep search found nothing → real no-site.
+                        ld["Has Website"] = "no"
+                    new_email = (enr.get("email") or "").strip()
+                    if new_email and not (ld.get("Email") or "").strip():
+                        ld["Email"] = new_email
+                        ld["Email Source"] = enr.get("email_source", "")
+                        emails_found += 1
+                    enriched_count += 1
+            jobs.append(jid, {
+                "type": "log",
+                "line": f"✓ deep research done: enriched {enriched_count}/"
+                        f"{len(leads)} (+{websites_found} websites, "
+                        f"+{emails_found} emails)",
+            })
+
         csv_path = _save_interactive_csv(leads, niche, country)
         # Long-term lead store — mirror every scraped row into Supabase
         # so cross-CSV intent + cohort analysis are possible later.
@@ -1291,22 +1390,23 @@ def api_outreach_preview():
         for d in db.get_outreach_drafts(csv_name):
             cached[d["lead_email"]] = d
 
-    def _stale_no_website_draft(lead, draft):
-        """Cached draft was made before the no-website pivot existed.
-        If the lead has no website but the saved subject+body never mention
-        a website / site / preview, it's still the old AI-services pitch —
-        regen it so the website angle takes over."""
-        if (lead.get("has_website") or "").lower() != "no":
-            return False
+    def _stale_website_pitch_draft(lead, draft):
+        """Cached draft was made under the old no-website pivot and pitches a
+        prebuilt site. We no longer ship the website-mockup pitch — regen so
+        the AI services pitch (voice agent + chatbot + ROI) replaces it."""
         text = ((draft.get("subject") or "") + " " +
                 (draft.get("body") or "")).lower()
-        keywords = ("website", "site", "homepage", "preview", "demo")
-        return not any(k in text for k in keywords)
+        markers = (
+            "mocked", "preview link", "built you a quick site",
+            "built a quick site", "doesn't have a website",
+            "no website", "free demo + 7-day trial",
+        )
+        return any(m in text for m in markers)
 
     out = [None] * len(norms)
     for i, n in enumerate(norms):
         em = (n.get("email") or "").lower()
-        if em in cached and not force and not _stale_no_website_draft(n, cached[em]):
+        if em in cached and not force and not _stale_website_pitch_draft(n, cached[em]):
             c = cached[em]
             out[i] = {
                 "subject": c["subject"], "body": c["body"],
@@ -1667,6 +1767,8 @@ def api_outreach_send():
             addr_lower = (to_addr or "").strip().lower()
             if addr_lower in suppressed_set:
                 skipped += 1
+                db.log_outreach(to_addr, business_name, csv_path, subject, body,
+                                gmail_message_id=None, status="skipped")
                 results.append({
                     "to": to_addr, "ok": False,
                     "error": "suppressed (previously bounced or complained)",
@@ -1688,6 +1790,8 @@ def api_outreach_send():
                             bounce_subtype=smtp_check, diagnostic=diag,
                         )
                         skipped += 1
+                        db.log_outreach(to_addr, business_name, csv_path, subject, body,
+                                        gmail_message_id=None, status="skipped")
                         results.append({
                             "to": to_addr, "ok": False,
                             "error": f"failed pre-send verify ({smtp_check})",
@@ -2873,6 +2977,9 @@ def webhook_resend():
         })
 
     secret = os.getenv("RESEND_WEBHOOK_SECRET", "")
+    if not secret and not _flask_debug:
+        log.warning("RESEND_WEBHOOK_SECRET not configured in production — rejecting webhook")
+        return jsonify({"error": "webhook secret not configured"}), 403
     raw = request.get_data()  # MUST be raw bytes — Svix signs the byte string
     log.info("resend webhook POST: bytes=%d secret_configured=%s headers=%s",
              len(raw), bool(secret),
@@ -2923,6 +3030,12 @@ def auth_google():
 
 @app.route("/auth/callback")
 def auth_callback():
+    expected_state = session.pop("oauth_state", None)
+    received_state = request.args.get("state")
+    if not expected_state or expected_state != received_state:
+        log.warning("OAuth state mismatch: expected=%s received=%s",
+                    expected_state, received_state)
+        return "OAuth state mismatch — possible CSRF. Please try again.", 403
     flow = _oauth_flow()
     cv = session.pop("oauth_code_verifier", None)
     if cv:
@@ -2961,4 +3074,4 @@ if __name__ == "__main__":
     # scrape, bulk verify). Override with LEADGEN_RELOAD=1 if you want the
     # auto-restart back while editing UI templates.
     use_reloader = os.getenv("LEADGEN_RELOAD", "0") in ("1", "true", "yes")
-    app.run(debug=True, port=5001, use_reloader=use_reloader)
+    app.run(debug=_flask_debug, port=5001, use_reloader=use_reloader)

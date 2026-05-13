@@ -42,10 +42,11 @@ def normalize_lead(row):
     except (TypeError, ValueError):
         reviews = 0
     # Has Website resolution: explicit column wins, then website URL presence,
-    # then assume "no" — every CSV in this project either came from a
-    # require_no_website scrape or from a hand-curated import where missing
-    # website is the norm. The "no" default is what triggers the website-
-    # pivot in the drafter, which is the safer assumption to make.
+    # otherwise assume "yes". The drafter no longer pitches a website-mockup,
+    # so an unverified "no" must NOT be inferred — pitching "I built you a
+    # site" to a business that already has one is the failure mode this
+    # default guards against. Deep enrichment can still flip this back to
+    # "no" once find_business_website has actually been run for the lead.
     has_website_raw = (_pick(row, "has_website") or "").strip().lower()
     if has_website_raw in ("no", "false", "0"):
         has_website = "no"
@@ -54,7 +55,7 @@ def normalize_lead(row):
     elif _pick(row, "website"):
         has_website = "yes"
     else:
-        has_website = "no"
+        has_website = "yes"
     return {
         "business_name": _pick(row, "business_name"),
         "email": _pick(row, "email"),

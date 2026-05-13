@@ -16,7 +16,11 @@
 <body>
   <div class="flex min-h-screen" style="background: var(--bg);">
 
-    <aside class="w-60 flex flex-col" style="background: var(--bg); border-right: 1px solid var(--line);">
+    <!-- Mobile sidebar toggle -->
+    <button type="button" id="sidebar-toggle" class="sidebar-toggle" aria-label="Toggle navigation" onclick="document.getElementById('sidebar').classList.toggle('open');document.getElementById('sidebar-backdrop').classList.toggle('open');">&#9776;</button>
+    <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="document.getElementById('sidebar').classList.remove('open');this.classList.remove('open');"></div>
+
+    <aside id="sidebar" class="w-60 flex flex-col sidebar" style="background: var(--bg); border-right: 1px solid var(--line);">
       <div class="px-4 pt-5 pb-4">
         <div class="flex items-center gap-2.5">
           <span class="inline-flex items-center justify-center w-8 h-8 rounded-md" style="background: transparent;">

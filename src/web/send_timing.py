@@ -53,6 +53,13 @@ BUSINESS_HOURS: dict[str, tuple[str, int]] = {
 DEFAULT_TZ = os.getenv("LEADGEN_DEFAULT_TZ", "UTC")
 DEFAULT_HOUR = int(os.getenv("LEADGEN_DEFAULT_SEND_HOUR", "10"))
 
+# Global override — when set, EVERY sequence is scheduled at this hour in
+# this tz, regardless of the prospect's country. Useful when the operator
+# wants all sends to land at a single fixed local time (e.g. "8am EST for
+# every outreach campaign").
+FORCE_TZ = os.getenv("LEADGEN_FORCE_SEND_TZ", "").strip()
+FORCE_HOUR = os.getenv("LEADGEN_FORCE_SEND_HOUR", "").strip()
+
 # Mon=0 ... Sun=6. Tue/Wed/Thu have the highest cold-email open rates and
 # the lowest "weekend backlog" effect. Configurable via env so the operator
 # can broaden to Mon-Fri if they prefer volume over peak windows.

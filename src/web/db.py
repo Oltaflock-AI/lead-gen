@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -234,6 +235,18 @@ def init_db():
             "ON email_events(resend_id, event, created_at) "
             "WHERE resend_id IS NOT NULL AND created_at IS NOT NULL"
         )
+        # FIX 3: confirmed_open flag on sequence_messages — only set when an
+        # open passes the 30-second bot-filter AND is the first open.
+        try:
+            c.execute("ALTER TABLE sequence_messages ADD COLUMN confirmed_open INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        # Audit flag on email_events so bot-filtered opens are still logged
+        # but clearly marked as filtered.
+        try:
+            c.execute("ALTER TABLE email_events ADD COLUMN filtered INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         # Clear any legacy seeded placeholder values.
         c.execute("DELETE FROM settings WHERE value IN ('0.02', '500', 'Khush', 'Best,\nKhush')")
         # Drop the obsolete free-form signature key (replaced by structured fields).
@@ -794,7 +807,7 @@ def update_sequence_message(message_id, subject, body):
 def list_sent_sequence_messages(sequence_id, before_step=None):
     """Return all already-sent steps on a sequence, with engagement counters,
     ordered by step. Pass `before_step=N` to limit to steps preceding N."""
-    q = ("SELECT step, subject, sent_at, opens, clicks, replied "
+    q = ("SELECT step, subject, sent_at, opens, clicks, replied, confirmed_open "
          "FROM sequence_messages "
          "WHERE sequence_id = ? AND status = 'sent'")
     args = [sequence_id]
@@ -843,16 +856,56 @@ def log_email_event(resend_id, event, payload_json, created_at=None):
 
 
 def increment_message_metric(resend_id, field, by=1):
-    """field in {'opens','clicks','bounced','replied'}."""
+    """field in {'opens','clicks','bounced','replied'}.
+
+    For opens: only increments when the current count is 0 (first open).
+    Subsequent opens are ignored to prevent scanners/bots from inflating
+    the counter. Raw events are still logged in email_events for audit."""
     if field not in ("opens", "clicks", "bounced", "replied"):
         return 0
     with _conn() as c:
+        # FIX 2: For opens, only count the first one. Repeated bot/scanner
+        # hits (5-10 rapid-fire pixel loads) must not inflate the counter.
+        if field == "opens":
+            row = c.execute(
+                "SELECT opens FROM sequence_messages WHERE resend_id = ?",
+                (resend_id,),
+            ).fetchone()
+            if row and (row["opens"] or 0) >= 1:
+                return 0  # already recorded the first open — skip
         cur = c.execute(
             f"UPDATE sequence_messages SET {field} = {field} + ? "
             "WHERE resend_id = ?",
             (by, resend_id),
         )
         return cur.rowcount
+
+
+def set_confirmed_open(resend_id):
+    """Mark the sequence message as having a confirmed (non-bot) first open."""
+    if not resend_id:
+        return 0
+    with _conn() as c:
+        cur = c.execute(
+            "UPDATE sequence_messages SET confirmed_open = 1 "
+            "WHERE resend_id = ? AND confirmed_open = 0",
+            (resend_id,),
+        )
+        return cur.rowcount
+
+
+def mark_event_filtered(resend_id, event, created_at):
+    """Flag the most-recent email_events row for this (resend_id, event,
+    created_at) tuple as filtered=1 so it's visible in audit but excluded
+    from metric counters."""
+    if not resend_id:
+        return
+    with _conn() as c:
+        c.execute(
+            "UPDATE email_events SET filtered = 1 "
+            "WHERE resend_id = ? AND event = ? AND created_at = ?",
+            (resend_id, event, created_at),
+        )
 
 
 def get_message_by_resend_id(resend_id):
@@ -1295,8 +1348,9 @@ def outreach_funnel(days=None, since=None):
         row = c.execute(
             f"""
             SELECT
-              COUNT(*)                                                              AS sent,
-              SUM(CASE WHEN status NOT IN ('failed','bounced') THEN 1 ELSE 0 END)   AS delivered,
+              SUM(CASE WHEN status != 'skipped' THEN 1 ELSE 0 END)                    AS sent,
+              SUM(CASE WHEN status NOT IN ('failed','bounced','skipped') THEN 1 ELSE 0 END) AS delivered,
+              SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END)                  AS skipped,
               SUM(CASE WHEN opens > 0                          THEN 1 ELSE 0 END)   AS opened,
               SUM(CASE WHEN clicks > 0                         THEN 1 ELSE 0 END)   AS clicked,
               SUM(CASE WHEN status = 'replied'                 THEN 1 ELSE 0 END)   AS replied,
@@ -1309,7 +1363,7 @@ def outreach_funnel(days=None, since=None):
         ).fetchone()
         return {k: int(row[k] or 0) for k in ("sent", "delivered", "opened",
                                               "clicked", "replied", "failed",
-                                              "bounced")}
+                                              "bounced", "skipped")}
 
 
 def outreach_stats_by_niche(days=None, since=None):
@@ -1375,7 +1429,11 @@ def sequence_step_distribution():
 
 def csv_send_summary(csv_path):
     """For a CSV path, return aggregated send health for the Leads card
-    footer. Counts are scoped to outreach_log rows tagged with that csv_path."""
+    footer. Counts are scoped to outreach_log rows tagged with that csv_path.
+
+    Historical rows stored bare filenames while newer callers pass absolute
+    paths, so we match on basename to keep both shapes addressable."""
+    name = os.path.basename(str(csv_path)) if csv_path else ""
     with _conn() as c:
         row = c.execute(
             """
@@ -1387,9 +1445,9 @@ def csv_send_summary(csv_path):
               SUM(CASE WHEN status = 'replied'       THEN 1 ELSE 0 END)      AS replied,
               MAX(sent_at)                                                   AS last_send
             FROM outreach_log
-            WHERE csv_path = ?
+            WHERE csv_path = ? OR csv_path = ?
             """,
-            (csv_path,),
+            (str(csv_path), name),
         ).fetchone()
         return {k: (int(row[k] or 0) if k != "last_send" else row["last_send"])
                 for k in ("sent", "delivered", "failed", "opened",
@@ -1672,7 +1730,20 @@ def top_performing_subjects(min_sends=2, min_open_rate=20, limit=10):
     to inject positive examples into the LLM prompt so newly-drafted
     subject lines learn from what's actually working."""
     rows = copy_performance_by_subject(min_sends=min_sends, limit=200)
-    winners = [r for r in rows if r["open_rate"] >= min_open_rate]
+    # Hard-exclude legacy website-mockup subjects. Even when they opened
+    # well, feeding them back into the prompt re-teaches the LLM to pitch
+    # a built-for-you site — the pivot the product no longer offers.
+    banned_markers = (
+        "built a quick site", "built you a quick site", "preview link",
+        "quick site for", "the math on going without a site",
+        "live in 7 days", "preview link still on hold",
+    )
+    def _is_website_pitch(subj):
+        s = (subj or "").lower()
+        return any(m in s for m in banned_markers)
+    winners = [r for r in rows
+               if r["open_rate"] >= min_open_rate
+               and not _is_website_pitch(r.get("subject"))]
     return winners[:limit]
 
 

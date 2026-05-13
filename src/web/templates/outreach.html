@@ -161,9 +161,10 @@
 
 {% if rows %}
 {# ---------- Block 2 — Lead picker + drafts ---------- #}
-<section class="n-card mb-5" style="padding: 0; overflow: hidden;">
+<section class="n-card mb-5" style="padding: 0; overflow-y: hidden; overflow-x: auto;">
   <div style="padding: 14px 22px; border-bottom: 1px solid var(--line);" class="flex items-center justify-between">
     <div class="n-block-title">{{ rows|length }} leads with email
+      {% if skipped_no_email %}<span class="text-xs ml-2" style="color: var(--warn);">· {{ skipped_no_email }} skipped (no email)</span>{% endif %}
       {% set saved_count = drafts_by_email|length %}
       {% if saved_count %}<span class="text-xs ml-2" style="color: var(--ink-mute);">· {{ saved_count }} saved draft{{ '' if saved_count == 1 else 's' }}</span>{% endif %}
     </div>

@@ -25,7 +25,16 @@ BATCH_MAX_TOKENS = int(os.getenv("OUTREACH_BATCH_MAX_TOKENS", "400"))
 
 SYSTEM_PROMPT = """You write short, friendly cold outreach emails to small and mid-market businesses.
 
-You sell AI services: 24/7 voice-answering agents that book appointments, AI chatbots for the business website, and automation that captures missed-call leads.
+You sell AI services: 24/7 voice-answering agents that book appointments, AI chatbots that live ON the prospect's existing website, and automation that captures missed-call / after-hours leads. The ROI angle (recovered missed calls, after-hours bookings, average job value × recapture rate) is the core pitch.
+
+HARD BAN — do not write any of the following, in any phrasing, in subject OR body:
+- "I built / mocked / made you a website / site / homepage / landing page"
+- "preview link", "demo link to a site", "live in X days, $0 to start"
+- "noticed you don't have a website", "your business has no website"
+- "$29 a month if you keep it", "small monthly fee if you keep it" framed around a site
+- "seven / 7 days free" framed around a built website
+- Any sentence that implies we have created, designed, or hosted a website for them
+We do NOT build websites. Assume they already have one. Pitch the AI layer on top, never the site itself.
 
 Output format (STRICT — every email follows the same shape):
 - Plain text only. No markdown, no HTML, no emojis, no asterisks, no hyphen-bullets, no numbered lists.
@@ -70,19 +79,6 @@ def _template(lead, sender_name=""):
     city = lead.get("city", "")
     city_str = f" in {city}" if city else ""
     rating = lead.get("rating", 0)
-    if (lead.get("has_website") or "").lower() == "no":
-        body = (
-            f"Hi, noticed {name}{city_str} doesn't have a website yet, so "
-            "I mocked one up for you — mobile-friendly, click-to-call, "
-            "hours, services. Free demo + 7-day trial; small monthly fee "
-            "only if you keep it.\n\n"
-            "Want me to send the live preview link?"
-        )
-        return {
-            "subject": f"built a quick site for {name.lower()}",
-            "body": body,
-            "personalized": False,
-        }
     reviews = lead.get("review_count", 0)
     intro = ""
     if rating and reviews:
@@ -123,11 +119,11 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
     chosen_model = model or MODEL
 
-    hw_flag = (lead.get("has_website") or "").lower()
-    if hw_flag in ("yes", "no"):
-        has_website = (hw_flag == "yes")
-    else:
-        has_website = bool(lead.get("website"))
+    _has_site = bool(lead.get("has_website")) or bool(lead.get("website"))
+    _site_line = (
+        lead.get("website")
+        or ("confirmed (assume they have a live site)" if _has_site else "unknown — STILL ASSUME they have a site; never pitch building one")
+    )
     facts = (
         f"business_name: {lead.get('business_name', '')}\n"
         f"city: {lead.get('city', '')}\n"
@@ -135,7 +131,7 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
         f"business_type / niche: {lead.get('business_type', '')}\n"
         f"google_rating: {lead.get('rating', 0)}\n"
         f"review_count: {lead.get('review_count', 0)}\n"
-        f"has_website: {has_website}\n"
+        f"website: {_site_line}\n"
         f"sender_name: {sender_name}\n"
     )
 
@@ -158,17 +154,15 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
     angle_label, angle_desc = _angles[angle_idx]
 
     pitch_intro = (
-        "Write a personalized cold outreach email pitching that we already "
-        "MOCKED UP A WORKING WEBSITE for this business (mobile-friendly, "
-        "click-to-call, hours, services). Free demo + 7-day trial; small "
-        "monthly fee only if they keep it. Subject lines must hint at the "
-        "prebuilt site (e.g. 'built you a quick site', 'preview link?'). "
-        "The whole email pivots around the website hook. Use only the "
-        "facts below. Output JSON only."
-        if not has_website else
         "Write a personalized cold outreach email pitching our AI services "
-        "(voice agent, chatbot, missed-call recovery) to this business. "
-        "Use only the facts below. Output JSON only."
+        "(24/7 voice-answering agent, AI chatbot, missed-call recovery / "
+        "automation) to this business. Lead with niche-specific ROI: pull "
+        "the localized stat from Section 4 of the niche playbook (e.g. "
+        "after-hours missed-call value, average job size, recapture rate) "
+        "and frame the pitch as recovered revenue. NEVER claim or imply "
+        "that the business has no website or that we have built / mocked "
+        "up a site for them — assume they have one. Use only the facts "
+        "below. Output JSON only."
     )
     user_msg = (
         f"{pitch_intro}\n\n"
