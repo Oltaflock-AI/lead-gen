@@ -1,0 +1,107 @@
+"""Inbound email webhook — pauses a sequence the moment a lead replies.
+
+Wire this to Resend Inbound (or any email forwarder that POSTs replies) at
+  https://lead-gen-fawn-seven.vercel.app/webhook/inbound
+
+When a reply lands, we match the sender's address to a lead, pause its active
+sequence (so we stop emailing someone who answered), and log a 'replied' event.
+
+Accepts both the Resend inbound shape ({type, data:{from,to,subject,text}}) and a
+generic {from,to,subject} body. Tolerant of "Name <email>" formatting.
+"""
+import json
+import os
+import re
+import sys
+from http.server import BaseHTTPRequestHandler
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+from lib import supabase as sb
+
+INBOUND_SECRET = os.environ.get("INBOUND_WEBHOOK_SECRET", "")
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def _extract_email(value) -> str | None:
+    """Pull a bare address out of 'Name <a@b.com>' or a list/dict form."""
+    if not value:
+        return None
+    if isinstance(value, list) and value:
+        value = value[0]
+    if isinstance(value, dict):
+        value = value.get("email") or value.get("address") or ""
+    m = EMAIL_RE.search(str(value))
+    return m.group(0).lower() if m else None
+
+
+def _sender(payload: dict) -> str | None:
+    data = payload.get("data") or payload
+    for key in ("from", "sender", "From", "reply_to"):
+        e = _extract_email(data.get(key))
+        if e:
+            return e
+    return None
+
+
+def _pause_for_reply(email: str) -> dict:
+    leads = sb.select("leads", {"select": "id", "email": f"eq.{email}"}, limit=50)
+    if not leads:
+        return {"matched": False, "email": email}
+
+    paused = []
+    for lead in leads:
+        seqs = sb.select(
+            "sequences",
+            {"select": "id,status", "lead_id": f"eq.{lead['id']}"},
+            limit=10,
+        )
+        for s in seqs:
+            sb.update("sequences", {"id": s["id"]}, {
+                "replied": True,
+                "status": "paused",
+                "paused_reason": "replied",
+                "next_send_at": None,
+            })
+            sb.insert("sequence_events", {
+                "sequence_id": s["id"],
+                "event_type": "replied",
+                "meta": {"via": "inbound-webhook"},
+            })
+            paused.append(s["id"])
+    return {"matched": True, "email": email, "paused_sequences": paused}
+
+
+class handler(BaseHTTPRequestHandler):
+    def _respond(self, status: int, obj: dict):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(obj).encode())
+
+    def do_GET(self):
+        self._respond(200, {"ok": True, "service": "inbound-reply-webhook"})
+
+    def do_POST(self):
+        # Optional shared-secret gate (?secret= or X-Webhook-Secret header).
+        if INBOUND_SECRET:
+            got = self.headers.get("x-webhook-secret") or ""
+            if got != INBOUND_SECRET and INBOUND_SECRET not in (self.path or ""):
+                return self._respond(401, {"ok": False, "error": "secret"})
+
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            payload = json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return self._respond(400, {"ok": False, "error": "bad json"})
+
+        email = _sender(payload)
+        if not email:
+            return self._respond(200, {"ok": True, "result": {"matched": False, "reason": "no sender"}})
+
+        try:
+            result = _pause_for_reply(email)
+            return self._respond(200, {"ok": True, "result": result})
+        except Exception as e:
+            return self._respond(500, {"ok": False, "error": str(e)})

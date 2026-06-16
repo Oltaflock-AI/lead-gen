@@ -8,8 +8,9 @@
     }
   },
   "rewrites": [
-    { "source": "/webhook/resend", "destination": "/api/webhook/resend" },
-    { "source": "/((?!api/).*)",   "destination": "/api/index" }
+    { "source": "/webhook/resend",  "destination": "/api/webhook/resend" },
+    { "source": "/webhook/inbound", "destination": "/api/webhook/inbound" },
+    { "source": "/((?!api/).*)",    "destination": "/api/index" }
   ],
   "crons": [
     { "path": "/api/cron/daily_scrape", "schedule": "0 8 * * *" },

@@ -416,7 +416,7 @@ def sequences():
         elif r["status"] == "paused":
             act = f'<form method="post" action="/sequences/{r["id"]}/resume" class="inline"><button class="text-xs px-2 py-0.5 rounded bg-brand hover:bg-brand-600 text-white">Resume</button></form>'
         tr += f"""<tr class="border-b {BORDER} {HOVER_ROW}">
-          <td class="px-4 num-mono">#{r['id']}</td><td class="px-4 num-mono {MUTED}">#{r['lead_id']}</td>
+          <td class="px-4 num-mono"><a href="/sequences/{r['id']}" class="hover:text-brand-500">#{r['id']}</a></td><td class="px-4 num-mono {MUTED}">#{r['lead_id']}</td>
           <td class="px-4">{pill(r['status'], r['status'])}</td><td class="px-4 num-mono">{r['current_step']}</td>
           <td class="px-4 num-mono">{r['opens']}</td><td class="px-4 num-mono">{r['clicks']}</td>
           <td class="px-4">{'✓' if r['replied'] else ''}</td>
@@ -425,6 +425,73 @@ def sequences():
           <td class="px-4 text-right">{act}</td></tr>"""
     body = f'<div class="mb-4"><h2 class="text-xl font-semibold">Sequences</h2><div class="text-xs {MUTED} mt-0.5">{len(rows)} sequences</div></div>' + table(["ID", "Lead", "Status", "Step", "Opens", "Clicks", "Replied", "Next send", "Reason", ""], tr)
     return page("sequences", "Sequences", body)
+
+
+@app.route("/sequences/<int:sid>")
+def sequence_detail(sid: int):
+    srows = sb.select("sequences", {"select": "*", "id": f"eq.{sid}"}, limit=1)
+    if not srows:
+        return ("Not found", 404)
+    s = srows[0]
+    lead = (sb.select("leads", {"select": "*", "id": f"eq.{s['lead_id']}"}, limit=1) or [{}])[0]
+    drafts = sb.select("drafts", {"select": "*", "sequence_id": f"eq.{sid}", "order": "step.asc"}, limit=20)
+    evs = sb.select("sequence_events", {"select": "*", "sequence_id": f"eq.{sid}", "order": "ts.desc"}, limit=100)
+
+    # Email thread — one card per drafted step.
+    thread = ""
+    for d in drafts:
+        thread += f"""
+        <div class="{SURFACE} border {BORDER} rounded-xl p-4 mb-3">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-[11px] uppercase tracking-wider {MUTED}">Step {d['step']} · {d.get('angle') or ''}</div>
+            <div class="text-[11px] {SUBTLE} num-mono">{d.get('model') or ''}</div>
+          </div>
+          <div class="font-medium mb-2">{d['subject']}</div>
+          <pre class="text-xs whitespace-pre-wrap font-sans {MUTED} leading-relaxed">{d['body']}</pre>
+        </div>"""
+    if not thread:
+        thread = empty_state("mail", "No drafts yet", "Drafts appear here as the sequencer sends each step.")
+
+    timeline = "".join(f"""<div class="flex items-center gap-3 py-2 border-b {BORDER} last:border-0">
+        <div class="num-mono text-xs {SUBTLE} w-36 shrink-0">{e['ts'][:19].replace('T',' ')}</div>
+        <div>{pill(e['event_type'], e['event_type'])}</div>
+        <div class="text-xs {MUTED}">{('step ' + str(e['step'])) if e.get('step') else ''}</div>
+      </div>""" for e in evs) or f'<div class="text-xs {MUTED} py-4">No events yet.</div>'
+
+    actions = ""
+    if s["status"] == "active":
+        actions += f'<form method="post" action="/sequences/{sid}/pause" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 border {BORDER}">Pause</button></form>'
+    elif s["status"] == "paused":
+        actions += f'<form method="post" action="/sequences/{sid}/resume" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-brand hover:bg-brand-600 text-white">Resume</button></form>'
+    actions += f'<form method="post" action="/sequences/{sid}/replied" class="inline ml-1"><button class="text-xs px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1"><i data-lucide="reply" class="w-3 h-3"></i>Mark replied</button></form>'
+
+    body = f"""
+    <a href="/sequences" class="text-xs {MUTED} hover:text-brand-500 inline-flex items-center gap-1 mb-3"><i data-lucide="arrow-left" class="w-3 h-3"></i>Sequences</a>
+    <div class="flex items-start justify-between mb-6">
+      <div>
+        <h2 class="text-xl font-semibold">{lead.get('business') or 'Sequence #' + str(sid)}</h2>
+        <div class="text-sm {MUTED} mt-1 num-mono">{lead.get('email') or ''}</div>
+      </div>
+      <div class="flex items-center gap-2">{pill(s['status'], s['status'])}{actions}</div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+      {kpi_card("Step", f"{s['current_step']} / 7")}
+      {kpi_card("Opens", s['opens'])}
+      {kpi_card("Clicks", s['clicks'])}
+      {kpi_card("Next send", (s.get('next_send_at') or '—')[:16].replace('T',' '))}
+    </div>
+    <div class="grid lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2"><h3 class="text-sm font-medium mb-3">Email thread</h3>{thread}</div>
+      <div><h3 class="text-sm font-medium mb-3">Activity</h3><div class="{SURFACE} border {BORDER} rounded-xl p-4">{timeline}</div></div>
+    </div>"""
+    return page("sequences", lead.get("business") or f"Sequence #{sid}", body, page_title=f"Sequence #{sid}")
+
+
+@app.route("/sequences/<int:sid>/replied", methods=["POST"])
+def mark_replied(sid: int):
+    sb.update("sequences", {"id": sid}, {"replied": True, "status": "paused", "paused_reason": "replied", "next_send_at": None})
+    sb.insert("sequence_events", {"sequence_id": sid, "event_type": "replied", "meta": {"via": "manual"}})
+    return redirect(request.referrer or url_for("sequences"))
 
 
 @app.route("/sequences/<int:sid>/pause", methods=["POST"])
