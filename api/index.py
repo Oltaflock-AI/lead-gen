@@ -6,6 +6,7 @@ dark override via the theme toggle. All data from Supabase.
 Pages:  /  /scrape  /offers  /leads  /sequences  /sequences/<id>  /settings
 Actions: create campaign, scrape now, start outreach, pause/resume, mark replied
 """
+import json
 import os
 import sys
 from collections import defaultdict
@@ -15,6 +16,7 @@ from flask import Flask, request, redirect, url_for, jsonify
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from lib import supabase as sb
+from lib import niches
 
 app = Flask(__name__)
 ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
@@ -418,26 +420,75 @@ def home():
 
 @app.route("/scrape")
 def scrape_page():
+    import json as _json
+    niche_opts = "".join(f'<option value="{n}">{n}</option>' for n in niches.NICHE_PRESETS)
+    country_opts = "".join(f'<option value="{c}">{c}</option>' for c in niches.COUNTRY_REGION_CODES)
+    presets_json = _json.dumps(niches.NICHE_PRESETS)
+    rating_opts = "".join(f'<option value="{v}">{l}</option>' for v, l in
+                          [("0", "Any rating"), ("3", "3.0+"), ("3.5", "3.5+"), ("4", "4.0+"), ("4.5", "4.5+")])
+    web_opts = "".join(f'<option value="{k}">{v}</option>' for k, v in niches.WEBSITE_FILTERS.items())
     body = f"""
-    <div class="block"><div class="block-head"><div><div class="block-title">Run a scrape</div><div class="block-sub">Pulls fresh leads from Google Places into a campaign.</div></div></div>
+    <div class="block"><div class="block-head"><div><div class="block-title">New scrape</div><div class="block-sub">Pick a niche, narrow the business types, set quality filters, scrape.</div></div></div>
     <div class="block-body">
-      <div class="note-bar">Fill this in, hit <strong>Scrape now</strong>, and leads land in ~10 seconds. The campaign stays <strong>paused</strong> (no emails) until you click <strong>Start outreach</strong> later.</div>
-      <form method="post" action="/campaigns/create-and-scrape" style="max-width:560px">
+      <div class="note-bar">Leads land in ~10–15s. The campaign stays <strong>paused</strong> (no emails) until you click <strong>Start outreach</strong>.</div>
+      <form method="post" action="/campaigns/create-and-scrape" style="max-width:680px">
         <div class="row-2" style="grid-template-columns:1fr 1fr">
-          <div class="field"><label>Niche — what businesses?</label><input name="niche" required placeholder="real estate agencies"></div>
-          <div class="field"><label>Region — where?</label><input name="region" required placeholder="Auckland, New Zealand"></div>
+          <div class="field"><label>Niche</label><select name="niche" id="niche" required onchange="renderTypes()">{niche_opts}</select></div>
+          <div class="field"><label>Country</label><select name="country" id="country">{country_opts}</select></div>
         </div>
+
+        <div class="field">
+          <label>Business types <span style="text-transform:none;color:var(--ink-faint)">— click to include (none selected = all)</span></label>
+          <div id="types" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px"></div>
+          <div style="margin-top:8px;display:flex;gap:10px"><a onclick="selAll(true)" style="font-size:12px;color:var(--accent);cursor:pointer">select all</a><a onclick="selAll(false)" style="font-size:12px;color:var(--ink-mute);cursor:pointer">clear</a></div>
+        </div>
+
         <div class="row-2" style="grid-template-columns:1fr 1fr">
+          <div class="field"><label>City / area <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="city" placeholder="Auckland"></div>
           <div class="field"><label>How many leads?</label><input name="daily_scrape_target" type="number" value="50"></div>
-          <div class="field"><label>Campaign name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="name" placeholder="auto from niche+region"></div>
         </div>
+
+        <div class="row-2" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="field"><label>Min rating</label><select name="min_rating">{rating_opts}</select></div>
+          <div class="field"><label>Min reviews</label><input name="min_reviews" type="number" value="0"></div>
+          <div class="field"><label>Website</label><select name="website_filter">{web_opts}</select></div>
+        </div>
+
         <div class="field"><label>Offer brief <span style="text-transform:none;color:var(--ink-faint)">(what you pitch — used to write the emails)</span></label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
+        <input type="hidden" name="name" id="cname">
         <div style="display:flex;gap:10px;margin-top:4px">
-          <button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg> Scrape now</button>
-          <button class="btn" type="submit" formaction="/campaigns">Just create (don't scrape yet)</button>
+          <button class="btn primary" type="submit" onclick="setName()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg> Scrape now</button>
+          <button class="btn" type="submit" formaction="/campaigns" onclick="setName()">Just create (don't scrape)</button>
         </div>
       </form>
-    </div></div>"""
+    </div></div>
+    <style>
+      .tchip{{padding:5px 11px;font-size:12px;border-radius:14px;border:1px solid var(--line);color:var(--ink-soft);cursor:pointer;background:var(--card);user-select:none}}
+      .tchip.on{{background:var(--accent);color:#fff;border-color:var(--accent)}}
+    </style>
+    <script>
+      const PRESETS = {presets_json};
+      function renderTypes(){{
+        const niche=document.getElementById('niche').value;
+        const box=document.getElementById('types'); box.innerHTML='';
+        (PRESETS[niche]||[]).forEach(t=>{{
+          const el=document.createElement('label'); el.className='tchip';
+          el.innerHTML=`<input type="checkbox" name="business_types" value="${{t}}" style="display:none">${{t}}`;
+          el.querySelector('input').addEventListener('change',e=>el.classList.toggle('on',e.target.checked));
+          box.appendChild(el);
+        }});
+      }}
+      function selAll(on){{document.querySelectorAll('#types input').forEach(i=>{{i.checked=on;i.parentElement.classList.toggle('on',on);}});}}
+      function setName(){{
+        const niche=document.getElementById('niche').value, country=document.getElementById('country').value;
+        const city=document.querySelector('[name=city]').value;
+        document.getElementById('cname').value=(niche+'-'+(city||country)).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+        // fold city+country into region field
+        let r=document.createElement('input'); r.type='hidden'; r.name='region'; r.value=(city?city+', ':'')+country;
+        document.forms[0].appendChild(r);
+      }}
+      renderTypes();
+    </script>"""
     return shell("scrape", "workspace / scrape", "Scrape", "Find leads", body)
 
 
@@ -487,12 +538,38 @@ def _slug(*parts):
 
 
 def _new_campaign(f) -> dict:
-    name = (f.get("name") or "").strip() or _slug(f.get("niche", ""), f.get("region", ""))
+    niche = (f.get("niche") or "").strip()
+    region = (f.get("region") or "").strip()
+    if not region:
+        city, country = (f.get("city") or "").strip(), (f.get("country") or "").strip()
+        region = (f"{city}, {country}" if city else country).strip(", ") or "United States"
+    name = (f.get("name") or "").strip() or _slug(niche, region)
+
+    cfg: dict = {}
+    types = f.getlist("business_types") if hasattr(f, "getlist") else (f.get("business_types") or [])
+    types = [t for t in types if t]
+    if types:
+        cfg["business_types"] = types
+    try:
+        if float(f.get("min_rating") or 0) > 0:
+            cfg["min_rating"] = float(f["min_rating"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        if int(f.get("min_reviews") or 0) > 0:
+            cfg["min_reviews"] = int(f["min_reviews"])
+    except (TypeError, ValueError):
+        pass
+    if (f.get("website_filter") or "any") != "any":
+        cfg["website_filter"] = f.get("website_filter")
+
     rows = sb.insert("campaigns", {
-        "name": name, "niche": f["niche"].strip(), "region": f["region"].strip(),
+        "name": name, "niche": niche, "region": region,
         "offer_brief": (f.get("offer_brief") or "").strip() or None,
         "daily_scrape_target": int(f.get("daily_scrape_target") or 50),
         "active": f.get("active", "false") == "true",
+        # search config lives in `notes` as JSON (avoids a schema migration)
+        "notes": json.dumps(cfg) if cfg else None,
     }, on_conflict="name")
     return rows[0]
 
