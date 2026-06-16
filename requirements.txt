@@ -8,3 +8,4 @@ ddgs
 dnspython
 anthropic
 resend
+svix
