@@ -421,19 +421,21 @@ def scrape_page():
     body = f"""
     <div class="block"><div class="block-head"><div><div class="block-title">Run a scrape</div><div class="block-sub">Pulls fresh leads from Google Places into a campaign.</div></div></div>
     <div class="block-body">
-      <div class="note-bar">Scrapes run per <strong>campaign</strong>. Create a campaign on the dashboard (niche + region + daily target), then hit <strong>Scrape now</strong> on its row or here.</div>
-      <form method="post" action="/campaigns" style="max-width:560px">
-        <div class="field"><label>Campaign name (slug)</label><input name="name" required placeholder="nz-real-estate"></div>
+      <div class="note-bar">Fill this in, hit <strong>Scrape now</strong>, and leads land in ~10 seconds. The campaign stays <strong>paused</strong> (no emails) until you click <strong>Start outreach</strong> later.</div>
+      <form method="post" action="/campaigns/create-and-scrape" style="max-width:560px">
         <div class="row-2" style="grid-template-columns:1fr 1fr">
-          <div class="field"><label>Niche</label><input name="niche" required placeholder="real estate agencies"></div>
-          <div class="field"><label>Region</label><input name="region" required placeholder="Auckland, New Zealand"></div>
+          <div class="field"><label>Niche — what businesses?</label><input name="niche" required placeholder="real estate agencies"></div>
+          <div class="field"><label>Region — where?</label><input name="region" required placeholder="Auckland, New Zealand"></div>
         </div>
         <div class="row-2" style="grid-template-columns:1fr 1fr">
-          <div class="field"><label>Daily target</label><input name="daily_scrape_target" type="number" value="50"></div>
-          <div class="field"><label>Status</label><select name="active"><option value="false">Paused (recommended)</option><option value="true">Active</option></select></div>
+          <div class="field"><label>How many leads?</label><input name="daily_scrape_target" type="number" value="50"></div>
+          <div class="field"><label>Campaign name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="name" placeholder="auto from niche+region"></div>
         </div>
-        <div class="field"><label>Offer brief</label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
-        <button class="btn primary" type="submit">Create campaign</button>
+        <div class="field"><label>Offer brief <span style="text-transform:none;color:var(--ink-faint)">(what you pitch — used to write the emails)</span></label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 9-14 9V3z"/></svg> Scrape now</button>
+          <button class="btn" type="submit" formaction="/campaigns">Just create (don't scrape yet)</button>
+        </div>
       </form>
     </div></div>"""
     return shell("scrape", "workspace / scrape", "Scrape", "Find leads", body)
@@ -478,16 +480,41 @@ def leads_page():
     return shell("leads", "workspace / leads", "Leads", "Browse by campaign", body)
 
 
-@app.route("/campaigns", methods=["POST"])
-def create_campaign():
-    f = request.form
-    sb.insert("campaigns", {
-        "name": f["name"].strip(), "niche": f["niche"].strip(), "region": f["region"].strip(),
+def _slug(*parts):
+    import re
+    s = "-".join(p.strip() for p in parts if p and p.strip())
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:60] or "campaign"
+
+
+def _new_campaign(f) -> dict:
+    name = (f.get("name") or "").strip() or _slug(f.get("niche", ""), f.get("region", ""))
+    rows = sb.insert("campaigns", {
+        "name": name, "niche": f["niche"].strip(), "region": f["region"].strip(),
         "offer_brief": (f.get("offer_brief") or "").strip() or None,
         "daily_scrape_target": int(f.get("daily_scrape_target") or 50),
         "active": f.get("active", "false") == "true",
-    })
+    }, on_conflict="name")
+    return rows[0]
+
+
+@app.route("/campaigns", methods=["POST"])
+def create_campaign():
+    _new_campaign(request.form)
     return redirect(url_for("leads_page"))
+
+
+@app.route("/campaigns/create-and-scrape", methods=["POST"])
+def create_and_scrape():
+    from lib import scrape
+    c = _new_campaign(request.form)
+    run = sb.insert("scrape_runs", {"campaign_id": c["id"], "target_count": c["daily_scrape_target"], "status": "running"})[0]
+    try:
+        rows = list(scrape.scrape_for_campaign(c, target=c["daily_scrape_target"]))
+        n = len(sb.insert("leads", rows, on_conflict="campaign_id,business")) if rows else 0
+        sb.update("scrape_runs", {"id": run["id"]}, {"status": "completed", "scraped_count": n, "finished_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        sb.update("scrape_runs", {"id": run["id"]}, {"status": "failed", "error": str(e)[:400], "finished_at": datetime.now(timezone.utc).isoformat()})
+    return redirect(f"/campaigns/{c['id']}")
 
 
 def _fire(path, **params):
