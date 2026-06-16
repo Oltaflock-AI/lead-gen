@@ -1,0 +1,42 @@
+name: poke-vercel-crons
+
+# GitHub Actions runs sub-daily ticks that Hobby Vercel plan blocks.
+# Hits the protected Vercel endpoints with Bearer CRON_SECRET.
+# Note: GitHub Actions scheduled workflows have 5-15 min jitter under load.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 min — sequencer
+    - cron: '*/15 * * * *'  # every 15 min — enrichment
+  workflow_dispatch: {}
+
+concurrency:
+  group: poke-crons
+  cancel-in-progress: false
+
+jobs:
+  sequencer:
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: tick sequencer
+        env:
+          BASE_URL: ${{ vars.VERCEL_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/sequencer_tick" | head -200
+
+  enrich:
+    if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: tick enrichment
+        env:
+          BASE_URL: ${{ vars.VERCEL_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/enrich_tick" | head -200
