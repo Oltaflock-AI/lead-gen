@@ -46,20 +46,33 @@ def _verify_svix(body: bytes, headers) -> bool:
         return False
 
 
-def _find_sequence_step(resend_id: str, tags: dict | None) -> tuple[int | None, int | None]:
+def _tags_to_dict(tags) -> dict:
+    """Resend echoes tags as a dict OR a list of {name, value}. Normalize."""
+    if isinstance(tags, dict):
+        return tags
+    if isinstance(tags, list):
+        out = {}
+        for t in tags:
+            if isinstance(t, dict) and "name" in t:
+                out[t["name"]] = t.get("value")
+        return out
+    return {}
+
+
+def _find_sequence_step(resend_id: str, tags) -> tuple[int | None, int | None]:
     """Resolve resend_id → (sequence_id, step).
 
     Preferred: read tags Resend echoes back (we set them on send).
     Fallback: lookup last 'sent' event with this resend_id.
     """
-    if tags:
-        seq = tags.get("sequence_id")
-        step = tags.get("step")
-        if seq is not None:
-            try:
-                return int(seq), int(step) if step is not None else None
-            except (TypeError, ValueError):
-                pass
+    td = _tags_to_dict(tags)
+    if td.get("sequence_id") is not None:
+        try:
+            seq = int(td["sequence_id"])
+            step = int(td["step"]) if td.get("step") is not None else None
+            return seq, step
+        except (TypeError, ValueError):
+            pass
     rows = sb.select(
         "sequence_events",
         params={
@@ -73,6 +86,42 @@ def _find_sequence_step(resend_id: str, tags: dict | None) -> tuple[int | None, 
     if rows:
         return rows[0]["sequence_id"], rows[0]["step"]
     return None, None
+
+
+def _is_bot_open(sequence_id: int, resend_id: str | None) -> bool:
+    """Opens firing <35s after send are image-proxy / scanner bots, not humans."""
+    from datetime import datetime, timezone
+    params = {"select": "ts", "sequence_id": f"eq.{sequence_id}", "event_type": "eq.sent", "order": "ts.desc"}
+    if resend_id:
+        params["resend_id"] = f"eq.{resend_id}"
+    rows = sb.select("sequence_events", params=params, limit=1)
+    if not rows:
+        return False
+    try:
+        sent = datetime.fromisoformat(rows[0]["ts"].replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - sent).total_seconds() < 35
+    except Exception:
+        return False
+
+
+def _accelerate_on_open(sequence_id: int) -> None:
+    """Real open → pull the next send forward so we follow up while they're warm."""
+    from datetime import datetime, timedelta, timezone
+    rows = sb.select("sequences", {"select": "status,current_step,next_send_at", "id": f"eq.{sequence_id}"}, limit=1)
+    if not rows:
+        return
+    s = rows[0]
+    if s["status"] != "active" or (s.get("current_step") or 0) >= 7:
+        return
+    pull_hours = int(os.environ.get("LEADGEN_OPEN_PULL_HOURS", "6"))
+    target = datetime.now(timezone.utc) + timedelta(hours=pull_hours)
+    cur = s.get("next_send_at")
+    try:
+        cur_dt = datetime.fromisoformat(cur.replace("Z", "+00:00")) if cur else None
+    except Exception:
+        cur_dt = None
+    if cur_dt is None or target < cur_dt:
+        sb.update("sequences", {"id": sequence_id}, {"next_send_at": target.isoformat()})
 
 
 def _record(payload: dict) -> dict:
@@ -104,13 +153,21 @@ def _record(payload: dict) -> dict:
         })
         return {"buffered": True, "resend_id": resend_id, "type": event_type}
 
+    # Filter bot opens before they pollute counters or trigger acceleration.
+    if event_type == "opened" and _is_bot_open(sequence_id, resend_id):
+        row["event_type"] = "opened_bot"
+        sb.insert("sequence_events", row)
+        return {"filtered": "bot-open", "sequence_id": sequence_id}
+
     sb.insert("sequence_events", row)
 
-    # Increment counters on the sequence row.
+    # Increment counters + react.
     if event_type == "opened":
         sb.rpc("increment_sequence_counter", {"seq_id": sequence_id, "field": "opens"})
+        _accelerate_on_open(sequence_id)
     elif event_type == "clicked":
         sb.rpc("increment_sequence_counter", {"seq_id": sequence_id, "field": "clicks"})
+        _accelerate_on_open(sequence_id)
     elif event_type == "bounced":
         sb.update("sequences", {"id": sequence_id}, {"bounced": True, "status": "paused", "paused_reason": "bounced"})
     elif event_type == "complained":
