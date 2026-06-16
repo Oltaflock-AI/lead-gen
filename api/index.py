@@ -1,15 +1,10 @@
-"""Lead-gen autopilot dashboard. Vercel Flask. Light + dark, Tailwind CDN.
+"""Lead-gen autopilot dashboard — warm editorial design (matches prototype).
 
-Routes:
-  GET  /                         dashboard — KPIs + 7d chart + campaigns
-  POST /campaigns                create
-  POST /campaigns/<id>/toggle    pause/resume scraping
-  POST /campaigns/<id>/scrape    manual scrape now
-  POST /campaigns/<id>/start     activate + kick the sequencer (start outreach)
-  GET  /campaigns/<id>           detail
-  GET  /leads /sequences /events list views
-  POST /sequences/<id>/pause | /resume
-  GET  /healthz
+Server-rendered Flask. Light (cream/Fraunces/forest-green) by default, with a
+dark override via the theme toggle. All data from Supabase.
+
+Pages:  /  /scrape  /offers  /leads  /sequences  /sequences/<id>  /settings
+Actions: create campaign, scrape now, start outreach, pause/resume, mark replied
 """
 import os
 import sys
@@ -25,17 +20,12 @@ app = Flask(__name__)
 ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
 PROD_URL = "https://lead-gen-fawn-seven.vercel.app"
 
-# ─── Semantic theme classes (light default + dark: variant) ───
-BG        = "bg-zinc-50 dark:bg-zinc-950"
-SURFACE   = "bg-white dark:bg-zinc-900"
-BORDER    = "border-zinc-200 dark:border-zinc-800"
-TEXT      = "text-zinc-900 dark:text-zinc-100"
-MUTED     = "text-zinc-500 dark:text-zinc-400"
-SUBTLE    = "text-zinc-400 dark:text-zinc-600"
-HOVER_ROW = "hover:bg-zinc-50 dark:hover:bg-zinc-800/40"
-INPUT     = ("w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-300 dark:border-zinc-800 "
-             "rounded-lg px-3 py-2 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none")
-THEAD     = "bg-zinc-50 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 text-[11px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400"
+STEP_META = {  # step -> (day label, name)
+    1: ("Day 0", "Cold"), 2: ("Day 3", "Bump"), 3: ("Day 7", "FOMO"),
+    4: ("Day 11", "Loom"), 5: ("Day 16", "Math"), 6: ("Day 21", "Quirky"),
+    7: ("Day 28", "Pizza"),
+}
+WINDOWS = {"today": None, "7d": 168, "30d": 720, "all": 24 * 365 * 5}
 
 
 @app.before_request
@@ -45,181 +35,270 @@ def _gate():
     if request.cookies.get("dk") == ADMIN_KEY:
         return None
     if request.args.get("dk") == ADMIN_KEY:
-        resp = redirect(request.path)
+        resp = redirect(request.full_path.rstrip("?"))
         resp.set_cookie("dk", ADMIN_KEY, max_age=86400 * 30, httponly=True, samesite="Lax")
         return resp
     return ("Set ?dk=<DASHBOARD_KEY> in URL", 401)
 
 
-# ─────────── Data ───────────
-def _events_window(hours: int) -> list[dict]:
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    return sb.select("sequence_events", {"select": "event_type,ts", "ts": f"gte.{since}", "order": "ts.desc"}, limit=20000)
+# ════════════════ Styles (from prototype + dark override) ════════════════
+CSS = """
+:root{
+  --bg:#faf9f6; --bg-soft:#f3f1ec; --card:#ffffff;
+  --ink:#1a1a1a; --ink-soft:#4a4a4a; --ink-mute:#8a8a8a; --ink-faint:#b8b8b8;
+  --line:#e8e6e1; --line-soft:#f0eee8;
+  --accent:#2d5a3f; --accent-soft:#e8f0ea;
+  --warn:#c44536; --warn-soft:#fdecea; --warn-line:#f5c6c0;
+  --info:#3b6ea8; --info-soft:#eaf1f9; --good:#3d7a52;
+  --font-serif:'Fraunces',Georgia,serif; --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; --radius:8px;
+}
+html.dark{
+  --bg:#15130e; --bg-soft:#1f1c15; --card:#1c1a13;
+  --ink:#f1eee6; --ink-soft:#c6c1b5; --ink-mute:#8c867a; --ink-faint:#5b564c;
+  --line:#2d2920; --line-soft:#252118;
+  --accent:#6fae88; --accent-soft:#1d3025;
+  --warn:#e0897a; --warn-soft:#37201c; --warn-line:#583129;
+  --info:#6f9fce; --info-soft:#1b2733; --good:#7bbd93;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+body{display:flex;min-height:100vh}
+a{color:inherit;text-decoration:none}
+.sidebar{width:220px;flex-shrink:0;border-right:1px solid var(--line);padding:24px 20px;display:flex;flex-direction:column;gap:24px;background:var(--bg);position:fixed;height:100vh;overflow-y:auto}
+.brand{display:flex;align-items:center;gap:10px;padding:0 4px}
+.brand-mark{width:22px;height:22px;color:var(--accent)}
+.brand-name{font-family:var(--font-serif);font-size:18px;font-weight:500;letter-spacing:-0.01em}
+.brand-sub{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);letter-spacing:0.04em}
+.nav-section{display:flex;flex-direction:column;gap:2px}
+.nav-label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-faint);padding:0 8px;margin-bottom:6px}
+.nav-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;color:var(--ink-soft);font-size:13.5px;cursor:pointer;transition:background .12s}
+.nav-item:hover{background:var(--bg-soft)}
+.nav-item.active{background:var(--bg-soft);color:var(--ink);font-weight:500}
+.nav-item .badge{margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--card);padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
+.nav-item.warn .badge{color:var(--warn);border-color:var(--warn-line)}
+.main{flex:1;margin-left:220px;padding:36px 56px 80px;max-width:1200px}
+.crumb{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);margin-bottom:6px;letter-spacing:0.04em}
+.h1{font-family:var(--font-serif);font-size:36px;font-weight:500;letter-spacing:-0.02em;margin-bottom:6px}
+.sub{color:var(--ink-soft);margin-bottom:28px;font-size:14px}
+.window-bar{display:flex;align-items:center;gap:10px;margin-bottom:24px;font-size:12px;color:var(--ink-mute)}
+.window-pills{display:flex;gap:2px;background:var(--bg-soft);padding:3px;border-radius:8px;border:1px solid var(--line)}
+.window-pill{padding:5px 12px;font-size:12px;border-radius:5px;background:transparent;border:none;color:var(--ink-soft);cursor:pointer;font-family:inherit;font-weight:450}
+.window-pill.active{background:var(--card);color:var(--ink);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:32px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.kpi-label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mute);margin-bottom:10px}
+.kpi-num{font-family:var(--font-serif);font-size:32px;font-weight:500;letter-spacing:-0.02em;line-height:1.05}
+.kpi-num .unit{font-size:18px;color:var(--ink-mute);margin-left:1px}
+.kpi-meta{font-size:12px;color:var(--ink-mute);margin-top:6px}
+.kpi.alert-kpi{background:var(--warn-soft);border-color:var(--warn-line)}
+.kpi.alert-kpi .kpi-num,.kpi.alert-kpi .kpi-label{color:var(--warn)}
+.block{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:20px;overflow:hidden}
+.block-head{padding:16px 22px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;justify-content:space-between}
+.block-title{font-family:var(--font-serif);font-size:18px;font-weight:500;letter-spacing:-0.01em}
+.block-sub{font-size:12px;color:var(--ink-mute);margin-top:2px}
+.block-body{padding:22px}
+.block-actions{display:flex;gap:6px}
+.inner-tabs{display:flex;border-bottom:1px solid var(--line);background:var(--bg)}
+.inner-tab{padding:14px 22px;font-size:13px;color:var(--ink-mute);cursor:pointer;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-1px;font-weight:450;font-family:inherit;display:flex;align-items:center;gap:8px}
+.inner-tab:hover{color:var(--ink-soft)}
+.inner-tab.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:500}
+.inner-tab .count{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--card);padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
+.inner-tab.active .count{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
+.inner-tab.warn .count{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
+.inner-panel{display:none}.inner-panel.active{display:block}
+.pipeline{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+.pipe-step{background:var(--bg-soft);border:1px solid var(--line);border-radius:var(--radius);padding:14px 12px;text-align:center}
+.pipe-day{font-family:var(--font-mono);font-size:9px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}
+.pipe-name{font-size:11px;color:var(--ink-soft);font-weight:500;margin-bottom:8px}
+.pipe-count{font-family:var(--font-serif);font-size:24px;font-weight:500;letter-spacing:-0.02em}
+.pipe-count.zero{color:var(--ink-faint)}
+.pipe-step.active{background:var(--accent-soft);border-color:var(--accent)}
+.pipe-step.active .pipe-count{color:var(--accent)}
+.niche-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.act-table{width:100%;border-collapse:collapse}
+.act-table thead th{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mute);text-align:left;padding:12px 22px;background:var(--bg-soft);border-bottom:1px solid var(--line)}
+.act-table tbody td{padding:12px 22px;border-bottom:1px solid var(--line-soft);font-size:13px;vertical-align:top}
+.act-table tbody tr:last-child td{border-bottom:none}
+.act-table tbody tr:hover{background:var(--bg-soft)}
+.act-table .when{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);white-space:nowrap}
+.act-table .biz{font-weight:500;color:var(--ink)}
+.act-table .email{font-size:11px;color:var(--ink-mute);font-family:var(--font-mono);margin-top:1px}
+.act-table .subj{color:var(--ink-soft);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip{display:inline-block;padding:2px 8px;font-size:10px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.04em;border-radius:10px;border:1px solid;font-weight:500}
+.chip.failed,.chip.bounced{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.chip.sent{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.chip.delivered{background:var(--bg-soft);border-color:var(--line);color:var(--ink-mute)}
+.chip.opened{background:var(--info-soft);border-color:var(--info);color:var(--info)}
+.chip.clicked{background:#fff5d8;border-color:#e8d39a;color:#7a5916}
+.chip.replied{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.chip.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.chip.paused{background:#fef7ec;border-color:#f0d8a8;color:#8a5a16}
+.chip.done,.chip.queued{background:var(--bg-soft);border-color:var(--line);color:var(--ink-mute)}
+.chip.pending{background:var(--info-soft);border-color:var(--info);color:var(--info)}
+.chip.enriched{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.group-head{background:var(--bg-soft);font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mute);padding:8px 22px;border-top:1px solid var(--line);border-bottom:1px solid var(--line-soft)}
+.filter-row{display:flex;gap:8px;padding:14px 22px;border-bottom:1px solid var(--line-soft);background:var(--bg);flex-wrap:wrap}
+.filter-chip{padding:5px 11px;font-size:12px;border-radius:14px;border:1px solid var(--line);color:var(--ink-soft);cursor:pointer;background:var(--card);font-family:inherit}
+.filter-chip.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.filter-chip .count{font-family:var(--font-mono);font-size:10px;margin-left:4px;opacity:0.7}
+.timeline{display:flex;flex-direction:column;border-left:1.5px solid var(--line);margin-left:8px;padding-left:24px}
+.tl-item{position:relative;padding:10px 0}
+.tl-item::before{content:'';position:absolute;left:-30px;top:14px;width:8px;height:8px;background:var(--card);border:2px solid var(--ink-faint);border-radius:50%}
+.tl-item.live::before{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.tl-time{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute)}
+.tl-text{font-size:13px;margin-top:2px}
+.csv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.csv-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;cursor:pointer;transition:border-color .12s,box-shadow .12s;display:block}
+.csv-card:hover{border-color:var(--ink-faint);box-shadow:0 1px 4px rgba(0,0,0,0.04)}
+.csv-name{font-family:var(--font-serif);font-size:17px;color:var(--ink);font-weight:500;margin-bottom:4px}
+.csv-meta{font-size:11px;color:var(--ink-mute);margin-bottom:14px;font-family:var(--font-mono)}
+.csv-health{display:flex;align-items:baseline;gap:8px;margin-bottom:12px}
+.csv-health-num{font-family:var(--font-serif);font-size:28px;font-weight:500;letter-spacing:-0.02em}
+.csv-health-num.good{color:var(--good)}.csv-health-num.bad{color:var(--warn)}
+.csv-health-label{font-family:var(--font-mono);font-size:9px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.08em}
+.dots{display:inline-flex;gap:3px;align-items:center}
+.dots .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
+.dots .dot.done{background:var(--accent)}
+.dots .dot.current{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.note-bar{background:var(--info-soft);border:1px solid var(--info);color:var(--ink-soft);padding:10px 14px;border-radius:var(--radius);font-size:12px;margin-bottom:18px}
+.btn{padding:7px 14px;font-size:13px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;font-family:inherit;font-weight:500;display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--bg-soft)}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.primary:hover{opacity:0.92;background:var(--accent)}
+.btn.sm{padding:4px 10px;font-size:12px}
+.btn.danger{color:var(--warn);border-color:var(--warn-line)}
+.row-2{display:grid;grid-template-columns:1.5fr 1fr;gap:20px}
+.muted{color:var(--ink-mute)}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:12px;color:var(--ink-mute);margin-bottom:5px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.04em}
+.field input,.field textarea,.field select{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px 12px;font-family:inherit;font-size:14px;color:var(--ink)}
+.field input:focus,.field textarea:focus,.field select:focus{outline:none;border-color:var(--accent)}
+.field textarea{font-family:var(--font-mono);font-size:12px}
+.theme-btn{position:fixed;top:18px;right:22px;background:var(--card);border:1px solid var(--line);border-radius:8px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--ink-mute);z-index:50}
+.theme-btn:hover{color:var(--ink)}
+dialog{background:var(--card);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:0;max-width:540px;width:100%}
+dialog::backdrop{background:rgba(0,0,0,0.5)}
+.empty{background:var(--bg-soft);border:1px dashed var(--line);border-radius:var(--radius);padding:48px;text-align:center;color:var(--ink-mute);font-size:13px}
+.conn-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
+.conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.conn-dot.on{background:var(--good)}.conn-dot.off{background:var(--ink-faint)}
+"""
 
 
-def _kpi_24h() -> dict:
+# ════════════════ Data helpers ════════════════
+def _events(hours=None):
+    p = {"select": "event_type,ts,sequence_id,step,resend_id,meta", "order": "ts.desc"}
+    if hours:
+        p["ts"] = f"gte.{(datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()}"
+    else:  # today
+        p["ts"] = f"gte.{datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()}"
+    return sb.select("sequence_events", p, limit=20000)
+
+
+def _counts(events):
     b = defaultdict(int)
-    for r in _events_window(24):
-        b[r["event_type"]] += 1
-    return {k: b[k] for k in ("sent", "delivered", "opened", "clicked", "replied", "bounced")}
+    for e in events:
+        b[e["event_type"]] += 1
+    return b
 
 
-def _series_7d() -> dict:
-    days = defaultdict(lambda: defaultdict(int))
-    for r in _events_window(24 * 7):
-        days[r["ts"][:10]][r["event_type"]] += 1
-    labels, sent, opened = [], [], []
-    for i in range(6, -1, -1):
-        d = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
-        labels.append(d[5:]); sent.append(days[d]["sent"]); opened.append(days[d]["opened"])
-    return {"labels": labels, "sent": sent, "opened": opened}
+def _campaigns():
+    return sb.select("campaigns", {"select": "*", "order": "created_at.desc"}, limit=200)
 
 
-def _campaign_counts() -> dict[int, dict]:
-    out = defaultdict(lambda: {"leads": 0, "pending": 0, "enriched": 0})
-    for r in sb.select("leads", {"select": "campaign_id,enrichment_status"}, limit=100000):
+def _lead_counts():
+    out = defaultdict(lambda: {"leads": 0, "enriched": 0, "with_email": 0})
+    for r in sb.select("leads", {"select": "campaign_id,enrichment_status,email"}, limit=100000):
         cid = r["campaign_id"]
         if cid is None:
             continue
         out[cid]["leads"] += 1
-        st = r["enrichment_status"]
-        if st in ("pending", "enriched"):
-            out[cid][st] += 1
+        if r["enrichment_status"] == "enriched":
+            out[cid]["enriched"] += 1
+        if r.get("email"):
+            out[cid]["with_email"] += 1
     return out
 
 
-def _campaigns() -> list[dict]:
-    return sb.select("campaigns", {"select": "*", "order": "created_at.desc"}, limit=200)
+def _spark_14d():
+    days = defaultdict(int)
+    for e in _events(24 * 14):
+        if e["event_type"] == "sent":
+            days[e["ts"][:10]] += 1
+    pts = []
+    for i in range(13, -1, -1):
+        d = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+        pts.append(days[d])
+    return pts
 
 
-# ─────────── Components ───────────
-def pill(text: str, kind: str = "neutral") -> str:
-    p = {
-        "neutral":  "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700",
-        "active":   "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30",
-        "paused":   "bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-500/30",
-        "pending":  "bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-500/30",
-        "enriched": "bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-500/30",
-        "done":     "bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700",
-        "failed":   "bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/30",
-        "bounced":  "bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-500/30",
-        "completed":"bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30",
-        "running":  "bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-500/30",
-        "sent":     "bg-sky-50 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-500/30",
-        "opened":   "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-500/30",
-        "clicked":  "bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-500/30",
-        "delivered":"bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700",
-        "replied":  "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 border-emerald-300 dark:border-emerald-500/40",
-    }.get(kind, None)
-    if p is None:
-        p = "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700"
-    return f'<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border {p}">{text}</span>'
-
-
-def kpi_card(label: str, value, sub: str = "") -> str:
-    return f"""
-    <div class="{SURFACE} border {BORDER} rounded-xl p-4">
-      <div class="text-[11px] uppercase tracking-wider {MUTED}">{label}</div>
-      <div class="mt-2 text-2xl font-semibold num-mono {TEXT}">{value}</div>
-      {f'<div class="mt-1 text-xs {MUTED}">{sub}</div>' if sub else ''}
-    </div>"""
-
-
-def empty_state(icon: str, title: str, message: str, cta: str = "") -> str:
-    return f"""
-    <div class="text-center py-16">
-      <div class="w-12 h-12 rounded-full bg-zinc-100 dark:bg-zinc-800 border {BORDER} mx-auto flex items-center justify-center mb-4">
-        <i data-lucide="{icon}" class="w-5 h-5 {MUTED}"></i>
-      </div>
-      <div class="text-sm font-medium {TEXT}">{title}</div>
-      <div class="text-xs {MUTED} mt-1 max-w-md mx-auto">{message}</div>
-      {f'<div class="mt-6">{cta}</div>' if cta else ''}
-    </div>"""
-
-
-def table(headers: list[str], rows_html: str) -> str:
-    ths = "".join(f'<th class="text-left py-3 px-4 font-medium">{h}</th>' for h in headers)
-    return f"""
-    <div class="{SURFACE} border {BORDER} rounded-xl overflow-hidden">
-      <table class="w-full text-sm">
-        <thead class="{THEAD}"><tr>{ths}</tr></thead>
-        <tbody>{rows_html}</tbody>
-      </table>
-    </div>"""
-
-
-def page(active: str, title: str, body: str, page_title: str | None = None) -> str:
-    page_title = page_title or title
-    items = [("home", "/", "Dashboard", "layout-dashboard"),
-             ("leads", "/leads", "Leads", "users"),
-             ("sequences", "/sequences", "Sequences", "send"),
-             ("events", "/events", "Events", "activity")]
-    nav = ""
-    for key, href, label, icon in items:
-        on = (key == active)
-        cls = ("bg-brand text-white" if on
-               else f"{MUTED} hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800/60")
-        nav += f'<a href="{href}" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition {cls}"><i data-lucide="{icon}" class="w-4 h-4"></i><span>{label}</span></a>'
-
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return (
-"""<!doctype html><html lang="en" class="dark"><head>
+# ════════════════ Shell ════════════════
+def shell(active, crumb, h1, sub, body, badges=None):
+    badges = badges or {}
+    out_b = f' <span class="badge">{badges["outreach"]}</span>' if badges.get("outreach") else ""
+    seq_b = f' <span class="badge">{badges.get("sequences", 0)}</span>'
+    nav = f"""
+    <div class="nav-section"><div class="nav-label">Pulse</div>
+      <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a></div>
+    <div class="nav-section"><div class="nav-label">Pipeline</div>
+      <a class="nav-item {'active' if active=='scrape' else ''}" href="/scrape">Scrape</a>
+      <a class="nav-item {'active' if active=='offers' else ''}" href="/offers">Offers</a>
+      <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
+      <a class="nav-item {'active' if active=='sequences' else ''}" href="/sequences">Sequences{seq_b}</a>
+      <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
+    <div class="nav-section"><div class="nav-label">System</div>
+      <a class="nav-item {'active' if active=='settings' else ''}" href="/settings">Settings</a></div>"""
+    return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>""" + page_title + """ · Lead-gen</title>
-<script>(function(){try{var t=localStorage.getItem('theme');if(t==='light'){document.documentElement.classList.remove('dark');}else{document.documentElement.classList.add('dark');}}catch(e){}})();</script>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script>
-tailwind.config={darkMode:'class',theme:{extend:{
-  fontFamily:{sans:['InterVariable','Inter','ui-sans-serif','system-ui','sans-serif'],mono:['JetBrains Mono','ui-monospace','monospace']},
-  colors:{brand:{DEFAULT:'#6366f1',500:'#6366f1',600:'#4f46e5',700:'#4338ca'}}
-}}};
-</script>
-<link rel="preconnect" href="https://rsms.me/"><link rel="stylesheet" href="https://rsms.me/inter/inter.css">
-<style>
-  :root{font-size:15px}
-  body{font-feature-settings:'cv02','cv03','cv04','cv11','ss01';-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;letter-spacing:-0.006em;line-height:1.55}
-  .num-mono{font-variant-numeric:tabular-nums;font-family:'JetBrains Mono',ui-monospace,monospace;letter-spacing:0}
-  ::-webkit-scrollbar{width:9px;height:9px}
-  ::-webkit-scrollbar-thumb{background:#a1a1aa55;border-radius:5px}
-  .dark ::-webkit-scrollbar-thumb{background:#3f3f46}
-  table td{padding-top:.7rem;padding-bottom:.7rem}
-</style></head>
-<body class=\"""" + f"{BG} {TEXT}" + """ antialiased\">
-<div class="min-h-screen flex">
-  <aside class=\"""" + f"w-60 border-r {BORDER} {SURFACE}" + """ flex flex-col fixed h-screen\">
-    <div class=\"""" + f"px-4 py-5 border-b {BORDER}" + """ flex items-center gap-2.5\">
-      <div class="w-8 h-8 rounded-lg bg-brand flex items-center justify-center"><i data-lucide="zap" class="w-4 h-4 text-white"></i></div>
-      <div><div class="text-sm font-semibold">Lead-gen</div><div class=\"""" + f"text-[11px] {MUTED}" + """ -mt-0.5\">autopilot · oltaflock</div></div>
-    </div>
-    <nav class="flex-1 px-3 py-4 space-y-1">""" + nav + """</nav>
-    <div class=\"""" + f"px-3 py-3 border-t {BORDER} text-[11px] {MUTED}" + """\">
-      <div class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>autopilot live</div>
-    </div>
-  </aside>
-  <div class="flex-1 flex flex-col min-w-0 ml-60">
-    <header class=\"""" + f"h-14 border-b {BORDER}" + """ flex items-center justify-between px-6 sticky top-0 """ + f"{BG}/80" + """ backdrop-blur z-10\">
-      <h1 class=\"""" + f"text-sm font-medium {MUTED}" + """\">""" + title + """</h1>
-      <div class="flex items-center gap-3">
-        <span class=\"""" + f"text-xs {SUBTLE}" + """ num-mono\">""" + now + """</span>
-        <button onclick="toggleTheme()" class=\"""" + f"p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 {MUTED}" + """\" title="Toggle theme">
-          <i data-lucide="sun" class="w-4 h-4 hidden dark:block"></i>
-          <i data-lucide="moon" class="w-4 h-4 block dark:hidden"></i>
-        </button>
-      </div>
-    </header>
-    <main class="flex-1 p-6 overflow-x-auto">""" + body + """</main>
+<title>{h1} · Lead-gen</title>
+<script>(function(){{try{{if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark');}}catch(e){{}}}})();</script>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>{CSS}</style></head><body>
+<aside class="sidebar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L4 9 L12 7 L20 9 Z M4 11 L12 9 L20 11 L12 22 Z"/></svg>
+    <div><div class="brand-name">Oltaflock</div><div class="brand-sub">lead-gen</div></div>
   </div>
-</div>
+  {nav}
+  <div style="margin-top:auto;font-family:var(--font-mono);font-size:10px;color:var(--ink-faint);display:flex;align-items:center;gap:6px">
+    <span style="width:6px;height:6px;border-radius:50%;background:var(--good)"></span>autopilot live</div>
+</aside>
+<button class="theme-btn" onclick="tg()" title="Theme">
+  <svg id="ic-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
+  <svg id="ic-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg>
+</button>
+<main class="main">
+  <div class="crumb">{crumb}</div>
+  <h1 class="h1">{h1}</h1>
+  <p class="sub">{sub}</p>
+  {body}
+</main>
 <script>
-function toggleTheme(){var d=document.documentElement.classList.toggle('dark');try{localStorage.setItem('theme',d?'dark':'light');}catch(e){}lucide.createIcons();}
-lucide.createIcons();
+function tg(){{var d=document.documentElement.classList.toggle('dark');try{{localStorage.setItem('theme',d?'dark':'light');}}catch(e){{}}syncIcon();}}
+function syncIcon(){{var dark=document.documentElement.classList.contains('dark');document.getElementById('ic-sun').style.display=dark?'block':'none';document.getElementById('ic-moon').style.display=dark?'none':'block';}}
+syncIcon();
+function showPanel(id,el){{document.querySelectorAll('.inner-panel').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.inner-tab').forEach(t=>t.classList.remove('active'));document.getElementById('panel-'+id).classList.add('active');el.classList.add('active');}}
 </script>
-</body></html>""")
+</body></html>"""
 
 
-# ─────────── Routes ───────────
+def chip(kind, label=None):
+    return f'<span class="chip {kind}">{label or kind}</span>'
+
+
+def dots(step):
+    out = ""
+    for i in range(1, 8):
+        c = "done" if i <= step else ""
+        if i == step:
+            c = "current"
+        out += f'<span class="dot {c}"></span>'
+    return f'<span class="dots">{out}</span>'
+
+
+# ════════════════ Routes ════════════════
 @app.route("/healthz")
 def healthz():
     return jsonify({"ok": True, "service": "lead-gen-dashboard"})
@@ -227,82 +306,176 @@ def healthz():
 
 @app.route("/")
 def home():
-    k = _kpi_24h(); s = _series_7d(); camps = _campaigns(); counts = _campaign_counts()
-    orate = round(100 * k["opened"] / k["delivered"]) if k["delivered"] else 0
-    crate = round(100 * k["clicked"] / k["delivered"]) if k["delivered"] else 0
-    kpis = "".join([
-        kpi_card("Sent · 24h", k["sent"]), kpi_card("Delivered", k["delivered"]),
-        kpi_card("Opened", k["opened"], f"{orate}% open rate"),
-        kpi_card("Clicked", k["clicked"], f"{crate}% click rate"),
-        kpi_card("Replied", k["replied"]), kpi_card("Bounced", k["bounced"]),
-    ])
+    w = request.args.get("w", "today")
+    hours = WINDOWS.get(w, None)
+    ev = _events(hours)
+    c = _counts(ev)
+    camps = _campaigns()
+    lc = _lead_counts()
+    total_leads = sum(v["leads"] for v in lc.values())
+    n_camps = len(camps)
+    active_seqs = sb.select("sequences", {"select": "id,current_step,status", "status": "eq.active"}, limit=100000)
 
-    if camps:
-        rh = ""
-        for c in camps:
-            cnt = counts.get(c["id"], {"leads": 0, "pending": 0, "enriched": 0})
-            rh += f"""
-            <tr class="border-b {BORDER} {HOVER_ROW} transition">
-              <td class="px-4"><a href="/campaigns/{c['id']}" class="font-medium hover:text-brand-500">{c['name']}</a>
-                <div class="text-[11px] {MUTED} mt-0.5">{c['niche']} · {c['region']}</div></td>
-              <td class="px-4">{pill('active' if c['active'] else 'paused', 'active' if c['active'] else 'paused')}</td>
-              <td class="px-4 num-mono">{cnt['leads']}</td>
-              <td class="px-4 num-mono {MUTED}">{cnt['enriched']}</td>
-              <td class="px-4 num-mono">{c['daily_scrape_target']}</td>
-              <td class="px-4 text-right whitespace-nowrap">
-                <form method="post" action="/campaigns/{c['id']}/scrape" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 border {BORDER}">Scrape</button></form>
-                <form method="post" action="/campaigns/{c['id']}/start" class="inline ml-1"><button class="text-xs px-2.5 py-1 rounded-md bg-brand hover:bg-brand-600 text-white inline-flex items-center gap-1"><i data-lucide="rocket" class="w-3 h-3"></i>Start outreach</button></form>
-              </td>
-            </tr>"""
-        camp_block = table(["Campaign", "Status", "Leads", "Enriched", "Daily target", ""], rh)
+    sent, deliv, opened, clicked, bounced, replied = (c["sent"], c["delivered"], c["opened"], c["clicked"], c["bounced"], c["replied"])
+    drate = round(100 * deliv / sent, 1) if sent else 0
+    orate = round(100 * opened / deliv, 1) if deliv else 0
+    spark = _spark_14d()
+    spark_max = max(spark + [1])
+    pts = " ".join(f"{i*(200/13):.0f},{24 - (v/spark_max*22):.0f}" for i, v in enumerate(spark))
+
+    drate_alert = sent and drate < 70
+    wlabel = {"today": "Today", "7d": "7d", "30d": "30d", "all": "All"}
+    pills = "".join(
+        f'<a href="/?w={k}" class="window-pill {"active" if k==w else ""}">{wlabel[k]}</a>'
+        for k in ["today", "7d", "30d", "all"])
+
+    kpis = f"""
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-label">Total leads</div><div class="kpi-num">{total_leads}</div><div class="kpi-meta">across {n_camps} campaigns</div></div>
+      <div class="kpi"><div class="kpi-label">Sent · {wlabel[w]}</div><div class="kpi-num">{sent}</div>
+        <svg viewBox="0 0 200 24" preserveAspectRatio="none" style="margin-top:10px;height:24px;width:100%">
+          <polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{pts}"/></svg></div>
+      <div class="kpi {'alert-kpi' if drate_alert else ''}"><div class="kpi-label">Delivery rate</div><div class="kpi-num">{drate}<span class="unit">%</span></div><div class="kpi-meta">{deliv} of {sent}{' · ' + str(bounced) + ' bounced' if bounced else ''}</div></div>
+      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">{orate}<span class="unit">%</span></div><div class="kpi-meta">{opened} of {deliv} delivered · {clicked} click{'s' if clicked!=1 else ''}</div></div>
+    </div>"""
+
+    # Activity panel
+    arows = ""
+    leadmap = {}
+    seq_ids = list({e["sequence_id"] for e in ev[:60] if e.get("sequence_id")})
+    if seq_ids:
+        in_list = ",".join(str(s) for s in seq_ids)
+        seqs = sb.select("sequences", {"select": "id,lead_id", "id": f"in.({in_list})"}, limit=500)
+        lid_by_seq = {s["id"]: s["lead_id"] for s in seqs}
+        lids = list({v for v in lid_by_seq.values()})
+        if lids:
+            ll = ",".join(str(x) for x in lids)
+            for l in sb.select("leads", {"select": "id,business,email", "id": f"in.({ll})"}, limit=500):
+                leadmap[l["id"]] = l
     else:
-        camp_block = empty_state("rocket", "No campaigns yet",
-            "Create your first campaign to start the autopilot.",
-            '<button onclick="cm.showModal()" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-brand hover:bg-brand-600 text-white"><i data-lucide="plus" class="w-3.5 h-3.5"></i>Create campaign</button>')
+        lid_by_seq = {}
+    for e in ev[:40]:
+        lead = leadmap.get(lid_by_seq.get(e.get("sequence_id")), {})
+        subj = (e.get("meta") or {}).get("subject", "") if isinstance(e.get("meta"), dict) else ""
+        t = e["ts"][11:16]
+        et = e["event_type"]
+        if et == "opened_bot":
+            continue
+        arows += f"""<tr><td class="when">{t}</td>
+          <td><div class="biz">{lead.get('business') or ('seq #'+str(e.get('sequence_id')) if e.get('sequence_id') else '—')}</div>
+          <div class="email">{lead.get('email') or ''}</div></td>
+          <td class="subj">{subj}</td><td>{chip(et if et in ('sent','delivered','opened','clicked','bounced','replied') else 'queued', et)}</td></tr>"""
+    if not arows:
+        arows = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--ink-mute)">No activity in this window yet.</td></tr>'
+
+    # Pipeline panel — distribution of active sequences by step
+    dist = defaultdict(int)
+    for s in active_seqs:
+        st = s["current_step"] or 0
+        dist[max(st, 1)] += 1
+    pipe = ""
+    for i in range(1, 8):
+        day, name = STEP_META[i]
+        n = dist.get(i, 0)
+        pipe += f'<div class="pipe-step {"active" if n else ""}"><div class="pipe-day">{day}</div><div class="pipe-name">{name}</div><div class="pipe-count {"zero" if not n else ""}">{n}</div></div>'
+
+    # Issues panel
+    issues = ""
+    brate = round(100 * bounced / sent, 1) if sent else 0
+    if sent and brate > 5:
+        issues += f'<div class="note-bar" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)"><strong>Bounce rate {brate}% — over 5% threshold.</strong> {bounced} of {sent} sends bounced. Sustained bounces hurt domain reputation.</div>'
+    noemail = sb.select("leads", {"select": "id", "email": "is.null", "enrichment_status": "eq.enriched"}, limit=10000)
+    if noemail:
+        issues += f'<div class="note-bar"><strong>{len(noemail)} enriched leads have no email.</strong> They can\'t be sequenced until an address is found. Re-run enrichment or add emails.</div>'
+    senderr = sb.select("sequences", {"select": "id", "paused_reason": "like.send-error*"}, limit=1000)
+    if senderr:
+        issues += f'<div class="note-bar" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)"><strong>{len(senderr)} sequences paused on send errors.</strong> Check Sequences → paused.</div>'
+    if not issues:
+        issues = '<div class="note-bar" style="background:var(--accent-soft);border-color:var(--accent);color:var(--accent)">✓ All clear — no bounce spikes, missing emails, or send errors detected.</div>'
 
     body = f"""
-    <div class="flex items-center justify-between mb-6">
-      <div><h2 class="text-xl font-semibold">Dashboard</h2><div class="text-xs {MUTED} mt-0.5">Live metrics from the autopilot loop</div></div>
-      <button onclick="cm.showModal()" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-brand hover:bg-brand-600 text-white"><i data-lucide="plus" class="w-3.5 h-3.5"></i>New campaign</button>
-    </div>
-    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">{kpis}</div>
-    <div class="{SURFACE} border {BORDER} rounded-xl p-4 mb-6">
-      <div class="flex items-center justify-between mb-3">
-        <div><div class="text-sm font-medium">Last 7 days</div><div class="text-[11px] {MUTED}">Sent vs Opened</div></div>
-        <div class="flex items-center gap-3 text-xs {MUTED}"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-sky-400"></span>Sent</span><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-400"></span>Opened</span></div>
+    <div class="window-bar"><span>Window</span><div class="window-pills">{pills}</div></div>
+    {kpis}
+    <div class="block">
+      <div class="inner-tabs">
+        <button class="inner-tab active" onclick="showPanel('activity',this)">Activity <span class="count">{len([e for e in ev if e['event_type']!='opened_bot'])}</span></button>
+        <button class="inner-tab" onclick="showPanel('pipeline',this)">Pipeline <span class="count">{len(active_seqs)}</span></button>
+        <button class="inner-tab {'warn' if issues and 'All clear' not in issues else ''}" onclick="showPanel('issues',this)">Issues</button>
       </div>
-      <canvas id="chart" height="78"></canvas>
-    </div>
-    <div class="flex items-center justify-between mb-3"><h3 class="text-sm font-medium">Campaigns</h3><a href="/leads" class="text-xs {MUTED} hover:text-brand-500 inline-flex items-center gap-1">All leads <i data-lucide="arrow-right" class="w-3 h-3"></i></a></div>
-    {camp_block}
+      <div class="inner-panel active" id="panel-activity">
+        <table class="act-table"><thead><tr><th style="width:80px">When</th><th>Lead</th><th>Subject</th><th style="width:90px">Status</th></tr></thead><tbody>{arows}</tbody></table>
+      </div>
+      <div class="inner-panel" id="panel-pipeline"><div class="block-body">
+        <div class="muted" style="font-size:12px;margin-bottom:14px">Where every active lead sits in the 28-day cadence ({len(active_seqs)} active).</div>
+        <div class="pipeline">{pipe}</div>
+      </div></div>
+      <div class="inner-panel" id="panel-issues"><div class="block-body">{issues}</div></div>
+    </div>"""
+    return shell("dashboard", "workspace / dashboard", "Today",
+                 datetime.now(timezone.utc).strftime("%A, %B %-d · %H:%M UTC"), body,
+                 badges={"sequences": len(active_seqs)})
 
-    <dialog id="cm" class="{SURFACE} {TEXT} border {BORDER} rounded-2xl p-0 backdrop:bg-zinc-950/60 max-w-lg w-full">
-      <form method="post" action="/campaigns" class="p-6">
-        <div class="flex items-center justify-between mb-4"><h3 class="text-base font-semibold">New campaign</h3><button type="button" onclick="cm.close()" class="{MUTED} hover:text-brand-500"><i data-lucide="x" class="w-4 h-4"></i></button></div>
-        <div class="space-y-3 text-sm">
-          <div><label class="block text-xs {MUTED} mb-1">Name (slug)</label><input name="name" required placeholder="nz-real-estate" class="{INPUT}"></div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="block text-xs {MUTED} mb-1">Niche</label><input name="niche" required placeholder="real estate agencies" class="{INPUT}"></div>
-            <div><label class="block text-xs {MUTED} mb-1">Region</label><input name="region" required placeholder="Auckland, New Zealand" class="{INPUT}"></div>
-          </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div><label class="block text-xs {MUTED} mb-1">Daily target</label><input name="daily_scrape_target" type="number" value="50" class="{INPUT} num-mono"></div>
-            <div><label class="block text-xs {MUTED} mb-1">Status</label><select name="active" class="{INPUT}"><option value="true">Active</option><option value="false">Paused</option></select></div>
-          </div>
-          <div><label class="block text-xs {MUTED} mb-1">Offer brief <span class="{SUBTLE}">(what you pitch)</span></label><textarea name="offer_brief" rows="6" placeholder="Who, what pain, what outcome — then the offer." class="{INPUT} font-mono text-xs"></textarea></div>
+
+@app.route("/scrape")
+def scrape_page():
+    body = f"""
+    <div class="block"><div class="block-head"><div><div class="block-title">Run a scrape</div><div class="block-sub">Pulls fresh leads from Google Places into a campaign.</div></div></div>
+    <div class="block-body">
+      <div class="note-bar">Scrapes run per <strong>campaign</strong>. Create a campaign on the dashboard (niche + region + daily target), then hit <strong>Scrape now</strong> on its row or here.</div>
+      <form method="post" action="/campaigns" style="max-width:560px">
+        <div class="field"><label>Campaign name (slug)</label><input name="name" required placeholder="nz-real-estate"></div>
+        <div class="row-2" style="grid-template-columns:1fr 1fr">
+          <div class="field"><label>Niche</label><input name="niche" required placeholder="real estate agencies"></div>
+          <div class="field"><label>Region</label><input name="region" required placeholder="Auckland, New Zealand"></div>
         </div>
-        <div class="flex justify-end gap-2 mt-6 pt-4 border-t {BORDER}"><button type="button" onclick="cm.close()" class="px-3 py-1.5 rounded-lg text-xs font-medium {MUTED} hover:bg-zinc-100 dark:hover:bg-zinc-800">Cancel</button><button type="submit" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-brand hover:bg-brand-600 text-white">Create</button></div>
+        <div class="row-2" style="grid-template-columns:1fr 1fr">
+          <div class="field"><label>Daily target</label><input name="daily_scrape_target" type="number" value="50"></div>
+          <div class="field"><label>Status</label><select name="active"><option value="false">Paused (recommended)</option><option value="true">Active</option></select></div>
+        </div>
+        <div class="field"><label>Offer brief</label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
+        <button class="btn primary" type="submit">Create campaign</button>
       </form>
-    </dialog>
-    <script>
-      const ctx=document.getElementById('chart');
-      if(ctx){{new Chart(ctx,{{type:'line',data:{{labels:{s['labels']},datasets:[
-        {{label:'Sent',data:{s['sent']},borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,0.10)',tension:.35,fill:true,borderWidth:2,pointRadius:3,pointBackgroundColor:'#38bdf8'}},
-        {{label:'Opened',data:{s['opened']},borderColor:'#34d399',backgroundColor:'rgba(52,211,153,0.10)',tension:.35,fill:true,borderWidth:2,pointRadius:3,pointBackgroundColor:'#34d399'}}]}},
-        options:{{responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{grid:{{display:false}},ticks:{{color:'#a1a1aa',font:{{size:11}}}}}},y:{{grid:{{color:'#88888822'}},ticks:{{color:'#a1a1aa',font:{{size:11}},precision:0}}}}}}}}}});}}
-    </script>
-    """
-    return page("home", "Dashboard", body)
+    </div></div>"""
+    return shell("scrape", "workspace / scrape", "Scrape", "Find leads", body)
+
+
+@app.route("/offers")
+def offers_page():
+    camps = _campaigns()
+    cards = ""
+    for c in camps:
+        brief = (c.get("offer_brief") or "").strip()
+        preview = (brief[:160] + "…") if len(brief) > 160 else (brief or "No offer brief set.")
+        cards += f"""<a class="csv-card" href="/campaigns/{c['id']}">
+          <div class="csv-name">{c['niche']}</div>
+          <div class="csv-meta">{c['name']} · {c['region']}</div>
+          <div style="font-size:13px;color:var(--ink-soft);line-height:1.5">{preview}</div>
+        </a>"""
+    body = (f'<div class="csv-grid">{cards}</div>' if camps
+            else '<div class="empty">No offers yet. Create a campaign to define an offer.</div>')
+    return shell("offers", "workspace / offers", "Offers", "What you sell", body)
+
+
+@app.route("/leads")
+def leads_page():
+    camps = _campaigns()
+    lc = _lead_counts()
+    cards = ""
+    for c in camps:
+        cnt = lc.get(c["id"], {"leads": 0, "enriched": 0, "with_email": 0})
+        n = cnt["leads"]
+        wmail = cnt["with_email"]
+        pct = round(100 * wmail / n) if n else 0
+        cls = "good" if pct >= 60 else ("bad" if pct < 30 else "")
+        cards += f"""<a class="csv-card" href="/campaigns/{c['id']}">
+          <div class="csv-name">{c['niche']}</div>
+          <div class="csv-meta">{c['name']} · {c['region']}</div>
+          <div class="csv-health"><span class="csv-health-num {cls}">{n}</span><span class="csv-health-label">leads · {cnt['enriched']} enriched · {wmail} w/ email</span></div>
+          <div>{chip('active' if c['active'] else 'paused', 'active' if c['active'] else 'paused')}</div>
+        </a>"""
+    body = (f'<div class="csv-grid">{cards}</div>' if camps
+            else '<div class="empty">No leads yet. Create a campaign and run a scrape.</div>')
+    return shell("leads", "workspace / leads", "Leads", "Browse by campaign", body)
 
 
 @app.route("/campaigns", methods=["POST"])
@@ -312,123 +485,118 @@ def create_campaign():
         "name": f["name"].strip(), "niche": f["niche"].strip(), "region": f["region"].strip(),
         "offer_brief": (f.get("offer_brief") or "").strip() or None,
         "daily_scrape_target": int(f.get("daily_scrape_target") or 50),
-        "active": f.get("active", "true") == "true",
+        "active": f.get("active", "false") == "true",
     })
-    return redirect(url_for("home"))
+    return redirect(url_for("leads_page"))
 
 
-def _fire_cron(path: str, **params):
+def _fire(path, **params):
     import requests as _r
     try:
-        _r.get(f"{PROD_URL}{path}", params=params,
-               headers={"Authorization": f"Bearer {os.environ.get('CRON_SECRET','')}"}, timeout=4)
+        _r.get(f"{PROD_URL}{path}", params=params, headers={"Authorization": f"Bearer {os.environ.get('CRON_SECRET','')}"}, timeout=4)
     except Exception:
         pass
 
 
-@app.route("/campaigns/<int:cid>/toggle", methods=["POST"])
-def toggle_campaign(cid: int):
-    rows = sb.select("campaigns", {"select": "active", "id": f"eq.{cid}"}, limit=1)
-    cur = rows[0]["active"] if rows else False
-    sb.update("campaigns", {"id": cid}, {"active": not cur})
-    return redirect(request.referrer or url_for("home"))
-
-
 @app.route("/campaigns/<int:cid>/scrape", methods=["POST"])
-def scrape_now(cid: int):
-    _fire_cron("/api/cron/daily_scrape", campaign_id=cid)
-    return redirect(request.referrer or url_for("home"))
+def scrape_now(cid):
+    _fire("/api/cron/daily_scrape", campaign_id=cid)
+    return redirect(request.referrer or "/leads")
 
 
 @app.route("/campaigns/<int:cid>/start", methods=["POST"])
-def start_outreach(cid: int):
+def start_outreach(cid):
     sb.update("campaigns", {"id": cid}, {"active": True})
-    _fire_cron("/api/cron/sequencer_tick")  # auto-creates sequences for enriched leads + sends
-    return redirect(request.referrer or url_for("home"))
+    _fire("/api/cron/sequencer_tick")
+    return redirect(request.referrer or "/leads")
+
+
+@app.route("/campaigns/<int:cid>/toggle", methods=["POST"])
+def toggle_campaign(cid):
+    rows = sb.select("campaigns", {"select": "active", "id": f"eq.{cid}"}, limit=1)
+    sb.update("campaigns", {"id": cid}, {"active": not (rows[0]["active"] if rows else False)})
+    return redirect(request.referrer or "/leads")
 
 
 @app.route("/campaigns/<int:cid>")
-def campaign_detail(cid: int):
+def campaign_detail(cid):
     rows = sb.select("campaigns", {"select": "*", "id": f"eq.{cid}"}, limit=1)
     if not rows:
         return ("Not found", 404)
     c = rows[0]
     leads = sb.select("leads", {"select": "*", "campaign_id": f"eq.{cid}", "order": "created_at.desc"}, limit=200)
-    runs = sb.select("scrape_runs", {"select": "*", "campaign_id": f"eq.{cid}", "order": "started_at.desc"}, limit=20)
-
-    lrows = "".join(f"""<tr class="border-b {BORDER} {HOVER_ROW}">
-        <td class="px-4">{r['business']}</td>
-        <td class="px-4 num-mono text-xs {MUTED}">{r.get('email') or '—'}</td>
-        <td class="px-4">{pill(r['enrichment_status'], r['enrichment_status'])}</td>
-        <td class="px-4 num-mono text-xs {SUBTLE}">{r['created_at'][:10]}</td></tr>""" for r in leads)
-    rrows = "".join(f"""<tr class="border-b {BORDER} {HOVER_ROW}">
-        <td class="px-4 num-mono text-xs">{r['started_at'][:16].replace('T',' ')}</td>
-        <td class="px-4">{pill(r['status'], r['status'])}</td>
-        <td class="px-4 num-mono">{r['scraped_count']} / {r.get('target_count') or '—'}</td>
-        <td class="px-4 text-xs {MUTED}">{(r.get('error') or '')[:50]}</td></tr>""" for r in runs)
-
-    offer_html = (f'<div class="{SURFACE} border {BORDER} rounded-xl p-4 mb-6"><div class="text-[11px] uppercase tracking-wider {MUTED} mb-2">Offer brief</div><pre class="text-xs whitespace-pre-wrap font-mono {TEXT}">{c.get("offer_brief")}</pre></div>') if c.get("offer_brief") else ""
-
+    runs = sb.select("scrape_runs", {"select": "*", "campaign_id": f"eq.{cid}", "order": "started_at.desc"}, limit=10)
+    lrows = "".join(f"""<tr><td><div class="biz">{l['business']}</div><div class="email">{l.get('email') or 'no email'}</div></td>
+      <td>{chip(l['enrichment_status'], l['enrichment_status'])}</td>
+      <td class="when">{l.get('intent_score') if l.get('intent_score') is not None else '—'}</td>
+      <td class="when">{l['created_at'][:10]}</td></tr>""" for l in leads)
+    offer = f'<div class="block"><div class="block-head"><div class="block-title">Offer brief</div></div><div class="block-body"><pre style="font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;color:var(--ink-soft)">{c.get("offer_brief")}</pre></div></div>' if c.get("offer_brief") else ""
+    runrows = "".join(f'<tr><td class="when">{r["started_at"][:16].replace("T"," ")}</td><td>{chip(r["status"], r["status"])}</td><td class="when">{r["scraped_count"]}/{r.get("target_count") or "—"}</td></tr>' for r in runs)
     body = f"""
-    <a href="/" class="text-xs {MUTED} hover:text-brand-500 inline-flex items-center gap-1 mb-3"><i data-lucide="arrow-left" class="w-3 h-3"></i>Dashboard</a>
-    <div class="flex items-start justify-between mb-6">
-      <div><h2 class="text-xl font-semibold">{c['name']}</h2><div class="text-sm {MUTED} mt-1">{c['niche']} · {c['region']}</div></div>
-      <div class="flex items-center gap-2">{pill('active' if c['active'] else 'paused', 'active' if c['active'] else 'paused')}
-        <form method="post" action="/campaigns/{c['id']}/scrape" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 border {BORDER}">Scrape now</button></form>
-        <form method="post" action="/campaigns/{c['id']}/start" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-brand hover:bg-brand-600 text-white inline-flex items-center gap-1"><i data-lucide="rocket" class="w-3 h-3"></i>Start outreach</button></form>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;margin-top:-12px">
+      <div>{chip('active' if c['active'] else 'paused', 'active' if c['active'] else 'paused')}</div>
+      <div class="block-actions">
+        <form method="post" action="/campaigns/{cid}/toggle" style="display:inline"><button class="btn sm">{'Pause' if c['active'] else 'Resume'}</button></form>
+        <form method="post" action="/campaigns/{cid}/scrape" style="display:inline"><button class="btn sm">Scrape now</button></form>
+        <form method="post" action="/campaigns/{cid}/start" style="display:inline"><button class="btn sm primary">Start outreach</button></form>
       </div>
     </div>
-    {offer_html}
-    <div class="grid lg:grid-cols-2 gap-6">
-      <div><h3 class="text-sm font-medium mb-3">Leads ({len(leads)})</h3>{table(['Business','Email','Status','Added'], lrows) if leads else empty_state('users','No leads yet','Click "Scrape now" to populate from Google Places.')}</div>
-      <div><h3 class="text-sm font-medium mb-3">Scrape runs ({len(runs)})</h3>{table(['Started','Status','Scraped','Error'], rrows) if runs else empty_state('history','No runs yet','Runs appear after the daily cron or a manual scrape.')}</div>
+    {offer}
+    <div class="row-2">
+      <div class="block"><div class="block-head"><div class="block-title">Leads</div><div class="block-sub">{len(leads)}</div></div>
+        <table class="act-table"><thead><tr><th>Business</th><th>Enrich</th><th>Intent</th><th>Added</th></tr></thead><tbody>{lrows or '<tr><td colspan=4 style="padding:24px;text-align:center;color:var(--ink-mute)">No leads yet.</td></tr>'}</tbody></table></div>
+      <div class="block"><div class="block-head"><div class="block-title">Scrape runs</div></div>
+        <table class="act-table"><thead><tr><th>Started</th><th>Status</th><th>Scraped</th></tr></thead><tbody>{runrows or '<tr><td colspan=3 style="padding:24px;text-align:center;color:var(--ink-mute)">No runs.</td></tr>'}</tbody></table></div>
     </div>"""
-    return page("home", c["name"], body, page_title=c["name"])
-
-
-@app.route("/leads")
-def leads():
-    rows = sb.select("leads", {"select": "id,business,website,email,email_status,intent_score,enrichment_status,created_at", "order": "created_at.desc"}, limit=300)
-    if not rows:
-        return page("leads", "Leads", empty_state("users", "No leads yet", "Create a campaign and run a scrape.",
-            f'<a href="/" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-brand hover:bg-brand-600 text-white">Go to Dashboard</a>'))
-    tr = "".join(f"""<tr class="border-b {BORDER} {HOVER_ROW}">
-        <td class="px-4"><div class="font-medium">{r['business']}</div>{f'<a href="{r["website"]}" target=_blank class="text-[11px] {MUTED} hover:text-brand-500">{r["website"][:48]}</a>' if r.get('website') else f'<span class="text-[11px] {SUBTLE}">no website</span>'}</td>
-        <td class="px-4 num-mono text-xs">{r.get('email') or f'<span class="{SUBTLE}">—</span>'}</td>
-        <td class="px-4">{pill(r.get('email_status') or '—', r.get('email_status') or 'neutral')}</td>
-        <td class="px-4 num-mono">{r.get('intent_score') if r.get('intent_score') is not None else f'<span class="{SUBTLE}">—</span>'}</td>
-        <td class="px-4">{pill(r['enrichment_status'], r['enrichment_status'])}</td>
-        <td class="px-4 num-mono text-xs {SUBTLE}">{r['created_at'][:10]}</td></tr>""" for r in rows)
-    body = f'<div class="mb-4"><h2 class="text-xl font-semibold">Leads</h2><div class="text-xs {MUTED} mt-0.5">{len(rows)} leads · newest first</div></div>' + table(["Business", "Email", "Verify", "Intent", "Enrichment", "Added"], tr)
-    return page("leads", "Leads", body)
+    return shell("leads", f"leads / {c['name']}", c["niche"], f"{c['name']} · {c['region']}", body)
 
 
 @app.route("/sequences")
-def sequences():
-    rows = sb.select("sequences", {"select": "id,lead_id,status,current_step,opens,clicks,replied,bounced,next_send_at,paused_reason", "order": "updated_at.desc"}, limit=300)
-    if not rows:
-        return page("sequences", "Sequences", empty_state("send", "No sequences yet", 'Click "Start outreach" on an active campaign to create sequences for its enriched leads.'))
-    tr = ""
+def sequences_page():
+    flt = request.args.get("s", "all")
+    p = {"select": "*", "order": "updated_at.desc"}
+    if flt != "all":
+        p["status"] = f"eq.{flt}"
+    rows = sb.select("sequences", p, limit=300)
+    allrows = sb.select("sequences", {"select": "status"}, limit=100000)
+    by = defaultdict(int)
+    for r in allrows:
+        by[r["status"]] += 1
+    ev_today = _counts(_events(None))
+    leadmap = {}
+    lids = list({r["lead_id"] for r in rows})
+    if lids:
+        ll = ",".join(str(x) for x in lids)
+        for l in sb.select("leads", {"select": "id,business,city,email", "id": f"in.({ll})"}, limit=500):
+            leadmap[l["id"]] = l
+    stat = f"""<div class="kpi-grid">
+      <div class="kpi"><div class="kpi-label">Active</div><div class="kpi-num">{by['active']}</div></div>
+      <div class="kpi"><div class="kpi-label">Replies (today)</div><div class="kpi-num">{ev_today['replied']}</div></div>
+      <div class="kpi"><div class="kpi-label">Sent (today)</div><div class="kpi-num">{ev_today['sent']}</div></div>
+      <div class="kpi"><div class="kpi-label">Paused</div><div class="kpi-num">{by['paused']}</div></div></div>"""
+    tabs = ""
+    for k in ["all", "active", "paused", "done"]:
+        n = sum(by.values()) if k == "all" else by.get(k, 0)
+        tabs += f'<a href="/sequences?s={k}" class="filter-chip {"active" if k==flt else ""}">{k.title()} <span class="count">{n}</span></a>'
+    trows = ""
     for r in rows:
-        act = ""
-        if r["status"] == "active":
-            act = f'<form method="post" action="/sequences/{r["id"]}/pause" class="inline"><button class="text-xs px-2 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 border {BORDER}">Pause</button></form>'
-        elif r["status"] == "paused":
-            act = f'<form method="post" action="/sequences/{r["id"]}/resume" class="inline"><button class="text-xs px-2 py-0.5 rounded bg-brand hover:bg-brand-600 text-white">Resume</button></form>'
-        tr += f"""<tr class="border-b {BORDER} {HOVER_ROW}">
-          <td class="px-4 num-mono"><a href="/sequences/{r['id']}" class="hover:text-brand-500">#{r['id']}</a></td><td class="px-4 num-mono {MUTED}">#{r['lead_id']}</td>
-          <td class="px-4">{pill(r['status'], r['status'])}</td><td class="px-4 num-mono">{r['current_step']}</td>
-          <td class="px-4 num-mono">{r['opens']}</td><td class="px-4 num-mono">{r['clicks']}</td>
-          <td class="px-4">{'✓' if r['replied'] else ''}</td>
-          <td class="px-4 num-mono text-xs {MUTED}">{(r.get('next_send_at') or '')[:16].replace('T',' ')}</td>
-          <td class="px-4 text-xs {MUTED}">{r.get('paused_reason') or ''}</td>
-          <td class="px-4 text-right">{act}</td></tr>"""
-    body = f'<div class="mb-4"><h2 class="text-xl font-semibold">Sequences</h2><div class="text-xs {MUTED} mt-0.5">{len(rows)} sequences</div></div>' + table(["ID", "Lead", "Status", "Step", "Opens", "Clicks", "Replied", "Next send", "Reason", ""], tr)
-    return page("sequences", "Sequences", body)
+        l = leadmap.get(r["lead_id"], {})
+        trows += f"""<tr onclick="location.href='/sequences/{r['id']}'" style="cursor:pointer">
+          <td><div class="biz">{l.get('business') or '#'+str(r['lead_id'])}</div><div class="email">{l.get('email') or ''}</div></td>
+          <td class="when">{l.get('city') or ''}</td>
+          <td>{dots(r['current_step'])}</td>
+          <td>{chip(r['status'], r['status'])}</td>
+          <td class="when">{(r.get('next_send_at') or '')[:16].replace('T',' ')}</td>
+          <td class="when">{r.get('paused_reason') or ''}</td></tr>"""
+    table = f"""<div class="block"><div class="filter-row">{tabs}</div>
+      <table class="act-table"><thead><tr><th>Lead</th><th>City</th><th>Step</th><th>Status</th><th>Next send</th><th>Reason</th></tr></thead>
+      <tbody>{trows or '<tr><td colspan=6 style="padding:32px;text-align:center;color:var(--ink-mute)">No sequences. Start outreach on a campaign.</td></tr>'}</tbody></table></div>"""
+    return shell("sequences", "workspace / sequences", "Sequences", "The 7-step nurture · 28-day cadence",
+                 stat + table, badges={"sequences": by.get("active", 0)})
 
 
 @app.route("/sequences/<int:sid>")
-def sequence_detail(sid: int):
+def sequence_detail(sid):
     srows = sb.select("sequences", {"select": "*", "id": f"eq.{sid}"}, limit=1)
     if not srows:
         return ("Not found", 404)
@@ -436,86 +604,86 @@ def sequence_detail(sid: int):
     lead = (sb.select("leads", {"select": "*", "id": f"eq.{s['lead_id']}"}, limit=1) or [{}])[0]
     drafts = sb.select("drafts", {"select": "*", "sequence_id": f"eq.{sid}", "order": "step.asc"}, limit=20)
     evs = sb.select("sequence_events", {"select": "*", "sequence_id": f"eq.{sid}", "order": "ts.desc"}, limit=100)
-
-    # Email thread — one card per drafted step.
     thread = ""
     for d in drafts:
-        thread += f"""
-        <div class="{SURFACE} border {BORDER} rounded-xl p-4 mb-3">
-          <div class="flex items-center justify-between mb-2">
-            <div class="text-[11px] uppercase tracking-wider {MUTED}">Step {d['step']} · {d.get('angle') or ''}</div>
-            <div class="text-[11px] {SUBTLE} num-mono">{d.get('model') or ''}</div>
-          </div>
-          <div class="font-medium mb-2">{d['subject']}</div>
-          <pre class="text-xs whitespace-pre-wrap font-sans {MUTED} leading-relaxed">{d['body']}</pre>
-        </div>"""
+        day, name = STEP_META.get(d["step"], ("", ""))
+        thread += f"""<div class="block"><div class="block-head"><div><div class="block-title" style="font-size:15px">{d['subject']}</div><div class="block-sub">Step {d['step']} · {name} · {day} · {d.get('angle') or ''}</div></div></div>
+        <div class="block-body"><pre style="font-family:var(--font-sans);font-size:13px;white-space:pre-wrap;color:var(--ink-soft);line-height:1.6">{d['body']}</pre></div></div>"""
     if not thread:
-        thread = empty_state("mail", "No drafts yet", "Drafts appear here as the sequencer sends each step.")
-
-    timeline = "".join(f"""<div class="flex items-center gap-3 py-2 border-b {BORDER} last:border-0">
-        <div class="num-mono text-xs {SUBTLE} w-36 shrink-0">{e['ts'][:19].replace('T',' ')}</div>
-        <div>{pill(e['event_type'], e['event_type'])}</div>
-        <div class="text-xs {MUTED}">{('step ' + str(e['step'])) if e.get('step') else ''}</div>
-      </div>""" for e in evs) or f'<div class="text-xs {MUTED} py-4">No events yet.</div>'
-
+        thread = '<div class="empty">No drafts yet. They appear as the sequencer sends each step.</div>'
+    tl = "".join(f'<div class="tl-item {"live" if e["event_type"] in ("opened","clicked","replied") else ""}"><div class="tl-time">{e["ts"][:16].replace("T"," ")}</div><div class="tl-text">{chip(e["event_type"], e["event_type"])} {("step "+str(e["step"])) if e.get("step") else ""}</div></div>' for e in evs) or '<div class="muted" style="font-size:12px">No events yet.</div>'
     actions = ""
     if s["status"] == "active":
-        actions += f'<form method="post" action="/sequences/{sid}/pause" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 border {BORDER}">Pause</button></form>'
+        actions += f'<form method="post" action="/sequences/{sid}/pause" style="display:inline"><button class="btn sm">Pause</button></form>'
     elif s["status"] == "paused":
-        actions += f'<form method="post" action="/sequences/{sid}/resume" class="inline"><button class="text-xs px-2.5 py-1 rounded-md bg-brand hover:bg-brand-600 text-white">Resume</button></form>'
-    actions += f'<form method="post" action="/sequences/{sid}/replied" class="inline ml-1"><button class="text-xs px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1"><i data-lucide="reply" class="w-3 h-3"></i>Mark replied</button></form>'
-
+        actions += f'<form method="post" action="/sequences/{sid}/resume" style="display:inline"><button class="btn sm primary">Resume</button></form>'
+    actions += f'<form method="post" action="/sequences/{sid}/replied" style="display:inline"><button class="btn sm">Mark replied</button></form>'
     body = f"""
-    <a href="/sequences" class="text-xs {MUTED} hover:text-brand-500 inline-flex items-center gap-1 mb-3"><i data-lucide="arrow-left" class="w-3 h-3"></i>Sequences</a>
-    <div class="flex items-start justify-between mb-6">
-      <div>
-        <h2 class="text-xl font-semibold">{lead.get('business') or 'Sequence #' + str(sid)}</h2>
-        <div class="text-sm {MUTED} mt-1 num-mono">{lead.get('email') or ''}</div>
-      </div>
-      <div class="flex items-center gap-2">{pill(s['status'], s['status'])}{actions}</div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:-12px;margin-bottom:20px">
+      <div style="display:flex;gap:8px;align-items:center">{chip(s['status'], s['status'])} {dots(s['current_step'])}</div>
+      <div class="block-actions">{actions}</div>
     </div>
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-      {kpi_card("Step", f"{s['current_step']} / 7")}
-      {kpi_card("Opens", s['opens'])}
-      {kpi_card("Clicks", s['clicks'])}
-      {kpi_card("Next send", (s.get('next_send_at') or '—')[:16].replace('T',' '))}
+    <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
+      <div class="kpi"><div class="kpi-label">Step</div><div class="kpi-num">{s['current_step']}<span class="unit">/7</span></div></div>
+      <div class="kpi"><div class="kpi-label">Opens</div><div class="kpi-num">{s['opens']}</div></div>
+      <div class="kpi"><div class="kpi-label">Clicks</div><div class="kpi-num">{s['clicks']}</div></div>
+      <div class="kpi"><div class="kpi-label">Next send</div><div class="kpi-num" style="font-size:16px;font-family:var(--font-mono)">{(s.get('next_send_at') or '—')[:16].replace('T',' ')}</div></div>
     </div>
-    <div class="grid lg:grid-cols-3 gap-6">
-      <div class="lg:col-span-2"><h3 class="text-sm font-medium mb-3">Email thread</h3>{thread}</div>
-      <div><h3 class="text-sm font-medium mb-3">Activity</h3><div class="{SURFACE} border {BORDER} rounded-xl p-4">{timeline}</div></div>
+    <div class="row-2">
+      <div><div class="block-title" style="margin-bottom:12px">Email thread</div>{thread}</div>
+      <div><div class="block-title" style="margin-bottom:12px">Activity</div><div class="block"><div class="block-body"><div class="timeline">{tl}</div></div></div></div>
     </div>"""
-    return page("sequences", lead.get("business") or f"Sequence #{sid}", body, page_title=f"Sequence #{sid}")
-
-
-@app.route("/sequences/<int:sid>/replied", methods=["POST"])
-def mark_replied(sid: int):
-    sb.update("sequences", {"id": sid}, {"replied": True, "status": "paused", "paused_reason": "replied", "next_send_at": None})
-    sb.insert("sequence_events", {"sequence_id": sid, "event_type": "replied", "meta": {"via": "manual"}})
-    return redirect(request.referrer or url_for("sequences"))
+    return shell("sequences", f"sequences / #{sid}", lead.get("business") or f"Sequence #{sid}", lead.get("email") or "", body)
 
 
 @app.route("/sequences/<int:sid>/pause", methods=["POST"])
-def pause_seq(sid: int):
+def pause_seq(sid):
     sb.update("sequences", {"id": sid}, {"status": "paused", "paused_reason": "manual"})
-    return redirect(request.referrer or url_for("sequences"))
+    return redirect(request.referrer or "/sequences")
 
 
 @app.route("/sequences/<int:sid>/resume", methods=["POST"])
-def resume_seq(sid: int):
+def resume_seq(sid):
     sb.update("sequences", {"id": sid}, {"status": "active", "paused_reason": None})
-    return redirect(request.referrer or url_for("sequences"))
+    return redirect(request.referrer or "/sequences")
+
+
+@app.route("/sequences/<int:sid>/replied", methods=["POST"])
+def mark_replied(sid):
+    sb.update("sequences", {"id": sid}, {"replied": True, "status": "paused", "paused_reason": "replied", "next_send_at": None})
+    sb.insert("sequence_events", {"sequence_id": sid, "event_type": "replied", "meta": {"via": "manual"}})
+    return redirect(request.referrer or "/sequences")
 
 
 @app.route("/events")
-def events():
-    rows = sb.select("sequence_events", {"select": "id,sequence_id,step,event_type,resend_id,ts", "order": "ts.desc"}, limit=300)
-    if not rows:
-        return page("events", "Events", empty_state("activity", "No events yet", "Events stream in as emails are sent, opened, clicked, or bounced."))
-    tr = "".join(f"""<tr class="border-b {BORDER} {HOVER_ROW}">
-        <td class="px-4 num-mono text-xs {MUTED}">{r['ts'][:19].replace('T',' ')}</td>
-        <td class="px-4">{pill(r['event_type'], r['event_type'])}</td>
-        <td class="px-4 num-mono">{r.get('sequence_id') or ''}</td>
-        <td class="px-4 num-mono {MUTED}">{r.get('step') or ''}</td>
-        <td class="px-4 num-mono text-xs {SUBTLE}">{(r.get('resend_id') or '')[:30]}</td></tr>""" for r in rows)
-    body = f'<div class="mb-4"><h2 class="text-xl font-semibold">Events</h2><div class="text-xs {MUTED} mt-0.5">{len(rows)} recent · live stream</div></div>' + table(["When (UTC)", "Event", "Sequence", "Step", "Resend ID"], tr)
-    return page("events", "Events", body)
+def events_page():
+    rows = sb.select("sequence_events", {"select": "*", "order": "ts.desc"}, limit=200)
+    tr = "".join(f'<tr><td class="when">{e["ts"][:19].replace("T"," ")}</td><td>{chip(e["event_type"], e["event_type"])}</td><td class="when">{e.get("sequence_id") or ""}</td><td class="when">{e.get("step") or ""}</td><td class="email">{(e.get("resend_id") or "")[:28]}</td></tr>' for e in rows if e["event_type"] != "opened_bot")
+    body = f'<div class="block"><table class="act-table"><thead><tr><th>When (UTC)</th><th>Event</th><th>Seq</th><th>Step</th><th>Resend ID</th></tr></thead><tbody>{tr or "<tr><td colspan=5 style=padding:32px;text-align:center;color:var(--ink-mute)>No events yet.</td></tr>"}</tbody></table></div>'
+    return shell("events", "workspace / activity", "Activity", "Every send, open, click, bounce, reply", body)
+
+
+@app.route("/settings")
+def settings_page():
+    def st(name):
+        return "on" if os.environ.get(name) else "off"
+    conns = [
+        ("Supabase", "SUPABASE_SERVICE_KEY", "state of truth"),
+        ("Anthropic (Claude)", "ANTHROPIC_API_KEY", "email drafting + enrichment"),
+        ("Resend", "RESEND_API_KEY", "email sending"),
+        ("Resend webhook", "RESEND_WEBHOOK_SECRET", "open/click/bounce events"),
+        ("Google Places", "GOOGLE_PLACES_API_KEY", "scraping"),
+        ("Cron secret", "CRON_SECRET", "protects cron endpoints"),
+    ]
+    rows = "".join(f'<div class="conn-row"><span class="conn-dot {st(env)}"></span><div style="flex:1"><div style="font-weight:500">{name}</div><div class="muted" style="font-size:12px">{desc}</div></div><span class="mono muted" style="font-size:11px">{"✓ set" if os.environ.get(env) else "missing"}</span></div>' for name, env, desc in conns)
+    daily_cap = os.environ.get("LEADGEN_DAILY_CAP", "100")
+    body = f"""
+    <div class="block"><div class="block-head"><div class="block-title">Connections</div><div class="block-sub">Service health — set via Vercel env vars</div></div>
+      <div class="block-body">{rows}</div></div>
+    <div class="block"><div class="block-head"><div class="block-title">Autopilot</div></div>
+      <div class="block-body">
+        <div class="conn-row"><div style="flex:1"><div style="font-weight:500">Daily send cap</div><div class="muted" style="font-size:12px">Max emails/day across all campaigns</div></div><span class="mono">{daily_cap}</span></div>
+        <div class="conn-row"><div style="flex:1"><div style="font-weight:500">Cadence</div><div class="muted" style="font-size:12px">7 steps · day 0,3,7,11,16,21,28 · accelerates on opens</div></div><span class="mono">28d</span></div>
+        <div class="conn-row" style="border:none"><div style="flex:1"><div style="font-weight:500">Crons</div><div class="muted" style="font-size:12px">scrape 08:00 · digest 16:00 UTC · sequencer every 5m (GitHub Actions)</div></div><span class="mono">live</span></div>
+      </div></div>"""
+    return shell("settings", "workspace / settings", "Settings", "Plumbing", body)
