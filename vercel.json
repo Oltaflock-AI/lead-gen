@@ -7,6 +7,10 @@
       "maxDuration": 300
     }
   },
+  "rewrites": [
+    { "source": "/webhook/resend", "destination": "/api/webhook/resend" },
+    { "source": "/((?!api/).*)",   "destination": "/api/index" }
+  ],
   "crons": [
     { "path": "/api/cron/daily_scrape", "schedule": "0 8 * * *" },
     { "path": "/api/cron/daily_digest", "schedule": "0 16 * * *" }
