@@ -494,19 +494,55 @@ def scrape_page():
 
 @app.route("/offers")
 def offers_page():
+    import html as _html
     camps = _campaigns()
     cards = ""
     for c in camps:
         brief = (c.get("offer_brief") or "").strip()
-        preview = (brief[:160] + "…") if len(brief) > 160 else (brief or "No offer brief set.")
-        cards += f"""<a class="csv-card" href="/campaigns/{c['id']}">
-          <div class="csv-name">{c['niche']}</div>
-          <div class="csv-meta">{c['name']} · {c['region']}</div>
-          <div style="font-size:13px;color:var(--ink-soft);line-height:1.5">{preview}</div>
-        </a>"""
-    body = (f'<div class="csv-grid">{cards}</div>' if camps
-            else '<div class="empty">No offers yet. Create a campaign to define an offer.</div>')
+        has = bool(brief)
+        preview = (brief[:220] + "…") if len(brief) > 220 else (brief or "No offer set — emails fall back to a generic pitch.")
+        esc = _html.escape(brief)
+        cards += f"""<div class="csv-card" style="cursor:default">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div><div class="csv-name">{c['niche']}</div><div class="csv-meta">{c['name']} · {c['region']}</div></div>
+            <button class="btn sm" onclick='openOffer({c["id"]}, {_json_attr(c["niche"])}, {_json_attr(brief)})'>Edit</button>
+          </div>
+          <div style="font-size:13px;color:var(--ink-soft);line-height:1.55;margin-top:6px;white-space:pre-wrap">{_html.escape(preview)}</div>
+          <div style="margin-top:10px">{chip('set' if has else 'pending', 'offer set' if has else 'no offer')}</div>
+        </div>"""
+    body = f"""
+    <div style="margin-bottom:16px"><div class="note-bar">The offer is injected into every email the sequencer writes. Keep it tight: product, pricing, risk-reversal, why you win.</div></div>
+    {f'<div class="csv-grid">{cards}</div>' if camps else '<div class="empty">No offers yet. Create a campaign first.</div>'}
+    <dialog id="offerModal">
+      <form method="post" id="offerForm" class="block-body" style="min-width:520px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div class="block-title" id="offerTitle">Edit offer</div>
+          <button type="button" class="btn sm" onclick="document.getElementById('offerModal').close()">✕</button>
+        </div>
+        <div class="field"><label>Offer brief</label><textarea name="offer_brief" id="offerText" rows="16"></textarea></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end"><button type="button" class="btn" onclick="document.getElementById('offerModal').close()">Cancel</button><button class="btn primary" type="submit">Save offer</button></div>
+      </form>
+    </dialog>
+    <script>
+      function openOffer(id,niche,brief){{
+        document.getElementById('offerForm').action='/campaigns/'+id+'/offer';
+        document.getElementById('offerTitle').textContent='Offer · '+niche;
+        document.getElementById('offerText').value=brief||'';
+        document.getElementById('offerModal').showModal();
+      }}
+    </script>"""
     return shell("offers", "workspace / offers", "Offers", "What you sell", body)
+
+
+def _json_attr(s):
+    import json as _j
+    return _j.dumps(s or "").replace("'", "\\u0027")
+
+
+@app.route("/campaigns/<int:cid>/offer", methods=["POST"])
+def update_offer(cid):
+    sb.update("campaigns", {"id": cid}, {"offer_brief": (request.form.get("offer_brief") or "").strip() or None})
+    return redirect("/offers")
 
 
 @app.route("/leads")
