@@ -595,7 +595,7 @@ def leads_page():
 
     camp_opts = [(c["id"], f'{c["niche"]} · {c["region"]}') for c in camps]
     rail = f"""
-    <form method="get" id="filters" class="{SURFACE if False else ''}" style="width:230px;flex-shrink:0">
+    <form method="get" id="filters" style="width:230px;flex-shrink:0">
       <div class="block" style="margin-bottom:0"><div class="block-head"><div class="block-title" style="font-size:15px">Filters</div></div>
       <div class="block-body" style="padding:16px">
         <div class="field" style="margin-bottom:12px"><label>Search</label><input name="q" value="{_html.escape(q)}" placeholder="name, email, city" onkeydown="if(event.key==='Enter')this.form.submit()"></div>
@@ -616,7 +616,7 @@ def leads_page():
         rev = sig.get("revenue_band") or "—"
         loc = ", ".join([x for x in [r.get("city"), r.get("country")] if x]) or "—"
         intent = r.get("intent_score")
-        intent_html = f'<span style="font-weight:600;color:{"var(--good)" if (intent or 0)>=60 else "var(--ink-soft)"}">{intent}</span>' if intent is not None else f'<span class="{SUBTLE}">—</span>'
+        intent_html = f'<span style="font-weight:600;color:{"var(--good)" if (intent or 0)>=60 else "var(--ink-soft)"}">{intent}</span>' if intent is not None else '<span class="muted">—</span>'
         trows += f"""<tr class="lead-row">
           <td style="width:34px"><input type="checkbox" class="lcb" value="{r['id']}" onchange="sync()"></td>
           <td><div class="biz">{_html.escape(r['business'] or '')}</div><div class="email">{_html.escape(r.get('email') or 'no email')}</div></td>
