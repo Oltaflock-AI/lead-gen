@@ -102,7 +102,10 @@ def _extract(lead: dict, site_text: str) -> dict:
         "sentence. decision_maker fields come ONLY from the website text — if a "
         "person's name/title/email is not clearly present, use null (never guess). "
         "intent_score is an integer 0-100 estimating how likely this business needs "
-        "the offer now. summary is one sentence. No prose outside the JSON."
+        "the offer now. summary is one sentence. ALSO estimate the business's annual "
+        "revenue band as one of EXACTLY these strings (best guess from business type, "
+        'review volume, locations, site): "<$1M", "$1M–5M", "$5M–20M", "$20M–50M", '
+        '"$50M+" — return it as "revenue_band". No prose outside the JSON.'
     )
 
     site_block = site_text if site_text else "(no website text available)"
@@ -158,6 +161,9 @@ def _clean_signals(data: dict) -> dict:
     summary = data.get("summary")
     if isinstance(summary, str) and summary.strip():
         out["summary"] = summary.strip()
+    rev = data.get("revenue_band")
+    if isinstance(rev, str) and rev.strip() in ("<$1M", "$1M–5M", "$5M–20M", "$20M–50M", "$50M+"):
+        out["revenue_band"] = rev.strip()
     return out
 
 

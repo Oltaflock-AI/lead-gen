@@ -545,26 +545,154 @@ def update_offer(cid):
     return redirect("/offers")
 
 
+REVENUE_BANDS = ["<$1M", "$1M–5M", "$5M–20M", "$20M–50M", "$50M+"]
+PAGE_SIZE = 50
+
+
 @app.route("/leads")
 def leads_page():
+    import html as _html
+    a = request.args
+    q = (a.get("q") or "").strip()
+    campaign = a.get("campaign", "")
+    enrich = a.get("enrich", "")
+    email = a.get("email", "")
+    intent_min = a.get("intent", "")
+    revenue = a.get("revenue", "")
+    page = max(1, int(a.get("page", "1") or 1))
+
+    params = {"select": "id,business,email,email_status,city,country,intent_score,enrichment_status,campaign_id,signals,website",
+              "order": "created_at.desc"}
+    if campaign:
+        params["campaign_id"] = f"eq.{campaign}"
+    if enrich:
+        params["enrichment_status"] = f"eq.{enrich}"
+    if email == "has":
+        params["email"] = "not.is.null"
+    elif email == "none":
+        params["email"] = "is.null"
+    if intent_min:
+        params["intent_score"] = f"gte.{intent_min}"
+    if revenue:
+        params["signals->>revenue_band"] = f"eq.{revenue}"
+    if q:
+        params["or"] = f"(business.ilike.*{q}*,email.ilike.*{q}*,city.ilike.*{q}*)"
+
+    rows = sb.select("leads", params, limit=2000)
+    total = len(rows)
+    start = (page - 1) * PAGE_SIZE
+    page_rows = rows[start:start + PAGE_SIZE]
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+
     camps = _campaigns()
-    lc = _lead_counts()
-    cards = ""
-    for c in camps:
-        cnt = lc.get(c["id"], {"leads": 0, "enriched": 0, "with_email": 0})
-        n = cnt["leads"]
-        wmail = cnt["with_email"]
-        pct = round(100 * wmail / n) if n else 0
-        cls = "good" if pct >= 60 else ("bad" if pct < 30 else "")
-        cards += f"""<a class="csv-card" href="/campaigns/{c['id']}">
-          <div class="csv-name">{c['niche']}</div>
-          <div class="csv-meta">{c['name']} · {c['region']}</div>
-          <div class="csv-health"><span class="csv-health-num {cls}">{n}</span><span class="csv-health-label">leads · {cnt['enriched']} enriched · {wmail} w/ email</span></div>
-          <div>{chip('active' if c['active'] else 'paused', 'active' if c['active'] else 'paused')}</div>
-        </a>"""
-    body = (f'<div class="csv-grid">{cards}</div>' if camps
-            else '<div class="empty">No leads yet. Create a campaign and run a scrape.</div>')
-    return shell("leads", "workspace / leads", "Leads", "Browse by campaign", body)
+    cmap = {c["id"]: c for c in camps}
+
+    # ── filter rail ──
+    def opt(name, label, options, cur):
+        os_ = '<option value="">Any</option>' + "".join(
+            f'<option value="{v}" {"selected" if str(v)==str(cur) else ""}>{l}</option>' for v, l in options)
+        return f'<div class="field" style="margin-bottom:12px"><label>{label}</label><select name="{name}" onchange="this.form.submit()">{os_}</select></div>'
+
+    camp_opts = [(c["id"], f'{c["niche"]} · {c["region"]}') for c in camps]
+    rail = f"""
+    <form method="get" id="filters" class="{SURFACE if False else ''}" style="width:230px;flex-shrink:0">
+      <div class="block" style="margin-bottom:0"><div class="block-head"><div class="block-title" style="font-size:15px">Filters</div></div>
+      <div class="block-body" style="padding:16px">
+        <div class="field" style="margin-bottom:12px"><label>Search</label><input name="q" value="{_html.escape(q)}" placeholder="name, email, city" onkeydown="if(event.key==='Enter')this.form.submit()"></div>
+        {opt('campaign', 'Campaign', camp_opts, campaign)}
+        {opt('enrich', 'Enrichment', [('enriched','Enriched'),('pending','Pending'),('failed','Failed')], enrich)}
+        {opt('email', 'Email', [('has','Has email'),('none','No email')], email)}
+        {opt('intent', 'Min intent', [('80','80+'),('60','60+'),('40','40+'),('20','20+')], intent_min)}
+        {opt('revenue', 'Est. revenue', [(b,b) for b in REVENUE_BANDS], revenue)}
+        <a href="/leads" class="btn sm" style="width:100%;justify-content:center;margin-top:4px">Clear filters</a>
+      </div></div>
+    </form>"""
+
+    # ── table rows ──
+    trows = ""
+    for r in page_rows:
+        c = cmap.get(r["campaign_id"], {})
+        sig = r.get("signals") or {}
+        rev = sig.get("revenue_band") or "—"
+        loc = ", ".join([x for x in [r.get("city"), r.get("country")] if x]) or "—"
+        intent = r.get("intent_score")
+        intent_html = f'<span style="font-weight:600;color:{"var(--good)" if (intent or 0)>=60 else "var(--ink-soft)"}">{intent}</span>' if intent is not None else f'<span class="{SUBTLE}">—</span>'
+        trows += f"""<tr class="lead-row">
+          <td style="width:34px"><input type="checkbox" class="lcb" value="{r['id']}" onchange="sync()"></td>
+          <td><div class="biz">{_html.escape(r['business'] or '')}</div><div class="email">{_html.escape(r.get('email') or 'no email')}</div></td>
+          <td class="when">{_html.escape((c.get('niche') or ''))}</td>
+          <td class="when">{_html.escape(loc)}</td>
+          <td>{chip(r['enrichment_status'], r['enrichment_status'])}</td>
+          <td class="when">{rev}</td>
+          <td>{intent_html}</td>
+        </tr>"""
+    if not trows:
+        trows = '<tr><td colspan="7" style="padding:40px;text-align:center;color:var(--ink-mute)">No leads match these filters.</td></tr>'
+
+    # ── pagination ──
+    def plink(p, label, disabled=False):
+        if disabled:
+            return f'<span class="btn sm" style="opacity:.4;cursor:default">{label}</span>'
+        qs = "&".join(f"{k}={v}" for k, v in a.items() if k != "page" and v)
+        return f'<a class="btn sm" href="/leads?{qs}&page={p}">{label}</a>'
+    pager = f'<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:14px;font-size:12px;color:var(--ink-mute)"><span>Page {page} of {pages} · {total} leads</span>{plink(page-1,"‹ Prev",page<=1)}{plink(page+1,"Next ›",page>=pages)}</div>'
+
+    table_html = f"""
+    <div style="flex:1;min-width:0">
+      <div id="bulkbar" class="block" style="margin-bottom:12px;display:none">
+        <div style="padding:12px 18px;display:flex;align-items:center;justify-content:space-between">
+          <div><span id="selcount" class="num-mono" style="font-weight:600">0</span> selected</div>
+          <form method="post" action="/leads/enroll" id="enrollForm" onsubmit="return collect()">
+            <input type="hidden" name="lead_ids" id="enrollIds">
+            <button class="btn primary sm" type="submit"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg> Add to sequence</button>
+          </form>
+        </div>
+      </div>
+      <div class="block">
+        <table class="act-table">
+          <thead><tr>
+            <th style="width:34px"><input type="checkbox" id="selall" onchange="toggleAll(this)"></th>
+            <th>Lead</th><th>Niche</th><th>Location</th><th>Enrichment</th><th>Est. revenue</th><th>Intent</th>
+          </tr></thead>
+          <tbody>{trows}</tbody>
+        </table>
+      </div>
+      {pager}
+    </div>"""
+
+    body = f"""
+    <div style="display:flex;gap:20px;align-items:flex-start">{rail}{table_html}</div>
+    <style>.lead-row td{{padding-top:.55rem;padding-bottom:.55rem}} input[type=checkbox]{{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}}</style>
+    <script>
+      function sync(){{
+        const sel=[...document.querySelectorAll('.lcb:checked')];
+        document.getElementById('selcount').textContent=sel.length;
+        document.getElementById('bulkbar').style.display=sel.length?'block':'none';
+      }}
+      function toggleAll(el){{document.querySelectorAll('.lcb').forEach(c=>c.checked=el.checked);sync();}}
+      function collect(){{
+        const ids=[...document.querySelectorAll('.lcb:checked')].map(c=>c.value);
+        if(!ids.length){{alert('Select at least one lead');return false;}}
+        document.getElementById('enrollIds').value=ids.join(',');return true;
+      }}
+    </script>"""
+    return shell("leads", "workspace / leads", "Leads", f"{total} leads · filter and enroll into sequences", body)
+
+
+@app.route("/leads/enroll", methods=["POST"])
+def enroll_leads():
+    ids = [int(x) for x in (request.form.get("lead_ids") or "").split(",") if x.strip().isdigit()]
+    if not ids:
+        return redirect("/leads")
+    in_list = ",".join(str(i) for i in ids)
+    leads = sb.select("leads", {"select": "id,campaign_id,email", "id": f"in.({in_list})"}, limit=5000)
+    existing = {s["lead_id"] for s in sb.select("sequences", {"select": "lead_id", "lead_id": f"in.({in_list})"}, limit=5000)}
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [{"lead_id": l["id"], "campaign_id": l["campaign_id"], "status": "active", "current_step": 0, "next_send_at": now}
+            for l in leads if l.get("email") and l["id"] not in existing]
+    if rows:
+        sb.insert("sequences", rows, on_conflict="lead_id")
+    return redirect("/sequences")
 
 
 def _slug(*parts):
