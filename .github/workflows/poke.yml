@@ -40,3 +40,16 @@ jobs:
           curl -fsS --max-time 290 \
             -H "Authorization: Bearer $CRON_SECRET" \
             "$BASE_URL/api/cron/enrich_tick" | head -200
+
+  replies:
+    if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: tick reply poller
+        env:
+          BASE_URL: ${{ vars.VERCEL_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/replies_tick" | head -200
