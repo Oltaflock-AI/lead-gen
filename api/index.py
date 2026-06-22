@@ -205,6 +205,32 @@ def _counts(events):
     return b
 
 
+def _metrics(events):
+    """Per-recipient funnel. Dedupes by (sequence_id, step) so repeat opens,
+    duplicate sends, and multi-fire webhooks never inflate a rate past 100%.
+    Bot opens (opened_bot) are excluded from real opens."""
+    uniq = defaultdict(set)
+    raw_sent = 0
+    for e in events:
+        et = e["event_type"]
+        if et == "sent":
+            raw_sent += 1
+        if et == "opened_bot":
+            continue
+        key = (e.get("sequence_id"), e.get("step"))
+        uniq[et].add(key)
+    m = {et: len(s) for et, s in uniq.items()}
+    m["sent_raw"] = raw_sent  # actual emails sent (includes any duplicates)
+    return m
+
+
+def _rate(num, denom):
+    """Percentage, clamped to [0, 100] so lagging webhooks can't break it."""
+    if not denom:
+        return 0.0
+    return round(min(100.0, 100.0 * num / denom), 1)
+
+
 def _campaigns():
     return sb.select("campaigns", {"select": "*", "order": "created_at.desc"}, limit=200)
 
@@ -318,9 +344,19 @@ def home():
     n_camps = len(camps)
     active_seqs = sb.select("sequences", {"select": "id,current_step,status", "status": "eq.active"}, limit=100000)
 
-    sent, deliv, opened, clicked, bounced, replied = (c["sent"], c["delivered"], c["opened"], c["clicked"], c["bounced"], c["replied"])
-    drate = round(100 * deliv / sent, 1) if sent else 0
-    orate = round(100 * opened / deliv, 1) if deliv else 0
+    m = _metrics(ev)
+    sent = m.get("sent", 0)            # unique recipients reached (deduped)
+    sent_raw = m.get("sent_raw", 0)    # actual emails sent (incl. duplicates)
+    deliv = m.get("delivered", 0)
+    opened = m.get("opened", 0)
+    clicked = m.get("clicked", 0)
+    bounced = m.get("bounced", 0)
+    replied = m.get("replied", 0)
+    deliv_base = deliv or sent          # opens land before delivered webhook; fall back to sent
+    drate = _rate(deliv, sent)
+    orate = _rate(opened, deliv_base)
+    crate = _rate(clicked, deliv_base)
+    rrate = _rate(replied, sent)
     spark = _spark_14d()
     spark_max = max(spark + [1])
     pts = " ".join(f"{i*(200/13):.0f},{24 - (v/spark_max*22):.0f}" for i, v in enumerate(spark))
@@ -331,14 +367,19 @@ def home():
         f'<a href="/?w={k}" class="window-pill {"active" if k==w else ""}">{wlabel[k]}</a>'
         for k in ["today", "7d", "30d", "all"])
 
+    dup = sent_raw - sent
+    sent_meta = f"{sent} recipient{'s' if sent != 1 else ''}"
+    if dup > 0:
+        sent_meta += f' · <span style="color:var(--warn)">{dup} duplicate</span>'
     kpis = f"""
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Total leads</div><div class="kpi-num">{total_leads}</div><div class="kpi-meta">across {n_camps} campaigns</div></div>
-      <div class="kpi"><div class="kpi-label">Sent · {wlabel[w]}</div><div class="kpi-num">{sent}</div>
+      <div class="kpi"><div class="kpi-label">Sent · {wlabel[w]}</div><div class="kpi-num">{sent_raw}</div><div class="kpi-meta">{sent_meta}</div>
         <svg viewBox="0 0 200 24" preserveAspectRatio="none" style="margin-top:10px;height:24px;width:100%">
           <polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{pts}"/></svg></div>
-      <div class="kpi {'alert-kpi' if drate_alert else ''}"><div class="kpi-label">Delivery rate</div><div class="kpi-num">{drate}<span class="unit">%</span></div><div class="kpi-meta">{deliv} of {sent}{' · ' + str(bounced) + ' bounced' if bounced else ''}</div></div>
-      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">{orate}<span class="unit">%</span></div><div class="kpi-meta">{opened} of {deliv} delivered · {clicked} click{'s' if clicked!=1 else ''}</div></div>
+      <div class="kpi {'alert-kpi' if drate_alert else ''}"><div class="kpi-label">Delivery rate</div><div class="kpi-num">{drate}<span class="unit">%</span></div><div class="kpi-meta">{deliv} of {sent} sent{' · ' + str(bounced) + ' bounced' if bounced else ''}</div></div>
+      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">{orate}<span class="unit">%</span></div><div class="kpi-meta">{opened} opened · {clicked} click{'s' if clicked!=1 else ''} ({crate}%)</div></div>
+      <div class="kpi"><div class="kpi-label">Reply rate</div><div class="kpi-num">{rrate}<span class="unit">%</span></div><div class="kpi-meta">{replied} repl{'y' if replied==1 else 'ies'} of {sent}</div></div>
     </div>"""
 
     # Activity panel
