@@ -985,7 +985,7 @@ def settings_page():
         ("Cron secret", "CRON_SECRET", "protects cron endpoints"),
     ]
     rows = "".join(f'<div class="conn-row"><span class="conn-dot {st(env)}"></span><div style="flex:1"><div style="font-weight:500">{name}</div><div class="muted" style="font-size:12px">{desc}</div></div><span class="mono muted" style="font-size:11px">{"✓ set" if os.environ.get(env) else "missing"}</span></div>' for name, env, desc in conns)
-    daily_cap = os.environ.get("LEADGEN_DAILY_CAP", "100")
+    daily_cap = os.environ.get("LEADGEN_DAILY_CAP", "120")
     body = f"""
     <div class="block"><div class="block-head"><div class="block-title">Connections</div><div class="block-sub">Service health — set via Vercel env vars</div></div>
       <div class="block-body">{rows}</div></div>
