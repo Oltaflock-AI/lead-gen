@@ -12,7 +12,7 @@ Stateless. Bounded per tick (BATCH) so it never approaches the 300s limit.
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -85,6 +85,18 @@ def _due(active_ids: set[int]) -> list[dict]:
 
 
 def _process_one(s: dict, active: dict[int, dict]) -> dict:
+    # Optimistic claim-lock: atomically push next_send_at forward, matching on its
+    # CURRENT value. If another concurrent runner already claimed this row, the
+    # update touches 0 rows and we bail before sending — kills double-sends.
+    if s.get("next_send_at"):
+        claimed = sb.update(
+            "sequences",
+            {"id": s["id"], "next_send_at": s["next_send_at"]},
+            {"next_send_at": _iso(_now() + timedelta(hours=1))},
+        )
+        if not claimed:
+            return {"seq": s["id"], "skipped": "claimed-by-other"}
+
     leads = sb.select("leads", {"select": "*", "id": f"eq.{s['lead_id']}"}, limit=1)
     if not leads:
         sb.update("sequences", {"id": s["id"]}, {"status": "done", "paused_reason": "lead-missing", "next_send_at": None})
