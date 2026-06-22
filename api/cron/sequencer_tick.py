@@ -22,7 +22,7 @@ from lib import supabase as sb
 from lib.auth import is_cron_authorized
 
 BATCH = int(os.environ.get("LEADGEN_TICK_BATCH", "25"))
-DAILY_CAP = int(os.environ.get("LEADGEN_DAILY_CAP", "100"))
+DAILY_CAP = int(os.environ.get("LEADGEN_DAILY_CAP", "120"))
 CREATE_PER_TICK = int(os.environ.get("LEADGEN_CREATE_PER_TICK", "50"))
 
 
