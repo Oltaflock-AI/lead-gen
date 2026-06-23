@@ -525,7 +525,8 @@ def home():
         <svg viewBox="0 0 200 24" preserveAspectRatio="none" style="margin-top:10px;height:24px;width:100%">
           <polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{pts}"/></svg></div>
       <div class="kpi {'alert-kpi' if drate_alert else ''}"><div class="kpi-label">Delivery rate</div><div class="kpi-num">{drate}<span class="unit">%</span></div><div class="kpi-meta">{deliv} of {sent} sent{' · ' + str(bounced) + ' bounced' if bounced else ''}</div></div>
-      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">{orate}<span class="unit">%</span></div><div class="kpi-meta">{opened} opened · {clicked} click{'s' if clicked!=1 else ''} ({crate}%)</div></div>
+      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">{orate}<span class="unit">%</span></div><div class="kpi-meta">{opened} opened of {deliv_base}</div></div>
+      <div class="kpi"><div class="kpi-label">Click rate</div><div class="kpi-num">{crate}<span class="unit">%</span></div><div class="kpi-meta">{clicked} click{'s' if clicked!=1 else ''} of {deliv_base}</div></div>
       <div class="kpi"><div class="kpi-label">Reply rate</div><div class="kpi-num">{rrate}<span class="unit">%</span></div><div class="kpi-meta">{replied} repl{'y' if replied==1 else 'ies'} of {sent}</div></div>
     </div>"""
 
