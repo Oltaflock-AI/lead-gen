@@ -4,7 +4,8 @@
     "api/**/*.py": {
       "runtime": "@vercel/python@4.5.0",
       "memory": 1024,
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "OF_FAVICON.png"
     }
   },
   "rewrites": [
