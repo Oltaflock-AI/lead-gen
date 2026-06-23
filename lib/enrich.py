@@ -184,6 +184,18 @@ def enrich_lead(lead: dict) -> dict:
     now_iso = datetime.now(timezone.utc).isoformat()
     base_signals = dict(lead.get("signals") or {})
 
+    # Email hunt — Places gives none, so scrape the site + Prospeo fallback.
+    email_patch: dict = {}
+    if not lead.get("email"):
+        try:
+            from lib import email_finder
+            found = email_finder.find_email(lead)
+            if found.get("email"):
+                email_patch = {"email": found["email"], "email_status": found.get("email_status")}
+                base_signals["email_source"] = found.get("email_source")
+        except Exception:
+            pass
+
     site_text = _fetch_site_text(lead.get("website"))
     data = _extract(lead, site_text)
 
@@ -196,6 +208,7 @@ def enrich_lead(lead: dict) -> dict:
             "decision_maker": {"name": None, "title": None, "email": None},
             "enrichment_status": "enriched",
             "enriched_at": now_iso,
+            **email_patch,
         }
 
     merged = {**base_signals, **_clean_signals(data)}
@@ -203,6 +216,7 @@ def enrich_lead(lead: dict) -> dict:
         "signals": merged,
         "intent_score": _coerce_int_0_100(data.get("intent_score")),
         "decision_maker": _clean_decision_maker(data),
+        **email_patch,
         "enrichment_status": "enriched",
         "enriched_at": now_iso,
     }

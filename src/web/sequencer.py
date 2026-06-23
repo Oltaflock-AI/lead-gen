@@ -104,9 +104,13 @@ _STEP_INSTRUCTIONS = {
     2: (
         "Step 2 — bump (day 3, 35-70 words). Acknowledge no reply in ONE "
         "casual line. Drop a single concrete outcome framed generically: "
-        "e.g. 'a {business_type} with a similar review count went from "
-        "missing 1 in 4 calls to under 1 in 30 in week one'. End with a "
-        "one-line question. No re-pitch of the offer."
+        "anchor the metric in the localized after-hours playbook stat for "
+        "this country (recovered calls per week, recapture %, dollars "
+        "saved). VARY the numbers and framing per email — do NOT default "
+        "to 'missing 1 in 4 calls to 1 in 30' or any other recurring "
+        "phrasing. End with a one-line question. No re-pitch of the offer. "
+        "The subject MUST NOT be a numeric ratio like 'X in N -> Y in M' — "
+        "use the assigned angle instead."
     ),
     3: (
         "Step 3 — competitor / FOMO angle (day 7, 90-140 words). Open with "
@@ -115,7 +119,10 @@ _STEP_INSTRUCTIONS = {
         "the after-hours jobs that used to slip past phones like "
         "{business_name}'s. Use the localized stat from the playbook to "
         "ground the cost. Tie back to the risk-reversal in one sentence. "
-        "CTA: 'want me to send you the 90-second walkthrough?'"
+        "CTA: 'want me to send you the 90-second walkthrough?'. The "
+        "subject MUST NOT be 'what a competitor a few suburbs over just "
+        "did' or any near-paraphrase — use the assigned angle and a "
+        "specific fact from THIS lead."
     ),
     4: (
         "Step 4 — Loom value drop (day 11, 70-110 words). Paste the Loom "
@@ -283,6 +290,29 @@ def _no_website_pivot(lead):
     return ""
 
 
+# Deterministic per-lead angle rotation. Without this Haiku/Sonnet converge
+# on a single subject across a batch (observed: 45/45 identical step-2 subj
+# for the NZ run). Pair (lead, step) → stable angle.
+_SUBJECT_ANGLES = [
+    ("number-as-question",   "lead with rating or review_count framed as a question"),
+    ("surprising-stat",      "open with the localized after-hours / missed-call stat for this country"),
+    ("curiosity-gap",        "tease a problem at this business without naming the solution"),
+    ("micro-ask",            "ask for one tiny low-commitment unit of time or attention"),
+    ("competitor-scenario",  "name a hypothetical local competitor doing the thing they aren't"),
+    ("industry-insider",     "self-aware one-liner only someone in their trade would say"),
+    ("number-as-cost",       "quantify the pain in NZ$/AU$/US$/CA$/£ using a believable range"),
+    ("but-flip",             "two facts in contradiction (X but Y, why?)"),
+    ("tiny-imperative",      "two-to-four-word command that sets up the body"),
+    ("time-of-day",          "anchor on a specific hour the inbound problem hits (9pm Tuesday, 7am Saturday)"),
+]
+
+
+def _angle_for(lead, step):
+    seed = (lead.get("email", "") or "") + "|" + str(step)
+    idx = (hash(seed) & 0xffffffff) % len(_SUBJECT_ANGLES)
+    return _SUBJECT_ANGLES[idx]
+
+
 def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
     """Returns {subject, body}. Falls back to template on any LLM error.
     `prior_msgs` is a list of already-sent steps' rows (with opens/clicks)
@@ -301,6 +331,9 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
 
     engagement = _engagement_block(prior_msgs or [])
     pivot = _no_website_pivot(lead)
+    angle_label, angle_desc = _angle_for(lead, step)
+    biz = lead.get("business_name", "") or ""
+    city = lead.get("city", "") or ""
 
     user_msg = (
         f"{_STEP_INSTRUCTIONS[step]}\n\n"
@@ -336,6 +369,28 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
             "good open rates. Match the style + voice; do NOT copy:\n" + ex
         )
 
+    # Hard subject mandate goes LAST so it overrides any example subject in
+    # the niche brief / step instruction / winners list. LLMs weight
+    # final-position instructions most heavily.
+    user_msg += (
+        "\n\n=== HARD SUBJECT MANDATE (READ LAST, OVERRIDES ALL ABOVE) ===\n"
+        f"- Required subject angle for THIS specific email: "
+        f"**{angle_label}** — {angle_desc}.\n"
+        f"- The subject MUST contain a concrete identifier from THIS "
+        f"lead — one of: {biz!r}, {city!r}, the rating "
+        f"{lead.get('rating',0)}, or the review_count "
+        f"{lead.get('review_count',0)}. A subject that would fit ANY "
+        f"other prospect = automatic reject.\n"
+        f"- FORBIDDEN subject patterns (do not use, do not paraphrase): "
+        f"'1 in 4 -> 1 in 30', any 'X in N -> Y in M' ratio, "
+        f"'what a competitor a few suburbs over just did', "
+        f"'1 in 4 viewings, lost to voicemail'. These have been used "
+        f"already and are now banned.\n"
+        f"- Under 45 chars, lowercase preferred, must look hand-typed.\n"
+        f"- Do not let the body's opening sentence become the subject.\n"
+        f"=== END MANDATE ==="
+    )
+
     try:
         client = Anthropic(api_key=ANTHROPIC_API_KEY)
         resp = client.messages.create(
@@ -346,6 +401,9 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
         )
         text = "".join(b.text for b in resp.content
                        if getattr(b, "type", "") == "text").strip()
+        if os.getenv("LEADGEN_DEBUG_DRAFT"):
+            log.warning("DRAFT_DEBUG step=%s lead=%s raw=%s",
+                        step, lead.get("email"), text[:400])
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
             raise ValueError("no JSON in LLM output")

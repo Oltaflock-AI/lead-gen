@@ -58,7 +58,17 @@ def _upsert_leads(rows: list[dict]) -> int:
     return len(out)
 
 
+def _is_csv_campaign(campaign: dict) -> bool:
+    """CSV-uploaded lists carry their own leads and must never be scraped."""
+    try:
+        return json.loads(campaign.get("notes") or "{}").get("source") == "csv"
+    except Exception:
+        return False
+
+
 def _scrape_campaign(campaign: dict) -> dict:
+    if _is_csv_campaign(campaign):
+        return {"campaign": campaign["name"], "skipped": "csv-upload"}
     target = campaign.get("daily_scrape_target") or 50
     run_id = _start_run(campaign["id"], target)
     try:

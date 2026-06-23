@@ -17,6 +17,7 @@ from flask import Flask, request, redirect, url_for, jsonify
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from lib import supabase as sb
 from lib import niches
+from lib import sequence as seq
 
 app = Flask(__name__)
 ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
@@ -271,6 +272,7 @@ def shell(active, crumb, h1, sub, body, badges=None):
       <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a></div>
     <div class="nav-section"><div class="nav-label">Pipeline</div>
       <a class="nav-item {'active' if active=='scrape' else ''}" href="/scrape">Scrape</a>
+      <a class="nav-item {'active' if active=='upload' else ''}" href="/upload">Upload CSV</a>
       <a class="nav-item {'active' if active=='offers' else ''}" href="/offers">Offers</a>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
       <a class="nav-item {'active' if active=='sequences' else ''}" href="/sequences">Sequences{seq_b}</a>
@@ -531,6 +533,100 @@ def scrape_page():
       renderTypes();
     </script>"""
     return shell("scrape", "workspace / scrape", "Scrape", "Find leads", body)
+
+
+# ---- CSV upload: bring-your-own leads (never scraped — see daily_scrape) ----
+_CSV_FIELD_ALIASES = {
+    "business": ("business", "company", "name", "business_name", "company_name", "organisation", "organization"),
+    "website":  ("website", "url", "site", "web", "domain", "website_url"),
+    "email":    ("email", "email_address", "e-mail", "contact_email"),
+    "phone":    ("phone", "telephone", "tel", "mobile", "phone_number"),
+    "address":  ("address", "full_address", "street", "location"),
+    "city":     ("city", "town", "suburb"),
+    "country":  ("country", "nation"),
+}
+
+
+def _csv_pick(row_lc: dict, key: str) -> str:
+    for alias in _CSV_FIELD_ALIASES[key]:
+        v = row_lc.get(alias)
+        if v and v.strip():
+            return v.strip()
+    return ""
+
+
+def _csv_row_to_lead(raw: dict, campaign_id: int) -> dict | None:
+    row_lc = {(k or "").strip().lower(): (v or "") for k, v in raw.items()}
+    business = _csv_pick(row_lc, "business")
+    if not business:
+        return None
+    email = _csv_pick(row_lc, "email").lower()
+    lead = {
+        "campaign_id": campaign_id,
+        "business": business,
+        "website": _csv_pick(row_lc, "website") or None,
+        "phone": _csv_pick(row_lc, "phone") or None,
+        "address": _csv_pick(row_lc, "address") or None,
+        "city": _csv_pick(row_lc, "city") or None,
+        "country": _csv_pick(row_lc, "country") or None,
+        "source": "csv",
+        "enrichment_status": "pending",
+        "signals": {"source": "csv"},
+    }
+    if email:
+        lead["email"] = email
+        lead["email_status"] = "provided"
+    return lead
+
+
+@app.route("/upload", methods=["GET", "POST"])
+def upload_csv():
+    if request.method == "POST":
+        import csv as _csv, io as _io
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return redirect("/upload?err=nofile")
+        region = (request.form.get("region") or "").strip() or "United States"
+        name = (request.form.get("name") or "").strip() or _slug("csv", f.filename.rsplit(".", 1)[0])
+        raw = f.read().decode("utf-8-sig", errors="replace")
+        reader = _csv.DictReader(_io.StringIO(raw))
+        camp = sb.insert("campaigns", {
+            "name": name, "niche": "csv-upload", "region": region,
+            "offer_brief": (request.form.get("offer_brief") or "").strip() or None,
+            "daily_scrape_target": 0,
+            "active": False,
+            "notes": json.dumps({"source": "csv"}),
+        }, on_conflict="name")[0]
+        rows, seen = [], set()
+        for r in reader:
+            lead = _csv_row_to_lead(r, camp["id"])
+            if lead and lead["business"].lower() not in seen:
+                seen.add(lead["business"].lower())
+                rows.append(lead)
+        if rows:
+            sb.insert("leads", rows, on_conflict="campaign_id,business")
+        return redirect(f"/campaigns/{camp['id']}")
+
+    err = request.args.get("err")
+    alert = '<div class="note-bar" style="border-color:var(--danger,#c33);color:var(--danger,#c33)">Pick a CSV file first.</div>' if err == "nofile" else ""
+    body = f"""
+    <div class="block"><div class="block-head"><div><div class="block-title">Upload leads</div><div class="block-sub">Bring your own CSV. These leads are imported as-is and never scraped.</div></div></div>
+    <div class="block-body">
+      {alert}
+      <div class="note-bar">Recognized columns (any order, case-insensitive): <strong>business</strong> (required), website, email, phone, address, city, country. The campaign stays <strong>paused</strong> until you click <strong>Start outreach</strong>.</div>
+      <form method="post" action="/upload" enctype="multipart/form-data" style="max-width:680px">
+        <div class="field"><label>CSV file</label><input name="file" type="file" accept=".csv,text/csv" required></div>
+        <div class="row-2" style="grid-template-columns:1fr 1fr">
+          <div class="field"><label>List name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="name" placeholder="defaults to file name"></div>
+          <div class="field"><label>Region <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="region" placeholder="United States"></div>
+        </div>
+        <div class="field"><label>Offer brief <span style="text-transform:none;color:var(--ink-faint)">(what you pitch — used to write the emails)</span></label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0-12l-4 4m4-4l4 4M5 21h14"/></svg> Import CSV</button>
+        </div>
+      </form>
+    </div></div>"""
+    return shell("upload", "workspace / upload", "Upload CSV", "Import leads", body)
 
 
 @app.route("/offers")

@@ -28,16 +28,9 @@
 {% endif %}
 
 {# ---------- Region 1 · 4 KPI tiles ---------- #}
+{% set _click_rate = (new_kpis.click_count / new_kpis.delivered_in_window * 100) if new_kpis.delivered_in_window else 0 %}
 <div class="kpi-grid mb-6">
-  {# Tile 1 — Click rate (clicks / delivered in window) #}
-  {% set _click_rate = (new_kpis.click_count / new_kpis.delivered_in_window * 100) if new_kpis.delivered_in_window else 0 %}
-  <div class="kpi">
-    <div class="kpi-label">Click rate</div>
-    <div class="kpi-num">{{ '%.1f' % _click_rate }}<span class="unit">%</span></div>
-    <div class="kpi-meta">{{ new_kpis.click_count }} click{{ '' if new_kpis.click_count == 1 else 's' }} of {{ new_kpis.delivered_in_window }} delivered</div>
-  </div>
-
-  {# Tile 2 — Sent in window + sparkline #}
+  {# Tile 1 — Sent in window + sparkline #}
   <div class="kpi">
     <div class="kpi-label">Sent {{ window_label|lower }}</div>
     <div class="kpi-num">{{ new_kpis.sent_in_window }}</div>
@@ -47,7 +40,7 @@
     </svg>
   </div>
 
-  {# Tile 3 — Delivery rate (with bounce detail folded into subtitle) #}
+  {# Tile 2 — Delivery rate (with bounce detail folded into subtitle) #}
   <div class="kpi {% if new_kpis.delivery_alert %}alert-kpi{% endif %}">
     <div class="kpi-label">Delivery rate</div>
     <div class="kpi-num">{{ new_kpis.delivery_rate }}<span class="unit">%</span></div>
@@ -56,11 +49,18 @@
     </div>
   </div>
 
-  {# Tile 4 — Open rate on delivered (NOT divided by sent) #}
+  {# Tile 3 — Open rate on delivered (NOT divided by sent) #}
   <div class="kpi">
     <div class="kpi-label">Open rate</div>
     <div class="kpi-num">{{ new_kpis.open_rate }}<span class="unit">%</span></div>
     <div class="kpi-meta">{{ new_kpis.unique_opens }} of {{ new_kpis.delivered_in_window }} delivered · {{ new_kpis.click_count }} click{{ '' if new_kpis.click_count == 1 else 's' }}</div>
+  </div>
+
+  {# Tile 4 — Click rate (clicks / delivered in window) #}
+  <div class="kpi">
+    <div class="kpi-label">Click rate</div>
+    <div class="kpi-num">{{ '%.1f' % _click_rate }}<span class="unit">%</span></div>
+    <div class="kpi-meta">{{ new_kpis.click_count }} click{{ '' if new_kpis.click_count == 1 else 's' }} of {{ new_kpis.delivered_in_window }} delivered</div>
   </div>
 
   {# Tile 5 — Bounce rate (red when over 5% threshold) #}
