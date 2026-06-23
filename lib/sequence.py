@@ -354,6 +354,39 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
     return {"resend_id": (r.json() or {}).get("id")}
 
 
+def send_manual(to_email: str, subject: str, body: str, seq_id: int,
+                *, append_signature: bool = True) -> dict:
+    """One-off composer send (Gmail-style). Same Resend pipe as the sequence so
+    opens/clicks/replies still correlate via the sequence_id tag. `seq_id` is a
+    real sequence row id used only for tracking — the tick never touches it.
+    Returns {resend_id} or {error}."""
+    if not RESEND_API_KEY:
+        return {"error": "RESEND_API_KEY missing"}
+    if not to_email:
+        return {"error": "no recipient"}
+    text = strip_dashes(body) + (_signature() if append_signature else "")
+    payload = {
+        "from": RESEND_FROM,
+        "to": [to_email],
+        "subject": strip_dashes(subject),
+        "text": text,
+        "html": _html_body(text),
+        "tags": [
+            {"name": "sequence_id", "value": str(seq_id)},
+            {"name": "step", "value": "0"},
+            {"name": "kind", "value": "manual"},
+        ],
+    }
+    r = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+        json=payload, timeout=30,
+    )
+    if r.status_code >= 400:
+        return {"error": f"resend {r.status_code}: {r.text[:200]}"}
+    return {"resend_id": (r.json() or {}).get("id")}
+
+
 # ─────────── Gate ───────────
 def passes_open_gate(seq: dict, next_step: int) -> bool:
     if next_step < OPEN_GATE_FROM_STEP:

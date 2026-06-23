@@ -6,6 +6,7 @@ dark override via the theme toggle. All data from Supabase.
 Pages:  /  /scrape  /offers  /leads  /sequences  /sequences/<id>  /settings
 Actions: create campaign, scrape now, start outreach, pause/resume, mark replied
 """
+import base64
 import json
 import os
 import sys
@@ -22,6 +23,22 @@ from lib import sequence as seq
 app = Flask(__name__)
 ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
 PROD_URL = "https://lead-gen-fawn-seven.vercel.app"
+
+
+def _logo_data_uri():
+    """OltaFlock logo as a base64 data URI (avoids Vercel static-routing). Cached."""
+    root = os.path.dirname(os.path.dirname(__file__))
+    for p in (os.path.join(root, "OF_FAVICON.png"),
+              os.path.join(root, "src", "web", "static", "img", "favicon.png")):
+        try:
+            with open(p, "rb") as f:
+                return "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        except OSError:
+            continue
+    return ""
+
+
+LOGO_URI = _logo_data_uri()
 
 STEP_META = {  # step -> (day label, name)
     1: ("Day 0", "Cold"), 2: ("Day 3", "Bump"), 3: ("Day 7", "FOMO"),
@@ -275,6 +292,7 @@ def shell(active, crumb, h1, sub, body, badges=None):
       <a class="nav-item {'active' if active=='upload' else ''}" href="/upload">Upload CSV</a>
       <a class="nav-item {'active' if active=='offers' else ''}" href="/offers">Offers</a>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
+      <a class="nav-item {'active' if active=='compose' else ''}" href="/compose">Compose</a>
       <a class="nav-item {'active' if active=='sequences' else ''}" href="/sequences">Sequences{seq_b}</a>
       <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
     <div class="nav-section"><div class="nav-label">System</div>
@@ -282,13 +300,14 @@ def shell(active, crumb, h1, sub, body, badges=None):
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{h1} · Lead-gen</title>
+<link rel="icon" type="image/png" href="{LOGO_URI}"><link rel="apple-touch-icon" href="{LOGO_URI}">
 <script>(function(){{try{{if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark');}}catch(e){{}}}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;450;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>{CSS}</style></head><body>
 <aside class="sidebar">
   <div class="brand">
-    <svg class="brand-mark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L4 9 L12 7 L20 9 Z M4 11 L12 9 L20 11 L12 22 Z"/></svg>
+    {f'<img class="brand-mark" src="{LOGO_URI}" alt="OltaFlock" width="24" height="24">' if LOGO_URI else '<svg class="brand-mark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L4 9 L12 7 L20 9 Z M4 11 L12 9 L20 11 L12 22 Z"/></svg>'}
     <div><div class="brand-name">Oltaflock</div><div class="brand-sub">lead-gen</div></div>
   </div>
   {nav}
@@ -779,10 +798,13 @@ def leads_page():
       <div id="bulkbar" class="block" style="margin-bottom:12px;display:none">
         <div style="padding:12px 18px;display:flex;align-items:center;justify-content:space-between">
           <div><span id="selcount" class="num-mono" style="font-weight:600">0</span> selected</div>
-          <form method="post" action="/leads/enroll" id="enrollForm" onsubmit="return collect()">
-            <input type="hidden" name="lead_ids" id="enrollIds">
-            <button class="btn primary sm" type="submit"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg> Add to sequence</button>
-          </form>
+          <div style="display:flex;gap:8px">
+            <button class="btn sm" type="button" onclick="composeSel()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4v16h16v-7M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg> Compose</button>
+            <form method="post" action="/leads/enroll" id="enrollForm" onsubmit="return collect()">
+              <input type="hidden" name="lead_ids" id="enrollIds">
+              <button class="btn primary sm" type="submit"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg> Add to sequence</button>
+            </form>
+          </div>
         </div>
       </div>
       <div class="block">
@@ -812,6 +834,11 @@ def leads_page():
         if(!ids.length){{alert('Select at least one lead');return false;}}
         document.getElementById('enrollIds').value=ids.join(',');return true;
       }}
+      function composeSel(){{
+        const ids=[...document.querySelectorAll('.lcb:checked')].map(c=>c.value);
+        if(!ids.length){{alert('Select at least one lead');return;}}
+        window.location='/compose?lead_ids='+ids.join(',');
+      }}
     </script>"""
     return shell("leads", "workspace / leads", "Leads", f"{total} leads · filter and enroll into sequences", body)
 
@@ -830,6 +857,186 @@ def enroll_leads():
     if rows:
         sb.insert("sequences", rows, on_conflict="lead_id")
     return redirect("/sequences")
+
+
+# ───────── Compose: Gmail-style one-off sends ─────────
+def _manual_seq_id(lead: dict):
+    """Sequence id used only to TRACK a manual send (opens/replies correlate by
+    sequence_id). Reuse the lead's sequence if any, else park a new one as
+    status='manual' — the tick only picks status='active', so it never enters
+    the automated 7-step cadence. Returns id or None."""
+    if not lead.get("campaign_id"):
+        return None
+    rows = sb.select("sequences", {"select": "id", "lead_id": f"eq.{lead['id']}"}, limit=1)
+    if rows:
+        return rows[0]["id"]
+    ins = sb.insert("sequences", {
+        "lead_id": lead["id"], "campaign_id": lead["campaign_id"],
+        "status": "manual", "current_step": 0, "next_send_at": None,
+    }, on_conflict="lead_id")
+    return ins[0]["id"] if ins else None
+
+
+def _merge(text: str, lead: dict) -> str:
+    """Fill {business} / {city} / {country} tokens per recipient."""
+    return (text.replace("{business}", lead.get("business") or "")
+                .replace("{city}", lead.get("city") or "")
+                .replace("{country}", lead.get("country") or ""))
+
+
+@app.route("/compose", methods=["GET"])
+def compose_page():
+    import html as _html
+    pre_ids = {x.strip() for x in (request.args.get("lead_ids") or "").split(",") if x.strip().isdigit()}
+    leads = sb.select("leads", {"select": "id,business,email,city,country",
+                                "email": "not.is.null", "order": "created_at.desc"}, limit=1000)
+    rows_html = ""
+    for l in leads:
+        checked = "checked" if str(l["id"]) in pre_ids else ""
+        loc = ", ".join([x for x in [l.get("city"), l.get("country")] if x])
+        hay = _html.escape(((l.get("business") or "") + " " + (l.get("email") or "") + " " + loc).lower())
+        rows_html += (
+          f'<label class="rcpt" data-s="{hay}">'
+          f'<input type="checkbox" class="rcb" value="{l["id"]}" {checked} onchange="syncR()">'
+          f'<span class="rb">{_html.escape(l.get("business") or "")}</span>'
+          f'<span class="re">{_html.escape(l.get("email") or "")}</span>'
+          f'<span class="rl">{_html.escape(loc)}</span></label>')
+
+    sent, failed = request.args.get("sent"), request.args.get("failed")
+    flash = ""
+    if sent is not None:
+        msg = f'Sent {sent}'
+        if failed and failed != "0":
+            msg += f' · {failed} failed'
+        flash = f'<div class="note-bar" style="border-color:var(--good);color:var(--good)">{_html.escape(msg)}</div>'
+    elif request.args.get("err") == "missing":
+        flash = '<div class="note-bar" style="border-color:var(--danger,#c33);color:var(--danger,#c33)">Pick a recipient and fill subject + body.</div>'
+
+    body = f"""
+    {flash}
+    <form method="post" action="/compose/send" id="composeForm" onsubmit="return collectR()">
+    <input type="hidden" name="lead_ids" id="rcptIds">
+    <div style="display:flex;gap:20px;align-items:flex-start">
+      <div style="width:340px;flex-shrink:0">
+        <div class="block" style="margin-bottom:0">
+          <div class="block-head"><div><div class="block-title" style="font-size:15px">Recipients</div><div class="block-sub"><span id="rcount">0</span> selected</div></div></div>
+          <div class="block-body" style="padding:14px">
+            <input id="rsearch" placeholder="Filter by name, email, city" oninput="filterR()" style="width:100%;margin-bottom:8px">
+            <div style="display:flex;gap:10px;margin-bottom:8px"><a onclick="selR(true)" style="font-size:12px;color:var(--accent);cursor:pointer">select all (visible)</a><a onclick="selR(false)" style="font-size:12px;color:var(--ink-mute);cursor:pointer">clear</a></div>
+            <div id="rlist" style="max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:8px">{rows_html or '<div class="empty" style="padding:18px">No leads with an email yet.</div>'}</div>
+            <div class="field" style="margin-top:12px"><label>Extra emails <span style="text-transform:none;color:var(--ink-faint)">(comma-separated, optional)</span></label><input name="extra_emails" placeholder="someone@acme.com"></div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div class="block">
+          <div class="block-head"><div><div class="block-title" style="font-size:15px">Message</div><div class="block-sub">Tokens: <code>{{{{business}}}}</code> <code>{{{{city}}}}</code> are filled per recipient.</div></div>
+            <div class="block-actions"><button type="button" class="btn sm" onclick="aiDraft()" id="aiBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/></svg> AI draft</button></div>
+          </div>
+          <div class="block-body">
+            <div class="field"><label>Subject</label><input name="subject" id="subject" required placeholder="Subject line"></div>
+            <div class="field"><label>Body</label><textarea name="body" id="cbody" rows="14" required placeholder="Write your email. {{business}} and {{city}} are replaced per recipient."></textarea></div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-soft);margin:4px 0 12px"><input type="checkbox" name="signature" checked style="width:15px;height:15px"> Append signature ({_html.escape(seq.SENDER_NAME)}{' + booking link' if seq.BOOKING_LINK else ''})</label>
+            <div style="display:flex;gap:10px"><button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg> Send individually (<span id="rcount2">0</span>)</button></div>
+            <div class="block-sub" style="margin-top:10px">Each recipient gets a separate email. These are one-off sends and do not enroll the lead in the automated sequence.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </form>
+    <style>
+      .rcpt{{display:grid;grid-template-columns:18px 1fr;column-gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}}
+      .rcpt:last-child{{border-bottom:none}} .rcpt:hover{{background:var(--bg-soft,rgba(0,0,0,.02))}}
+      .rcpt .rb{{font-weight:600;color:var(--ink)}} .rcpt .re,.rcpt .rl{{grid-column:2;color:var(--ink-mute);font-size:12px}}
+      #composeForm code{{font-family:var(--font-mono);font-size:11px;background:var(--bg-soft,rgba(0,0,0,.04));padding:1px 5px;border-radius:4px}}
+    </style>
+    <script>
+      function syncR(){{
+        const n=document.querySelectorAll('.rcb:checked').length;
+        document.getElementById('rcount').textContent=n;
+        document.getElementById('rcount2').textContent=n;
+      }}
+      function filterR(){{
+        const q=document.getElementById('rsearch').value.toLowerCase();
+        document.querySelectorAll('.rcpt').forEach(el=>{{el.style.display=el.dataset.s.includes(q)?'':'none';}});
+      }}
+      function selR(on){{document.querySelectorAll('.rcpt').forEach(el=>{{if(el.style.display!=='none')el.querySelector('.rcb').checked=on;}});syncR();}}
+      function collectR(){{
+        const ids=[...document.querySelectorAll('.rcb:checked')].map(c=>c.value);
+        const extra=(document.querySelector('[name=extra_emails]').value||'').trim();
+        if(!ids.length && !extra){{alert('Pick at least one recipient');return false;}}
+        document.getElementById('rcptIds').value=ids.join(',');return true;
+      }}
+      async function aiDraft(){{
+        const first=document.querySelector('.rcb:checked');
+        if(!first){{alert('Select a recipient to draft for');return;}}
+        const btn=document.getElementById('aiBtn');btn.disabled=true;const t=btn.textContent;btn.textContent='Drafting...';
+        try{{
+          const r=await fetch('/compose/draft',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{lead_id:first.value}})}});
+          const d=await r.json();
+          if(d.error){{alert(d.error);}}else{{document.getElementById('subject').value=d.subject||'';document.getElementById('cbody').value=d.body||'';}}
+        }}catch(e){{alert('Draft failed');}}finally{{btn.disabled=false;btn.textContent=t;}}
+      }}
+      syncR();
+    </script>"""
+    return shell("compose", "workspace / compose", "Compose", "Write and send one-off emails", body)
+
+
+@app.route("/compose/send", methods=["POST"])
+def compose_send():
+    import re as _re
+    ids = [int(x) for x in (request.form.get("lead_ids") or "").split(",") if x.strip().isdigit()]
+    extra = [e.strip().lower() for e in _re.split(r"[,\s;]+", request.form.get("extra_emails") or "") if "@" in e]
+    subject = (request.form.get("subject") or "").strip()
+    body = (request.form.get("body") or "").strip()
+    sign = request.form.get("signature") == "on"
+    if not subject or not body or (not ids and not extra):
+        return redirect("/compose?err=missing")
+
+    sent = failed = 0
+    if ids:
+        in_list = ",".join(str(i) for i in ids)
+        leads = sb.select("leads", {"select": "*", "id": f"in.({in_list})"}, limit=5000)
+        for l in leads:
+            to = l.get("email")
+            if not to:
+                failed += 1
+                continue
+            sid = _manual_seq_id(l)
+            res = seq.send_manual(to, _merge(subject, l), _merge(body, l), sid or 0, append_signature=sign)
+            if "error" in res:
+                failed += 1
+                continue
+            sent += 1
+            if sid:
+                sb.insert("sequence_events", {
+                    "sequence_id": sid, "step": 0, "event_type": "sent",
+                    "resend_id": res.get("resend_id"),
+                    "meta": {"subject": subject, "kind": "manual"},
+                })
+    for e in extra:
+        res = seq.send_manual(e, _merge(subject, {}), _merge(body, {}), 0, append_signature=sign)
+        failed += 1 if "error" in res else 0
+        sent += 0 if "error" in res else 1
+    return redirect(f"/compose?sent={sent}&failed={failed}")
+
+
+@app.route("/compose/draft", methods=["POST"])
+def compose_draft():
+    data = request.get_json(silent=True) or {}
+    rows = sb.select("leads", {"select": "*", "id": f"eq.{data.get('lead_id')}"}, limit=1) if data.get("lead_id") else []
+    if not rows:
+        return jsonify({"error": "pick a recipient to draft for"}), 400
+    lead = rows[0]
+    offer = None
+    if lead.get("campaign_id"):
+        c = sb.select("campaigns", {"select": "offer_brief", "id": f"eq.{lead['campaign_id']}"}, limit=1)
+        offer = c[0].get("offer_brief") if c else None
+    try:
+        d = seq.draft_one(lead, {"id": 0, "opens": 0, "clicks": 0, "current_step": 0}, 1, offer)
+        return jsonify({"subject": d.get("subject", ""), "body": d.get("body", "")})
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
 
 
 def _slug(*parts):
