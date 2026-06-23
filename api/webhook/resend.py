@@ -18,8 +18,10 @@ from lib import supabase as sb
 RESEND_WEBHOOK_SECRET = os.environ.get("RESEND_WEBHOOK_SECRET", "")
 
 # Resend event → internal event_type
+# NOTE: "email.sent" is intentionally NOT mapped. The sequencer already logs the
+# 'sent' event at send time (same resend_id), so handling it here double-logs and
+# inflates the "Sent" KPI 2x. Sequencer owns 'sent'; webhook owns everything after.
 EVENT_MAP = {
-    "email.sent":             "sent",
     "email.delivered":        "delivered",
     "email.delivery_delayed": "delayed",
     "email.opened":           "opened",
