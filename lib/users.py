@@ -8,12 +8,16 @@ Passwords come from the LEADGEN_USERS env var (JSON: {username: password}).
 The login cookie is HMAC-signed with LEADGEN_SECRET (falls back to DASHBOARD_KEY)
 so it cannot be forged client-side.
 """
+import base64
 import hashlib
 import hmac
 import json
 import os
 
+from lib import supabase as sb
+
 DOMAIN = os.environ.get("LEADGEN_MAIL_DOMAIN", "oltaflock.ai")
+_PBKDF2_ITERS = 120_000
 _TAGLINE = "Oltaflock | AI operations for growing businesses"
 
 
@@ -52,11 +56,58 @@ def _passwords() -> dict:
     return {}
 
 
-def verify_login(username: str, password: str) -> bool:
-    pw = _passwords().get((username or "").strip().lower())
-    if not pw:
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac("sha256", (password or "").encode(), salt, _PBKDF2_ITERS)
+    return f"pbkdf2_sha256${_PBKDF2_ITERS}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        _algo, iters, salt_b64, hash_b64 = stored.split("$")
+        dk = hashlib.pbkdf2_hmac("sha256", (password or "").encode(),
+                                 base64.b64decode(salt_b64), int(iters))
+        return hmac.compare_digest(base64.b64encode(dk).decode(), hash_b64)
+    except Exception:
         return False
-    return hmac.compare_digest(str(pw), password or "")
+
+
+def _db_hash(username: str) -> str | None:
+    """Custom password hash from the app_users table, or None if unset/missing
+    (table not created yet, network error, etc. — caller falls back to env)."""
+    try:
+        rows = sb.select("app_users", {"select": "password_hash", "username": f"eq.{username}"}, limit=1)
+        return rows[0]["password_hash"] if rows else None
+    except Exception:
+        return None
+
+
+def verify_login(username: str, password: str) -> bool:
+    username = (username or "").strip().lower()
+    if username not in USERS:
+        return False
+    stored = _db_hash(username)
+    if stored:
+        return verify_password(password or "", stored)
+    # No custom password yet — fall back to the env-provided default.
+    pw = _passwords().get(username)
+    return bool(pw) and hmac.compare_digest(str(pw), password or "")
+
+
+def set_password(username: str, new_password: str) -> tuple[bool, str]:
+    """Persist a user's new password hash. Returns (ok, error_message)."""
+    username = (username or "").strip().lower()
+    if username not in USERS:
+        return False, "Unknown user."
+    if len(new_password or "") < 8:
+        return False, "Password must be at least 8 characters."
+    try:
+        sb.insert("app_users", {"username": username, "password_hash": hash_password(new_password)},
+                  on_conflict="username")
+        return True, ""
+    except Exception:
+        return False, ("Password store is not set up yet. Apply the app_users "
+                       "table (supabase/migrations/003_app_users.sql), then retry.")
 
 
 def _secret() -> bytes:
