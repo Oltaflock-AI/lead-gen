@@ -32,11 +32,14 @@ USERS: dict[str, dict] = {
     "amaan":  {"name": "Amaan Barmare", "email": f"amaan@{DOMAIN}",  "signatures": _sigs("Amaan", "Amaan Barmare")},
 }
 
+# Shared 'From' addresses every user can pick, in addition to their own.
+SHARED_FROM: list[str] = [f"admin@{DOMAIN}"]
+
 # 'From' addresses the composer offers (all @oltaflock.ai — domain is verified
 # in Resend, so any local-part sends). Override with LEADGEN_FROM_OPTIONS (CSV).
 FROM_OPTIONS: list[str] = [
     e.strip() for e in (os.environ.get("LEADGEN_FROM_OPTIONS") or "").split(",") if e.strip()
-] or [u["email"] for u in USERS.values()]
+] or [u["email"] for u in USERS.values()] + SHARED_FROM
 
 
 def _passwords() -> dict:
