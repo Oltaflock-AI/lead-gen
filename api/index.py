@@ -13,12 +13,13 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, redirect, url_for, jsonify
+from flask import Flask, request, redirect, url_for, jsonify, g
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from lib import supabase as sb
 from lib import niches
 from lib import sequence as seq
+from lib import users
 
 app = Flask(__name__)
 ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
@@ -48,17 +49,67 @@ STEP_META = {  # step -> (day label, name)
 WINDOWS = {"today": None, "7d": 168, "30d": 720, "all": 24 * 365 * 5}
 
 
+_PUBLIC_PATHS = {"/healthz", "/login", "/logout"}
+
+
 @app.before_request
 def _gate():
-    if not ADMIN_KEY or request.path == "/healthz":
+    if request.path in _PUBLIC_PATHS or request.path.startswith("/static"):
         return None
-    if request.cookies.get("dk") == ADMIN_KEY:
+    uid = users.verify(request.cookies.get("uid"))
+    if uid:
+        g.user = users.get(uid)
         return None
-    if request.args.get("dk") == ADMIN_KEY:
-        resp = redirect(request.full_path.rstrip("?"))
-        resp.set_cookie("dk", ADMIN_KEY, max_age=86400 * 30, httponly=True, samesite="Lax")
-        return resp
-    return ("Set ?dk=<DASHBOARD_KEY> in URL", 401)
+    return redirect(url_for("login_page", next=request.full_path.rstrip("?")))
+
+
+def _login_html(err: str = "", nxt: str = "/") -> str:
+    import html as _html
+    e = f'<div class="lerr">{_html.escape(err)}</div>' if err else ""
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Lead-gen</title>
+<style>
+  :root{{--accent:#b9603a;--ink:#2a2724;--ink-mute:#8a8178;--line:#e7e1d8;--card:#fff;--bg:#f6f2ec}}
+  *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--ink);display:flex;min-height:100vh;align-items:center;justify-content:center}}
+  .card{{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:34px 30px;width:340px;box-shadow:0 8px 30px rgba(0,0,0,.06)}}
+  h1{{font-family:Georgia,serif;font-size:22px;font-weight:500;margin:0 0 4px}} .sub{{color:var(--ink-mute);font-size:13px;margin-bottom:22px}}
+  label{{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-mute);margin:14px 0 5px}}
+  input{{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:#fdfbf8}}
+  button{{width:100%;margin-top:20px;padding:11px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}}
+  .lerr{{background:#fdecea;color:#c0392b;font-size:13px;padding:8px 11px;border-radius:8px;margin-bottom:14px}}
+</style></head><body>
+  <form class="card" method="post" action="/login">
+    <input type="hidden" name="next" value="{_html.escape(nxt)}">
+    <h1>Lead-gen</h1><div class="sub">Sign in to continue</div>
+    {e}
+    <label>Username</label><input name="username" autofocus autocapitalize="off" autocomplete="username">
+    <label>Password</label><input name="password" type="password" autocomplete="current-password">
+    <button type="submit">Sign in</button>
+  </form>
+</body></html>"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    nxt = request.values.get("next") or "/"
+    if not nxt.startswith("/"):
+        nxt = "/"
+    if request.method == "POST":
+        u = (request.form.get("username") or "").strip().lower()
+        if users.verify_login(u, request.form.get("password") or ""):
+            resp = redirect(nxt)
+            resp.set_cookie("uid", users.sign(u), max_age=86400 * 30,
+                            httponly=True, samesite="Lax", secure=True)
+            return resp
+        return _login_html("Wrong username or password", nxt)
+    return _login_html("", nxt)
+
+
+@app.route("/logout")
+def logout():
+    resp = redirect(url_for("login_page"))
+    resp.delete_cookie("uid")
+    return resp
 
 
 # ════════════════ Styles (from prototype + dark override) ════════════════
@@ -280,6 +331,15 @@ def _spark_14d():
 
 
 # ════════════════ Shell ════════════════
+def _user_nav() -> str:
+    u = getattr(g, "user", None)
+    if not u:
+        return ""
+    name = u.get("name", u.get("id", ""))
+    return (f'<div class="nav-item" style="color:var(--ink-mute);cursor:default">{name}</div>'
+            f'<a class="nav-item" href="/logout">Sign out</a>')
+
+
 def shell(active, crumb, h1, sub, body, badges=None):
     badges = badges or {}
     out_b = f' <span class="badge">{badges["outreach"]}</span>' if badges.get("outreach") else ""
@@ -296,7 +356,8 @@ def shell(active, crumb, h1, sub, body, badges=None):
       <a class="nav-item {'active' if active=='sequences' else ''}" href="/sequences">Sequences{seq_b}</a>
       <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
     <div class="nav-section"><div class="nav-label">System</div>
-      <a class="nav-item {'active' if active=='settings' else ''}" href="/settings">Settings</a></div>"""
+      <a class="nav-item {'active' if active=='settings' else ''}" href="/settings">Settings</a>
+      {_user_nav()}</div>"""
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{h1} · Lead-gen</title>
@@ -912,6 +973,15 @@ def compose_page():
     elif request.args.get("err") == "missing":
         flash = '<div class="note-bar" style="border-color:var(--danger,#c33);color:var(--danger,#c33)">Pick a recipient and fill subject + body.</div>'
 
+    me = getattr(g, "user", {}) or {}
+    my_email = me.get("email")
+    from_opts = "".join(
+        f'<option value="{_html.escape(a)}" {"selected" if a == my_email else ""}>{_html.escape(a)}</option>'
+        for a in users.FROM_OPTIONS)
+    sig_opts = "".join(
+        f'<option value="{i}">{_html.escape(s["label"])}</option>'
+        for i, s in enumerate(me.get("signatures", [])))
+
     body = f"""
     {flash}
     <form method="post" action="/compose/send" id="composeForm" onsubmit="return collectR()">
@@ -936,7 +1006,11 @@ def compose_page():
           <div class="block-body">
             <div class="field"><label>Subject</label><input name="subject" id="subject" required placeholder="Subject line"></div>
             <div class="field"><label>Body</label><textarea name="body" id="cbody" rows="14" required placeholder="Write your email. {{business}} and {{city}} are replaced per recipient."></textarea></div>
-            <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-soft);margin:4px 0 12px"><input type="checkbox" name="signature" checked style="width:15px;height:15px"> Append signature ({_html.escape(seq.SENDER_NAME)}{' + booking link' if seq.BOOKING_LINK else ''})</label>
+            <div class="row-2" style="grid-template-columns:1fr 1fr;gap:14px">
+              <div class="field"><label>From</label><select name="from_email">{from_opts}</select></div>
+              <div class="field"><label>Signature</label><select name="signature_idx">{sig_opts}</select></div>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-soft);margin:4px 0 12px"><input type="checkbox" name="signature" checked style="width:15px;height:15px"> Append signature for {_html.escape(me.get('name',''))}</label>
             <div style="display:flex;gap:10px"><button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg> Send individually (<span id="rcount2">0</span>)</button></div>
             <div class="block-sub" style="margin-top:10px">Each recipient gets a separate email. These are one-off sends and do not enroll the lead in the automated sequence.</div>
           </div>
@@ -993,6 +1067,23 @@ def compose_send():
     if not subject or not body or (not ids and not extra):
         return redirect("/compose?err=missing")
 
+    # Per-user identity: From address (validated against the allowed list),
+    # display name, and the chosen signature variant.
+    me = getattr(g, "user", {}) or {}
+    from_email = request.form.get("from_email")
+    if from_email not in users.FROM_OPTIONS:
+        from_email = me.get("email")
+    from_name = me.get("name")
+    sigs = me.get("signatures", [])
+    try:
+        sig_text = sigs[int(request.form.get("signature_idx") or 0)]["text"]
+    except (ValueError, IndexError, KeyError, TypeError):
+        sig_text = sigs[0]["text"] if sigs else None
+
+    def _send(to, subj, bdy, sid):
+        return seq.send_manual(to, subj, bdy, sid, append_signature=sign,
+                               signature=sig_text, from_email=from_email, from_name=from_name)
+
     sent = failed = 0
     if ids:
         in_list = ",".join(str(i) for i in ids)
@@ -1003,7 +1094,7 @@ def compose_send():
                 failed += 1
                 continue
             sid = _manual_seq_id(l)
-            res = seq.send_manual(to, _merge(subject, l), _merge(body, l), sid or 0, append_signature=sign)
+            res = _send(to, _merge(subject, l), _merge(body, l), sid or 0)
             if "error" in res:
                 failed += 1
                 continue
@@ -1012,10 +1103,10 @@ def compose_send():
                 sb.insert("sequence_events", {
                     "sequence_id": sid, "step": 0, "event_type": "sent",
                     "resend_id": res.get("resend_id"),
-                    "meta": {"subject": subject, "kind": "manual"},
+                    "meta": {"subject": subject, "kind": "manual", "by": me.get("id"), "from": from_email},
                 })
     for e in extra:
-        res = seq.send_manual(e, _merge(subject, {}), _merge(body, {}), 0, append_signature=sign)
+        res = _send(e, _merge(subject, {}), _merge(body, {}), 0)
         failed += 1 if "error" in res else 0
         sent += 0 if "error" in res else 1
     return redirect(f"/compose?sent={sent}&failed={failed}")

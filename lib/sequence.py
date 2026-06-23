@@ -355,18 +355,27 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
 
 
 def send_manual(to_email: str, subject: str, body: str, seq_id: int,
-                *, append_signature: bool = True) -> dict:
+                *, append_signature: bool = True, signature: str | None = None,
+                from_email: str | None = None, from_name: str | None = None) -> dict:
     """One-off composer send (Gmail-style). Same Resend pipe as the sequence so
     opens/clicks/replies still correlate via the sequence_id tag. `seq_id` is a
     real sequence row id used only for tracking — the tick never touches it.
-    Returns {resend_id} or {error}."""
+
+    from_email / from_name override the sender (per-user identity); `signature`
+    overrides the default sign-off block. Returns {resend_id} or {error}."""
     if not RESEND_API_KEY:
         return {"error": "RESEND_API_KEY missing"}
     if not to_email:
         return {"error": "no recipient"}
-    text = strip_dashes(body) + (_signature() if append_signature else "")
+    if append_signature:
+        sig = ("\n\n" + signature.strip()) if signature else _signature()
+    else:
+        sig = ""
+    text = strip_dashes(body) + sig
+    addr = from_email or RESEND_FROM
+    frm = f"{from_name} <{addr}>" if from_name else addr
     payload = {
-        "from": RESEND_FROM,
+        "from": frm,
         "to": [to_email],
         "subject": strip_dashes(subject),
         "text": text,
