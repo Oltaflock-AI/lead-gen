@@ -412,6 +412,7 @@ def shell(active, crumb, h1, sub, body, badges=None):
       <div class="nav-hint">Write your copy, pick leads, send.</div>
     </div>
     <div class="nav-section"><div class="nav-label">Workspace</div>
+      <a class="nav-item {'active' if active=='campaigns' else ''}" href="/campaigns">Campaigns</a>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
       <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a>
       <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
@@ -1255,10 +1256,57 @@ def _new_campaign(f) -> dict:
     return rows[0]
 
 
+@app.route("/campaigns")
+def campaigns_list():
+    camps = sb.select("campaigns", {"select": "*", "order": "created_at.desc"}, limit=500)
+    leads = sb.select("leads", {"select": "campaign_id,enrichment_status,email"}, limit=200000)
+    agg = defaultdict(lambda: {"total": 0, "ready": 0, "enriching": 0})
+    for l in leads:
+        a = agg[l["campaign_id"]]
+        a["total"] += 1
+        if l.get("enrichment_status") == "enriched" and l.get("email"):
+            a["ready"] += 1
+        elif l.get("enrichment_status") == "pending":
+            a["enriching"] += 1
+
+    rows = ""
+    for c in camps:
+        a = agg.get(c["id"], {"total": 0, "ready": 0, "enriching": 0})
+        ready = a["ready"]
+        if c["active"]:
+            badge = chip("active", "● Live")
+            action = f'<form method="post" action="/campaigns/{c["id"]}/toggle" style="display:inline"><button class="btn sm">Pause</button></form>'
+        elif ready > 0:
+            badge = chip("paused", "Paused")
+            action = f'<form method="post" action="/campaigns/{c["id"]}/start" style="display:inline"><button class="btn primary sm">Start outreach → {ready} ▸</button></form>'
+        else:
+            badge = chip("paused", "Paused")
+            action = '<span class="muted" style="font-size:12px">enriching…</span>' if a["enriching"] else '<span class="muted" style="font-size:12px">no leads</span>'
+        rows += f"""<tr>
+          <td><a href="/campaigns/{c['id']}" style="text-decoration:none;color:inherit"><div class="biz">{c['name']}</div><div class="email">{c.get('niche') or ''} · {c.get('region') or ''}</div></a></td>
+          <td>{badge}</td>
+          <td class="when">{a['total']}</td>
+          <td class="when" style="font-weight:600;color:var(--good)">{ready}</td>
+          <td class="when">{a['enriching']}</td>
+          <td style="text-align:right">{action}</td>
+        </tr>"""
+    if not rows:
+        rows = '<tr><td colspan="6" style="padding:40px;text-align:center;color:var(--ink-mute)">No campaigns yet. Click <strong>New campaign</strong> to start.</td></tr>'
+
+    body = f"""
+    <div class="help"><div>A campaign = a batch of leads + your offer. Find or upload leads, wait for them to enrich (emails found automatically), then <strong>Start outreach</strong> to begin the automated 7-step drip. Nothing sends while a campaign is paused.</div></div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px"><a class="btn primary" href="/scrape">+ New campaign</a></div>
+    <div class="block"><table class="act-table">
+      <thead><tr><th>Campaign</th><th>Status</th><th>Leads</th><th>Ready</th><th>Enriching</th><th></th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table></div>"""
+    return shell("campaigns", "workspace / campaigns", "Campaigns", "Launch and manage your outreach campaigns", body)
+
+
 @app.route("/campaigns", methods=["POST"])
 def create_campaign():
     _new_campaign(request.form)
-    return redirect(url_for("leads_page"))
+    return redirect(url_for("campaigns_list"))
 
 
 @app.route("/campaigns/create-and-scrape", methods=["POST"])
@@ -1317,15 +1365,54 @@ def campaign_detail(cid):
       <td class="when">{l['created_at'][:10]}</td></tr>""" for l in leads)
     offer = f'<div class="block"><div class="block-head"><div class="block-title">Offer brief</div></div><div class="block-body"><pre style="font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;color:var(--ink-soft)">{c.get("offer_brief")}</pre></div></div>' if c.get("offer_brief") else ""
     runrows = "".join(f'<tr><td class="when">{r["started_at"][:16].replace("T"," ")}</td><td>{chip(r["status"], r["status"])}</td><td class="when">{r["scraped_count"]}/{r.get("target_count") or "—"}</td></tr>' for r in runs)
-    body = f"""
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;margin-top:-12px">
-      <div>{chip('active' if c['active'] else 'paused', 'active' if c['active'] else 'paused')}</div>
-      <div class="block-actions">
-        <form method="post" action="/campaigns/{cid}/toggle" style="display:inline"><button class="btn sm">{'Pause' if c['active'] else 'Resume'}</button></form>
-        <form method="post" action="/campaigns/{cid}/scrape" style="display:inline"><button class="btn sm">Scrape now</button></form>
-        <form method="post" action="/campaigns/{cid}/start" style="display:inline"><button class="btn sm primary">Start outreach</button></form>
+
+    # ---- Launch panel: show send-readiness + one clear primary action ----
+    cap = int(os.environ.get("LEADGEN_DAILY_CAP", "120"))
+    sendable = len(sb.select("leads", {"select": "id", "campaign_id": f"eq.{cid}",
+        "enrichment_status": "eq.enriched", "email": "not.is.null"}, limit=100000))
+    enriching = len(sb.select("leads", {"select": "id", "campaign_id": f"eq.{cid}",
+        "enrichment_status": "eq.pending"}, limit=100000))
+    noemail = len(sb.select("leads", {"select": "id", "campaign_id": f"eq.{cid}",
+        "enrichment_status": "eq.enriched", "email": "is.null"}, limit=100000))
+
+    if c["active"]:
+        status_badge = chip("active", "● Live")
+        cta = f'<form method="post" action="/campaigns/{cid}/toggle"><button class="btn">Pause outreach</button></form>'
+        note = f"<strong>Live.</strong> Emails send automatically to enriched leads — up to {cap}/day across all live campaigns — following the 7-step drip. Pause anytime."
+    else:
+        status_badge = chip("paused", "Paused")
+        if sendable > 0:
+            cta = (f'<form method="post" action="/campaigns/{cid}/start">'
+                   f'<button class="btn primary" style="font-size:14px;padding:11px 20px">'
+                   f'Start outreach → email {sendable} lead{"s" if sendable != 1 else ""} ▸</button></form>')
+            note = (f"<strong>{sendable} lead{'s are' if sendable != 1 else ' is'} ready.</strong> "
+                    f"Clicking Start begins the drip (step 1 first, then 6 follow-ups), capped at {cap}/day. "
+                    f"Nothing sends until you click.")
+        else:
+            cta = '<button class="btn" disabled style="opacity:.5;cursor:not-allowed">No leads ready yet</button>'
+            note = ("Leads are still enriching — emails are found automatically every ~15 min. "
+                    "Check back shortly, then Start outreach.") if enriching else \
+                   ("No sendable leads. Use <strong>Scrape more</strong> or upload a CSV, "
+                    "wait for enrichment, then Start outreach.")
+
+    launch = f"""
+    <div class="block" style="margin-top:-12px;margin-bottom:20px">
+      <div class="block-body" style="display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap">
+        <div style="display:flex;gap:30px;align-items:center">
+          <div>{status_badge}</div>
+          <div><div class="kpi-num" style="font-size:26px">{sendable}</div><div class="kpi-label">ready to email</div></div>
+          <div><div class="kpi-num" style="font-size:26px">{enriching}</div><div class="kpi-label">enriching</div></div>
+          <div><div class="kpi-num" style="font-size:26px">{noemail}</div><div class="kpi-label">no email</div></div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <form method="post" action="/campaigns/{cid}/scrape" style="display:inline"><button class="btn sm">Scrape more</button></form>
+          {cta}
+        </div>
       </div>
-    </div>
+      <div class="block-body" style="padding-top:0"><div class="note-bar">{note}</div></div>
+    </div>"""
+    body = f"""
+    {launch}
     {offer}
     <div class="row-2">
       <div class="block"><div class="block-head"><div class="block-title">Leads</div><div class="block-sub">{len(leads)}</div></div>
@@ -1333,7 +1420,7 @@ def campaign_detail(cid):
       <div class="block"><div class="block-head"><div class="block-title">Scrape runs</div></div>
         <table class="act-table"><thead><tr><th>Started</th><th>Status</th><th>Scraped</th></tr></thead><tbody>{runrows or '<tr><td colspan=3 style="padding:24px;text-align:center;color:var(--ink-mute)">No runs.</td></tr>'}</tbody></table></div>
     </div>"""
-    return shell("leads", f"leads / {c['name']}", c["niche"], f"{c['name']} · {c['region']}", body)
+    return shell("campaigns", f"campaigns / {c['name']}", c["niche"], f"{c['name']} · {c['region']}", body)
 
 
 @app.route("/sequences")
