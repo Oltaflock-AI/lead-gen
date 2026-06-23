@@ -161,6 +161,13 @@ def _record(payload: dict) -> dict:
         sb.insert("sequence_events", row)
         return {"filtered": "bot-open", "sequence_id": sequence_id}
 
+    # Same for clicks: link-prefetch scanners (CloudFront, SafeLinks, Mimecast)
+    # hit every link within seconds of delivery. Don't count them as real clicks.
+    if event_type == "clicked" and _is_bot_open(sequence_id, resend_id):
+        row["event_type"] = "clicked_bot"
+        sb.insert("sequence_events", row)
+        return {"filtered": "bot-click", "sequence_id": sequence_id}
+
     sb.insert("sequence_events", row)
 
     # Increment counters + react.

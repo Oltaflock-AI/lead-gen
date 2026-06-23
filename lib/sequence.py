@@ -25,7 +25,8 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "outreach@oltaflock.ai")
 SENDER_NAME = os.environ.get("SENDER_NAME", "Khush")
-BOOKING_LINK = os.environ.get("BOOKING_LINK", "")
+BOOKING_LINK = os.environ.get("BOOKING_LINK", "https://cal.com/khush0030/oltaflock-ai-demo")
+WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://oltaflock.ai")
 
 OPEN_GATE_FROM_STEP = int(os.environ.get("LEADGEN_OPEN_GATE_FROM_STEP", "4"))
 MAX_STEP = 7
@@ -313,6 +314,8 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None) -> dict
 # ─────────── Compose + send ───────────
 def _signature() -> str:
     lines = [f"\n\n{SENDER_NAME}"]
+    if WEBSITE_URL:
+        lines.append(WEBSITE_URL)
     if BOOKING_LINK:
         lines.append(f"Book a time: {BOOKING_LINK}")
     return "\n".join(lines)
@@ -320,6 +323,9 @@ def _signature() -> str:
 
 def _html_body(body: str) -> str:
     esc = (body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    # Wrap bare URLs in anchors so Resend's click tracking can rewrite them.
+    # Without a real <a href>, clicks are never tracked.
+    esc = re.sub(r'(https?://[^\s<]+)', r'<a href="\1">\1</a>', esc)
     html = esc.replace("\n", "<br>")
     return f'<div style="font-family:Georgia,serif;font-size:15px;line-height:1.55;color:#111;">{html}</div>'
 

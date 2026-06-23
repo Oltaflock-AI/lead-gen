@@ -345,7 +345,7 @@ def _metrics(events):
         et = e["event_type"]
         if et == "sent":
             raw_sent += 1
-        if et == "opened_bot":
+        if et in ("opened_bot", "clicked_bot"):
             continue
         key = (e.get("sequence_id"), e.get("step"))
         uniq[et].add(key)
@@ -550,7 +550,7 @@ def home():
         subj = (e.get("meta") or {}).get("subject", "") if isinstance(e.get("meta"), dict) else ""
         t = e["ts"][11:16]
         et = e["event_type"]
-        if et == "opened_bot":
+        if et in ("opened_bot", "clicked_bot"):
             continue
         arows += f"""<tr><td class="when">{t}</td>
           <td><div class="biz">{lead.get('business') or ('seq #'+str(e.get('sequence_id')) if e.get('sequence_id') else '—')}</div>
@@ -601,7 +601,7 @@ def home():
     {kpis}
     <div class="block">
       <div class="inner-tabs">
-        <button class="inner-tab active" onclick="showPanel('activity',this)">Activity <span class="count">{len([e for e in ev if e['event_type']!='opened_bot'])}</span></button>
+        <button class="inner-tab active" onclick="showPanel('activity',this)">Activity <span class="count">{len([e for e in ev if e['event_type'] not in ('opened_bot','clicked_bot')])}</span></button>
         <button class="inner-tab" onclick="showPanel('pipeline',this)">Pipeline <span class="count">{len(active_seqs)}</span></button>
         <button class="inner-tab {'warn' if issues and 'All clear' not in issues else ''}" onclick="showPanel('issues',this)">Issues</button>
       </div>
@@ -1445,7 +1445,7 @@ def mark_replied(sid):
 @app.route("/events")
 def events_page():
     rows = sb.select("sequence_events", {"select": "*", "order": "ts.desc"}, limit=200)
-    tr = "".join(f'<tr><td class="when">{e["ts"][:19].replace("T"," ")}</td><td>{chip(e["event_type"], e["event_type"])}</td><td class="when">{e.get("sequence_id") or ""}</td><td class="when">{e.get("step") or ""}</td><td class="email">{(e.get("resend_id") or "")[:28]}</td></tr>' for e in rows if e["event_type"] != "opened_bot")
+    tr = "".join(f'<tr><td class="when">{e["ts"][:19].replace("T"," ")}</td><td>{chip(e["event_type"], e["event_type"])}</td><td class="when">{e.get("sequence_id") or ""}</td><td class="when">{e.get("step") or ""}</td><td class="email">{(e.get("resend_id") or "")[:28]}</td></tr>' for e in rows if e["event_type"] not in ("opened_bot","clicked_bot"))
     body = f'<div class="block"><table class="act-table"><thead><tr><th>When (UTC)</th><th>Event</th><th>Seq</th><th>Step</th><th>Resend ID</th></tr></thead><tbody>{tr or "<tr><td colspan=5 style=padding:32px;text-align:center;color:var(--ink-mute)>No events yet.</td></tr>"}</tbody></table></div>'
     return shell("events", "workspace / activity", "Activity", "Every send, open, click, bounce, reply", body)
 
