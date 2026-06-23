@@ -112,6 +112,47 @@ def logout():
     return resp
 
 
+@app.route("/account")
+def account_page():
+    import html as _html
+    me = getattr(g, "user", {}) or {}
+    note = ""
+    if request.args.get("saved"):
+        note = '<div class="note-bar" style="border-color:var(--good);color:var(--good)">Password updated.</div>'
+    elif request.args.get("err"):
+        note = f'<div class="note-bar" style="border-color:var(--danger,#c33);color:var(--danger,#c33)">{_html.escape(request.args.get("err"))}</div>'
+    body = f"""
+    <div class="block" style="max-width:520px"><div class="block-head"><div><div class="block-title">Account</div><div class="block-sub">Signed in as {_html.escape(me.get('name',''))} ({_html.escape(me.get('id',''))})</div></div></div>
+    <div class="block-body">
+      {note}
+      <form method="post" action="/account/password" style="max-width:380px">
+        <div class="field"><label>Current password</label><input name="current" type="password" autocomplete="current-password" required></div>
+        <div class="field"><label>New password <span style="text-transform:none;color:var(--ink-faint)">(min 8 chars)</span></label><input name="new" type="password" autocomplete="new-password" minlength="8" required></div>
+        <div class="field"><label>Confirm new password</label><input name="confirm" type="password" autocomplete="new-password" minlength="8" required></div>
+        <div style="margin-top:6px"><button class="btn primary" type="submit">Update password</button></div>
+      </form>
+    </div></div>"""
+    return shell("account", "workspace / account", "Account", "Manage your login", body)
+
+
+@app.route("/account/password", methods=["POST"])
+def account_password():
+    from urllib.parse import quote
+    me = getattr(g, "user", {}) or {}
+    uid = me.get("id", "")
+    current = request.form.get("current") or ""
+    new = request.form.get("new") or ""
+    confirm = request.form.get("confirm") or ""
+    if not users.verify_login(uid, current):
+        return redirect("/account?err=" + quote("Current password is incorrect."))
+    if new != confirm:
+        return redirect("/account?err=" + quote("New passwords do not match."))
+    ok, msg = users.set_password(uid, new)
+    if not ok:
+        return redirect("/account?err=" + quote(msg))
+    return redirect("/account?saved=1")
+
+
 # ════════════════ Styles (from prototype + dark override) ════════════════
 CSS = """
 :root{
@@ -148,7 +189,7 @@ a{color:inherit;text-decoration:none}
 .nav-item.active{background:var(--bg-soft);color:var(--ink);font-weight:500}
 .nav-item .badge{margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--card);padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
 .nav-item.warn .badge{color:var(--warn);border-color:var(--warn-line)}
-.main{flex:1;margin-left:220px;padding:36px 56px 80px;max-width:1200px}
+.main{flex:1;margin-left:220px;padding:36px 56px 80px;max-width:1320px}
 .crumb{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);margin-bottom:6px;letter-spacing:0.04em}
 .h1{font-family:var(--font-serif);font-size:36px;font-weight:500;letter-spacing:-0.02em;margin-bottom:6px}
 .sub{color:var(--ink-soft);margin-bottom:28px;font-size:14px}
@@ -254,6 +295,26 @@ dialog::backdrop{background:rgba(0,0,0,0.5)}
 .conn-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
 .conn-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .conn-dot.on{background:var(--good)}.conn-dot.off{background:var(--ink-faint)}
+/* ── redesign: primary nav button, guided panels, inline help, wider layout ── */
+.nav-item.primary{background:var(--accent);color:#fff;font-weight:600;padding:9px 12px;margin-bottom:2px;justify-content:flex-start;gap:9px}
+.nav-item.primary:hover{background:var(--accent);opacity:.92}
+.nav-item.primary svg{flex-shrink:0}
+.nav-item.primary.active{background:var(--accent);color:#fff}
+.nav-hint{font-size:11px;color:var(--ink-faint);padding:2px 8px 0;line-height:1.4}
+.guide{background:var(--accent-soft);border:1px solid var(--accent);border-radius:12px;padding:22px 24px;margin-bottom:28px}
+.guide-h{font-family:var(--font-serif);font-size:21px;font-weight:500;color:var(--accent);letter-spacing:-0.01em;margin-bottom:4px}
+.guide-sub{font-size:13px;color:var(--ink-soft);margin-bottom:18px}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px}
+.step{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:15px 16px}
+.step .n{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-family:var(--font-mono);font-size:11px;font-weight:600;margin-bottom:9px}
+.step b{display:block;font-size:14px;color:var(--ink);margin-bottom:4px}
+.step p{font-size:12.5px;color:var(--ink-mute);line-height:1.5}
+.step code{font-family:var(--font-mono);font-size:11px;background:var(--bg-soft);padding:1px 5px;border-radius:4px;color:var(--ink-soft)}
+.help{background:var(--info-soft);border:1px solid var(--info);border-left-width:3px;border-radius:var(--radius);padding:11px 15px;font-size:12.5px;color:var(--ink-soft);line-height:1.55;margin-bottom:18px;display:flex;gap:10px;align-items:flex-start}
+.help svg{flex-shrink:0;margin-top:1px;color:var(--info)}
+.help b{color:var(--ink)}
+@media(min-width:1500px){.main{max-width:1440px}}
+@media(max-width:980px){.steps{grid-template-columns:1fr}.kpi-grid{grid-template-columns:repeat(2,1fr)}}
 """
 
 
@@ -336,7 +397,7 @@ def _user_nav() -> str:
     if not u:
         return ""
     name = u.get("name", u.get("id", ""))
-    return (f'<div class="nav-item" style="color:var(--ink-mute);cursor:default">{name}</div>'
+    return (f'<a class="nav-item" href="/account">{name}</a>'
             f'<a class="nav-item" href="/logout">Sign out</a>')
 
 
@@ -344,17 +405,21 @@ def shell(active, crumb, h1, sub, body, badges=None):
     badges = badges or {}
     out_b = f' <span class="badge">{badges["outreach"]}</span>' if badges.get("outreach") else ""
     seq_b = f' <span class="badge">{badges.get("sequences", 0)}</span>'
+    send_icon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>'
     nav = f"""
-    <div class="nav-section"><div class="nav-label">Pulse</div>
-      <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a></div>
-    <div class="nav-section"><div class="nav-label">Pipeline</div>
-      <a class="nav-item {'active' if active=='scrape' else ''}" href="/scrape">Scrape</a>
-      <a class="nav-item {'active' if active=='upload' else ''}" href="/upload">Upload CSV</a>
-      <a class="nav-item {'active' if active=='offers' else ''}" href="/offers">Offers</a>
+    <div class="nav-section">
+      <a class="nav-item primary {'active' if active=='compose' else ''}" href="/compose">{send_icon} Send email</a>
+      <div class="nav-hint">Write your copy, pick leads, send.</div>
+    </div>
+    <div class="nav-section"><div class="nav-label">Workspace</div>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
-      <a class="nav-item {'active' if active=='compose' else ''}" href="/compose">Compose</a>
-      <a class="nav-item {'active' if active=='sequences' else ''}" href="/sequences">Sequences{seq_b}</a>
+      <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a>
       <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
+    <div class="nav-section"><div class="nav-label">Automation · optional</div>
+      <a class="nav-item {'active' if active=='sequences' else ''}" href="/sequences">Auto follow-up{seq_b}</a>
+      <a class="nav-item {'active' if active=='scrape' else ''}" href="/scrape">Find new leads</a>
+      <a class="nav-item {'active' if active=='upload' else ''}" href="/upload">Upload CSV</a>
+      <a class="nav-item {'active' if active=='offers' else ''}" href="/offers">Offers</a></div>
     <div class="nav-section"><div class="nav-label">System</div>
       <a class="nav-item {'active' if active=='settings' else ''}" href="/settings">Settings</a>
       {_user_nav()}</div>"""
@@ -518,7 +583,19 @@ def home():
     if not issues:
         issues = '<div class="note-bar" style="background:var(--accent-soft);border-color:var(--accent);color:var(--accent)">✓ All clear — no bounce spikes, missing emails, or send errors detected.</div>'
 
+    guide = f"""
+    <div class="guide">
+      <div class="guide-h">Send your copy to your leads in 3 steps</div>
+      <div class="guide-sub">You have <strong>{total_leads}</strong> lead{'s' if total_leads!=1 else ''} loaded. To email them with your own copy, use <strong>Send email</strong> — it goes out as individual one-off emails, not the automated drip.</div>
+      <div class="steps">
+        <div class="step"><span class="n">1</span><b>Pick who gets it</b><p>On <strong>Send email</strong>, tick the businesses (or hit “select all”). Already on <strong>Leads</strong>? Select them there and click Compose.</p></div>
+        <div class="step"><span class="n">2</span><b>Write or AI-draft</b><p>Paste your copy. Type <code>{{business}}</code> or <code>{{city}}</code> and each email is personalized. Or click <strong>AI draft</strong> for a first pass.</p></div>
+        <div class="step"><span class="n">3</span><b>Send</b><p>Pick your From address + signature, hit send. Each lead gets their own email. Track opens/replies on the Dashboard.</p></div>
+      </div>
+      <a class="btn primary" href="/compose">Send an email now →</a>
+    </div>"""
     body = f"""
+    {guide}
     <div class="window-bar"><span>Window</span><div class="window-pills">{pills}</div></div>
     {kpis}
     <div class="block">
@@ -880,7 +957,9 @@ def leads_page():
       {pager}
     </div>"""
 
+    info_icon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>'
     body = f"""
+    <div class="help">{info_icon}<div>Tick the leads you want, then a bar appears at the top: <b>Compose</b> sends your own copy as one-off emails now, or <b>Add to sequence</b> enrolls them in the automated 7-step follow-up. Only leads with an email can be contacted.</div></div>
     <div style="display:flex;gap:20px;align-items:flex-start">{rail}{table_html}</div>
     <style>.lead-row td{{padding-top:.55rem;padding-bottom:.55rem}} input[type=checkbox]{{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}}</style>
     <script>
@@ -901,7 +980,7 @@ def leads_page():
         window.location='/compose?lead_ids='+ids.join(',');
       }}
     </script>"""
-    return shell("leads", "workspace / leads", "Leads", f"{total} leads · filter and enroll into sequences", body)
+    return shell("leads", "workspace / leads", "Leads", f"{total} leads · select some, then Compose or add to follow-up", body)
 
 
 @app.route("/leads/enroll", methods=["POST"])
@@ -982,8 +1061,10 @@ def compose_page():
         f'<option value="{i}">{_html.escape(s["label"])}</option>'
         for i, s in enumerate(me.get("signatures", [])))
 
+    info_icon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>'
     body = f"""
     {flash}
+    <div class="help">{info_icon}<div><b>This sends individual one-off emails</b> to the leads you pick — exactly your copy, personalized per recipient. It does <b>not</b> enroll anyone in the automated 7-step follow-up (that lives under “Auto follow-up”). Tip: write <code>{{business}}</code> or <code>{{city}}</code> anywhere and it’s filled in for each lead.</div></div>
     <form method="post" action="/compose/send" id="composeForm" onsubmit="return collectR()">
     <input type="hidden" name="lead_ids" id="rcptIds">
     <div style="display:flex;gap:20px;align-items:flex-start">
@@ -1000,12 +1081,12 @@ def compose_page():
       </div>
       <div style="flex:1;min-width:0">
         <div class="block">
-          <div class="block-head"><div><div class="block-title" style="font-size:15px">Message</div><div class="block-sub">Tokens: <code>{{{{business}}}}</code> <code>{{{{city}}}}</code> are filled per recipient.</div></div>
+          <div class="block-head"><div><div class="block-title" style="font-size:15px">Message</div><div class="block-sub">Tokens: <code>{{business}}</code> <code>{{city}}</code> are filled per recipient.</div></div>
             <div class="block-actions"><button type="button" class="btn sm" onclick="aiDraft()" id="aiBtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/></svg> AI draft</button></div>
           </div>
           <div class="block-body">
             <div class="field"><label>Subject</label><input name="subject" id="subject" required placeholder="Subject line"></div>
-            <div class="field"><label>Body</label><textarea name="body" id="cbody" rows="14" required placeholder="Write your email. {{business}} and {{city}} are replaced per recipient."></textarea></div>
+            <div class="field"><label>Body</label><textarea name="body" id="cbody" rows="18" required placeholder="Write your email here.&#10;&#10;Hi {{business}} team,&#10;&#10;...&#10;&#10;Tokens like {{business}} and {{city}} are replaced per recipient."></textarea></div>
             <div class="row-2" style="grid-template-columns:1fr 1fr;gap:14px">
               <div class="field"><label>From</label><select name="from_email">{from_opts}</select></div>
               <div class="field"><label>Signature</label><select name="signature_idx">{sig_opts}</select></div>
@@ -1053,7 +1134,7 @@ def compose_page():
       }}
       syncR();
     </script>"""
-    return shell("compose", "workspace / compose", "Compose", "Write and send one-off emails", body)
+    return shell("compose", "workspace / compose", "Send email", "Write your copy and send it to the leads you pick", body)
 
 
 @app.route("/compose/send", methods=["POST"])
@@ -1294,8 +1375,10 @@ def sequences_page():
     table = f"""<div class="block"><div class="filter-row">{tabs}</div>
       <table class="act-table"><thead><tr><th>Lead</th><th>City</th><th>Step</th><th>Status</th><th>Next send</th><th>Reason</th></tr></thead>
       <tbody>{trows or '<tr><td colspan=6 style="padding:32px;text-align:center;color:var(--ink-mute)">No sequences. Start outreach on a campaign.</td></tr>'}</tbody></table></div>"""
-    return shell("sequences", "workspace / sequences", "Sequences", "The 7-step nurture · 28-day cadence",
-                 stat + table, badges={"sequences": by.get("active", 0)})
+    info_icon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>'
+    help = f'<div class="help">{info_icon}<div>This is the <b>automated</b> follow-up: enrolled leads get a 7-step nurture over 28 days, written and sent for you. To send your own copy instead, use <b>Send email</b>. Enroll leads from the <b>Leads</b> page.</div></div>'
+    return shell("sequences", "workspace / sequences", "Auto follow-up", "Hands-off 7-step nurture · 28-day cadence",
+                 help + stat + table, badges={"sequences": by.get("active", 0)})
 
 
 @app.route("/sequences/<int:sid>")
