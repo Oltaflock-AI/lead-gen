@@ -697,26 +697,39 @@ def scrape_page():
 
 # ---- CSV upload: bring-your-own leads (never scraped — see daily_scrape) ----
 _CSV_FIELD_ALIASES = {
-    "business": ("business", "company", "name", "business_name", "company_name", "organisation", "organization"),
-    "website":  ("website", "url", "site", "web", "domain", "website_url"),
-    "email":    ("email", "email_address", "e-mail", "contact_email"),
-    "phone":    ("phone", "telephone", "tel", "mobile", "phone_number"),
-    "address":  ("address", "full_address", "street", "location"),
-    "city":     ("city", "town", "suburb"),
-    "country":  ("country", "nation"),
+    "business": ("business", "company", "name", "business_name", "company_name",
+                 "company_name_for_emails", "organisation", "organization",
+                 "organization_name", "account", "account_name", "employer"),
+    "website":  ("website", "url", "site", "web", "domain", "website_url",
+                 "company_website", "company_url"),
+    "email":    ("email", "email_address", "e_mail", "contact_email", "work_email",
+                 "primary_email"),
+    "phone":    ("phone", "telephone", "tel", "mobile", "phone_number",
+                 "company_phone", "work_direct_phone", "corporate_phone"),
+    "address":  ("address", "full_address", "street", "location", "company_address"),
+    "city":     ("city", "town", "suburb", "company_city"),
+    "country":  ("country", "nation", "company_country"),
 }
+
+
+def _norm_key(k: str) -> str:
+    """Normalize a CSV header to snake_case: lower, strip, any run of
+    non-alphanumerics (spaces, hyphens, slashes) -> single underscore. So
+    'Company Name', 'company-name', 'E-mail' all collapse to alias keys."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", (k or "").strip().lower()).strip("_")
 
 
 def _csv_pick(row_lc: dict, key: str) -> str:
     for alias in _CSV_FIELD_ALIASES[key]:
-        v = row_lc.get(alias)
+        v = row_lc.get(_norm_key(alias))
         if v and v.strip():
             return v.strip()
     return ""
 
 
 def _csv_row_to_lead(raw: dict, campaign_id: int) -> dict | None:
-    row_lc = {(k or "").strip().lower(): (v or "") for k, v in raw.items()}
+    row_lc = {_norm_key(k): (v or "") for k, v in raw.items()}
     business = _csv_pick(row_lc, "business")
     if not business:
         return None
@@ -1063,13 +1076,14 @@ def _parse_csv_leads(file_storage, campaign_id):
     raw = file_storage.read().decode("utf-8-sig", errors="replace")
     file_storage.stream.seek(0)
     reader = _csv.DictReader(_io.StringIO(raw))
+    headers = list(reader.fieldnames or [])
     rows, seen = [], set()
     for r in reader:
         lead = _csv_row_to_lead(r, campaign_id)
         if lead and lead["business"].lower() not in seen:
             seen.add(lead["business"].lower())
             rows.append(lead)
-    return rows, len(seen)
+    return rows, len(seen), headers
 
 
 def _safe_sequence_config(raw):
@@ -1103,9 +1117,11 @@ def build_preview():
     if not config:
         return jsonify({"error": "Pick a sequence (3 to 7 emails)."}), 400
 
-    rows, total = _parse_csv_leads(f, 0)
+    rows, total, headers = _parse_csv_leads(f, 0)
     if not rows:
-        return jsonify({"error": "No valid rows. CSV needs a 'business' column."}), 400
+        cols = ", ".join(headers[:12]) or "(none detected)"
+        return jsonify({"error": f"No company/business name found. Columns in your CSV: {cols}. "
+                                 f"Rename the company column to 'business' or 'company'."}), 400
 
     sample = dict(rows[0])
     try:
@@ -1169,7 +1185,7 @@ def build_create():
         camp = sb.insert("campaigns", base, on_conflict="name")[0]
         cfg_note = "saved (cadence pending DB migration — using default 7-step until applied)"
 
-    rows, _ = _parse_csv_leads(f, camp["id"])
+    rows, _, _ = _parse_csv_leads(f, camp["id"])
     if rows:
         sb.insert("leads", rows, on_conflict="campaign_id,business")
     return jsonify({"redirect": f"/campaigns/{camp['id']}", "note": cfg_note, "leads": len(rows)})
