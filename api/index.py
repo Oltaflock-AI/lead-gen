@@ -412,6 +412,7 @@ def shell(active, crumb, h1, sub, body, badges=None):
       <div class="nav-hint">Write your copy, pick leads, send.</div>
     </div>
     <div class="nav-section"><div class="nav-label">Workspace</div>
+      <a class="nav-item {'active' if active=='build' else ''}" href="/build">New campaign</a>
       <a class="nav-item {'active' if active=='campaigns' else ''}" href="/campaigns">Campaigns</a>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
       <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a>
@@ -839,6 +840,339 @@ def _json_attr(s):
 def update_offer(cid):
     sb.update("campaigns", {"id": cid}, {"offer_brief": (request.form.get("offer_brief") or "").strip() or None})
     return redirect("/offers")
+
+
+# ════════════════ Campaign builder (interactive wizard) ════════════════
+BUILD_HTML = """
+<style>
+  .wiz{max-width:920px}
+  .wiz-steps{display:flex;gap:8px;margin-bottom:22px;flex-wrap:wrap}
+  .wiz-pill{display:flex;align-items:center;gap:8px;padding:8px 14px;border:1px solid var(--line,#e6e1d8);border-radius:999px;font-size:13px;color:var(--ink-faint);background:var(--card,#fff)}
+  .wiz-pill .n{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:600;background:var(--line,#e6e1d8);color:var(--ink-soft)}
+  .wiz-pill.active{border-color:var(--accent,#b4541f);color:var(--ink)}
+  .wiz-pill.active .n{background:var(--accent,#b4541f);color:#fff}
+  .wiz-pill.done .n{background:var(--good,#0a7d2c);color:#fff}
+  .wiz-panel{display:none}
+  .wiz-panel.active{display:block;animation:wizfade .18s ease}
+  @keyframes wizfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .wiz-foot{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+  .preset-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+  .preset-chip{cursor:pointer;border:1px solid var(--line,#e6e1d8);border-radius:10px;padding:10px 14px;background:var(--card,#fff);font-size:13px;min-width:130px}
+  .preset-chip:hover{border-color:var(--accent,#b4541f)}
+  .preset-chip b{display:block;font-size:14px;margin-bottom:2px}
+  .preset-chip span{color:var(--ink-faint);font-size:12px}
+  .seq-row{display:grid;grid-template-columns:64px 1fr 130px 34px;gap:10px;align-items:center;margin-bottom:8px}
+  .seq-row .lbl{font-size:12px;color:var(--ink-faint);font-family:var(--font-mono,monospace)}
+  .seq-row select,.seq-row input{width:100%}
+  .seq-x{cursor:pointer;border:1px solid var(--line,#e6e1d8);border-radius:8px;height:34px;display:grid;place-items:center;color:var(--ink-faint)}
+  .seq-x:hover{border-color:var(--danger,#c33);color:var(--danger,#c33)}
+  .sig-grid{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .sig{border:1px solid var(--line,#e6e1d8);border-radius:8px;padding:8px 12px;font-size:13px;background:var(--card,#fff)}
+  .sig b{color:var(--ink-faint);font-weight:500;font-size:11px;display:block;text-transform:uppercase;letter-spacing:.04em}
+  .pv-email{border:1px solid var(--line,#e6e1d8);border-radius:12px;padding:16px;background:var(--card,#fff);margin-top:8px}
+  .pv-email .subj{font-weight:600;margin-bottom:8px;font-family:var(--font-serif,Georgia),serif}
+  .pv-email .bd{white-space:pre-wrap;font-family:var(--font-serif,Georgia),serif;font-size:14px;line-height:1.6;color:var(--ink-soft)}
+  .spin{width:18px;height:18px;border:2px solid var(--line,#e6e1d8);border-top-color:var(--accent,#b4541f);border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:-3px;margin-right:8px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+<div class="wiz">
+  <div class="wiz-steps">
+    <div class="wiz-pill active" data-pill="1"><span class="n">1</span> Upload</div>
+    <div class="wiz-pill" data-pill="2"><span class="n">2</span> Offer</div>
+    <div class="wiz-pill" data-pill="3"><span class="n">3</span> Sequence</div>
+    <div class="wiz-pill" data-pill="4"><span class="n">4</span> Preview &amp; launch</div>
+  </div>
+
+  <!-- STEP 1 -->
+  <div class="wiz-panel active" data-step="1">
+    <div class="block"><div class="block-body">
+      <div class="note-bar">CSV columns (any order, case-insensitive): <b>business</b> (required), website, email, phone, address, city, country. Leads import paused; nothing sends until you launch.</div>
+      <div class="field"><label>Leads CSV (Apollo export works)</label><input id="csvFile" type="file" accept=".csv,text/csv"></div>
+      <div class="row-2" style="grid-template-columns:1fr 1fr">
+        <div class="field"><label>Campaign name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input id="campName" placeholder="defaults to file name"></div>
+        <div class="field"><label>Region <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input id="campRegion" placeholder="United States"></div>
+      </div>
+      <div id="err1" style="color:var(--danger,#c33);font-size:13px"></div>
+    </div></div>
+    <div class="wiz-foot"><button class="btn primary" onclick="next1()">Continue &rsaquo;</button></div>
+  </div>
+
+  <!-- STEP 2 -->
+  <div class="wiz-panel" data-step="2">
+    <div class="block"><div class="block-body">
+      <div class="note-bar">Answer these and we compose the offer brief that every email is written from. Edit the final text directly if you want.</div>
+      <div class="field"><label>Who you target</label><input class="ob" data-k="Who" placeholder="e.g. home-service businesses doing $1M-5M"></div>
+      <div class="field"><label>The pain</label><input class="ob" data-k="Pain" placeholder="e.g. hours lost to manual quoting and follow-up"></div>
+      <div class="field"><label>The outcome you deliver</label><input class="ob" data-k="Outcome" placeholder="e.g. AI absorbs the repetitive back-office work"></div>
+      <div class="field"><label>The offer</label><input class="ob" data-k="Offer" placeholder="e.g. free AI operations audit, then we build and run the systems"></div>
+      <div class="field"><label>Risk reversal</label><input class="ob" data-k="Risk reversal" placeholder="e.g. measurable ROI in 2-3 months or you do not pay"></div>
+      <div class="field"><label>Final offer brief <span style="text-transform:none;color:var(--ink-faint)">(editable)</span></label><textarea id="offerBrief" rows="7" placeholder="Composed from the fields above."></textarea></div>
+    </div></div>
+    <div class="wiz-foot"><button class="btn" onclick="goStep(1)">&lsaquo; Back</button><button class="btn primary" onclick="goStep(3)">Continue &rsaquo;</button></div>
+  </div>
+
+  <!-- STEP 3 -->
+  <div class="wiz-panel" data-step="3">
+    <div class="block"><div class="block-body">
+      <div class="note-bar">How many emails and how far apart. Start from a preset, then tweak. First email always sends on day 0.</div>
+      <div class="preset-row">
+        <div class="preset-chip" onclick="preset('short')"><b>Short</b><span>3 emails</span></div>
+        <div class="preset-chip" onclick="preset('standard')"><b>Standard</b><span>5 emails</span></div>
+        <div class="preset-chip" onclick="preset('aggressive')"><b>Aggressive</b><span>7 emails</span></div>
+      </div>
+      <div id="seqEditor"></div>
+      <button class="btn sm" id="addStepBtn" onclick="addStep()" style="margin-top:6px">+ Add email</button>
+      <div id="seqSummary" class="note-bar" style="margin-top:14px"></div>
+    </div></div>
+    <div class="wiz-foot"><button class="btn" onclick="goStep(2)">&lsaquo; Back</button><button class="btn primary" onclick="goStep(4)">Continue &rsaquo;</button></div>
+  </div>
+
+  <!-- STEP 4 -->
+  <div class="wiz-panel" data-step="4">
+    <div class="block"><div class="block-body">
+      <div id="previewBox"></div>
+    </div></div>
+    <div class="wiz-foot">
+      <button class="btn" onclick="goStep(3)">&lsaquo; Back</button>
+      <button class="btn" onclick="runPreview()">Regenerate preview</button>
+      <button class="btn primary" id="launchBtn" onclick="launch()">Launch campaign &rsaquo;</button>
+    </div>
+  </div>
+</div>
+<script>
+var ROLES = __ROLES__;
+var PRESETS = __PRESETS__;
+var seqSteps = JSON.parse(JSON.stringify(PRESETS.standard));
+var offerDirty = false;
+
+function goStep(n){
+  document.querySelectorAll('.wiz-panel').forEach(function(p){p.classList.toggle('active', +p.dataset.step===n);});
+  document.querySelectorAll('.wiz-pill').forEach(function(p){
+    var i=+p.dataset.pill; p.classList.toggle('active', i===n); p.classList.toggle('done', i<n);
+  });
+  if(n===4) runPreview();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function next1(){
+  var f=document.getElementById('csvFile');
+  if(!f.files.length){document.getElementById('err1').textContent='Pick a CSV file first.';return;}
+  document.getElementById('err1').textContent='';
+  goStep(2);
+}
+// ── Offer compose ──
+function composeOffer(){
+  if(offerDirty) return;
+  var parts=[];
+  document.querySelectorAll('.ob').forEach(function(el){
+    if(el.value.trim()) parts.push(el.dataset.k+': '+el.value.trim());
+  });
+  document.getElementById('offerBrief').value=parts.join('\\n');
+}
+document.querySelectorAll('.ob').forEach(function(el){el.addEventListener('input',composeOffer);});
+document.getElementById('offerBrief').addEventListener('input',function(){offerDirty=true;});
+// ── Sequence editor ──
+function preset(name){ seqSteps=JSON.parse(JSON.stringify(PRESETS[name])); renderSeq(); }
+function roleOptions(sel){
+  return ROLES.map(function(r){return '<option value="'+r.key+'"'+(r.key===sel?' selected':'')+'>'+r.label+'</option>';}).join('');
+}
+function renderSeq(){
+  var ed=document.getElementById('seqEditor'); ed.innerHTML='';
+  seqSteps.forEach(function(s,i){
+    var row=document.createElement('div'); row.className='seq-row';
+    var gap = i===0 ? '<input value="Day 0" disabled style="text-align:center">'
+                    : '<input type="number" min="1" max="60" value="'+(s.gap_days||1)+'" onchange="setGap('+i+',this.value)">';
+    row.innerHTML='<div class="lbl">Email '+(i+1)+'</div>'+
+      '<select onchange="setRole('+i+',this.value)">'+roleOptions(s.role)+'</select>'+
+      gap+
+      (seqSteps.length>3 && i>0 ? '<div class="seq-x" onclick="rmStep('+i+')">&times;</div>' : '<div></div>');
+    ed.appendChild(row);
+  });
+  document.getElementById('addStepBtn').style.display = seqSteps.length>=7?'none':'';
+  var span=seqSteps.reduce(function(a,s,i){return a+(i===0?0:(parseInt(s.gap_days)||0));},0);
+  document.getElementById('seqSummary').innerHTML='<b>'+seqSteps.length+' emails</b> over '+span+' days. Follow-ups stop automatically if a lead replies.';
+}
+function setRole(i,v){seqSteps[i].role=v;}
+function setGap(i,v){seqSteps[i].gap_days=Math.max(1,parseInt(v)||1);renderSeq();}
+function rmStep(i){if(seqSteps.length>3){seqSteps.splice(i,1);renderSeq();}}
+function addStep(){if(seqSteps.length<7){seqSteps.push({role:'value-drop',gap_days:4});renderSeq();}}
+function config(){return seqSteps.map(function(s,i){return {role:s.role,gap_days:i===0?0:(parseInt(s.gap_days)||1)};});}
+// ── Form data ──
+function formData(){
+  var fd=new FormData();
+  fd.append('file', document.getElementById('csvFile').files[0]);
+  fd.append('name', document.getElementById('campName').value);
+  fd.append('region', document.getElementById('campRegion').value);
+  fd.append('offer_brief', document.getElementById('offerBrief').value);
+  fd.append('sequence_config', JSON.stringify(config()));
+  return fd;
+}
+// ── Preview ──
+function runPreview(){
+  var box=document.getElementById('previewBox');
+  box.innerHTML='<div><span class="spin"></span>Enriching a sample lead and drafting email 1...</div>';
+  fetch('/build/preview',{method:'POST',body:formData()}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+  .then(function(res){
+    if(!res.ok){box.innerHTML='<div style="color:var(--danger,#c33)">'+(res.d.error||'Preview failed')+'</div>';return;}
+    var d=res.d, s=d.signals, sigs='';
+    function sig(l,v){return v?('<div class="sig"><b>'+l+'</b>'+v+'</div>'):'';}
+    sigs=sig('Rating',s.rating)+sig('Reviews',s.reviews)+sig('Type',s.type)+sig('Intent',s.intent)+sig('Decision maker',s.decision_maker);
+    box.innerHTML=
+      '<div class="note-bar"><b>'+d.count+' leads</b> ready. Sending <b>'+d.total_steps+' emails</b> over <b>'+d.span_days+' days</b>. Below is a real, hyper-personalized draft for one of your leads.</div>'+
+      '<div style="font-size:13px;color:var(--ink-faint);margin-top:10px">Sample lead</div>'+
+      '<div style="font-weight:600;font-size:15px">'+(d.business||'')+' <span style="font-weight:400;color:var(--ink-faint)">'+(d.city||'')+' &middot; '+(d.email||'')+'</span></div>'+
+      (sigs?('<div class="sig-grid">'+sigs+'</div>'):'<div style="font-size:12px;color:var(--ink-faint);margin:8px 0">No enrichment signals found for this lead.</div>')+
+      '<div style="font-size:13px;color:var(--ink-faint);margin-top:6px">Email 1 of '+d.total_steps+'</div>'+
+      '<div class="pv-email"><div class="subj">'+esc(d.draft.subject)+'</div><div class="bd">'+esc(d.draft.body)+'</div></div>'+
+      '<div class="note-bar" style="margin-top:14px">Launching creates the campaign <b>paused</b>. You confirm the send on the next screen, then it runs on autopilot.</div>';
+  }).catch(function(){box.innerHTML='<div style="color:var(--danger,#c33)">Network error. Try again.</div>';});
+}
+function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML;}
+// ── Launch ──
+function launch(){
+  var b=document.getElementById('launchBtn'); b.disabled=true; b.innerHTML='<span class="spin"></span>Creating...';
+  fetch('/build/create',{method:'POST',body:formData()}).then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})
+  .then(function(res){
+    if(!res.ok){b.disabled=false;b.innerHTML='Launch campaign &rsaquo;';alert(res.d.error||'Failed');return;}
+    window.location=res.d.redirect;
+  }).catch(function(){b.disabled=false;b.innerHTML='Launch campaign &rsaquo;';alert('Network error.');});
+}
+renderSeq();
+</script>
+"""
+
+SEQUENCE_PRESETS = {
+    "short": [
+        {"role": "first-touch", "gap_days": 0},
+        {"role": "value-drop", "gap_days": 4},
+        {"role": "breakup", "gap_days": 5},
+    ],
+    "standard": [
+        {"role": "first-touch", "gap_days": 0},
+        {"role": "bump", "gap_days": 3},
+        {"role": "fomo", "gap_days": 4},
+        {"role": "value-drop", "gap_days": 4},
+        {"role": "breakup", "gap_days": 5},
+    ],
+    "aggressive": seq.DEFAULT_SEQUENCE,
+}
+
+
+def _parse_csv_leads(file_storage, campaign_id):
+    """Parse an uploaded CSV into deduped lead rows. Returns (rows, total_seen)."""
+    import csv as _csv, io as _io
+    raw = file_storage.read().decode("utf-8-sig", errors="replace")
+    file_storage.stream.seek(0)
+    reader = _csv.DictReader(_io.StringIO(raw))
+    rows, seen = [], set()
+    for r in reader:
+        lead = _csv_row_to_lead(r, campaign_id)
+        if lead and lead["business"].lower() not in seen:
+            seen.add(lead["business"].lower())
+            rows.append(lead)
+    return rows, len(seen)
+
+
+def _safe_sequence_config(raw):
+    """Validate a client-sent sequence_config JSON string into a clean list."""
+    try:
+        steps = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    steps = seq.steps_of(steps)  # normalize + clamp roles/gaps
+    return steps[:7] if len(steps) >= 3 else None
+
+
+@app.route("/build")
+def build_wizard():
+    roles = json.dumps([{"key": k, "label": lbl, "desc": d} for k, lbl, d in seq.ROLE_META])
+    presets = json.dumps(SEQUENCE_PRESETS)
+    body = (BUILD_HTML
+            .replace("__ROLES__", roles)
+            .replace("__PRESETS__", presets))
+    return shell("build", "workspace / build", "Build a campaign",
+                 "Upload leads, set the offer, choose the cadence, preview, launch.", body)
+
+
+@app.route("/build/preview", methods=["POST"])
+def build_preview():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Upload a CSV first."}), 400
+    offer = (request.form.get("offer_brief") or "").strip() or None
+    config = _safe_sequence_config(request.form.get("sequence_config"))
+    if not config:
+        return jsonify({"error": "Pick a sequence (3 to 7 emails)."}), 400
+
+    rows, total = _parse_csv_leads(f, 0)
+    if not rows:
+        return jsonify({"error": "No valid rows. CSV needs a 'business' column."}), 400
+
+    sample = dict(rows[0])
+    try:
+        from lib import enrich
+        patch = enrich.enrich_lead(sample)
+        merged = {**sample, **patch}
+    except Exception:
+        merged = sample
+        patch = {}
+
+    sig = merged.get("signals") or {}
+    dm = merged.get("decision_maker") or {}
+    try:
+        draft = seq.draft_one(merged, {"id": 0, "opens": 0, "clicks": 0, "current_step": 0}, 1, offer, config)
+    except Exception as e:
+        return jsonify({"error": f"Draft failed: {str(e)[:160]}"}), 500
+
+    span = seq.cold_offset_days(config, len(config))
+    return jsonify({
+        "count": total,
+        "business": merged.get("business"),
+        "email": merged.get("email") or "(no email found)",
+        "city": merged.get("city") or merged.get("country") or "",
+        "signals": {
+            "rating": sig.get("rating"),
+            "reviews": sig.get("user_rating_count") or sig.get("review_count"),
+            "type": sig.get("business_type"),
+            "intent": merged.get("intent_score"),
+            "decision_maker": (f"{dm.get('name')} ({dm.get('title')})" if dm.get("name") else None),
+        },
+        "draft": {"subject": draft.get("subject", ""), "body": draft.get("body", "")},
+        "total_steps": len(config),
+        "span_days": span,
+    })
+
+
+@app.route("/build/create", methods=["POST"])
+def build_create():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "Upload a CSV first."}), 400
+    config = _safe_sequence_config(request.form.get("sequence_config"))
+    if not config:
+        return jsonify({"error": "Pick a sequence (3 to 7 emails)."}), 400
+
+    region = (request.form.get("region") or "").strip() or "United States"
+    name = (request.form.get("name") or "").strip() or _slug("csv", f.filename.rsplit(".", 1)[0])
+    offer = (request.form.get("offer_brief") or "").strip() or None
+
+    base = {
+        "name": name, "niche": "csv-upload", "region": region,
+        "offer_brief": offer, "daily_scrape_target": 0, "active": False,
+        "notes": json.dumps({"source": "builder"}),
+    }
+    # Deploy-safe: if sequence_config column isn't migrated yet, fall back to a
+    # campaign without it (engine then uses the default 7-step drip).
+    cfg_note = None
+    try:
+        camp = sb.insert("campaigns", {**base, "sequence_config": {"steps": config}}, on_conflict="name")[0]
+    except Exception:
+        camp = sb.insert("campaigns", base, on_conflict="name")[0]
+        cfg_note = "saved (cadence pending DB migration — using default 7-step until applied)"
+
+    rows, _ = _parse_csv_leads(f, camp["id"])
+    if rows:
+        sb.insert("leads", rows, on_conflict="campaign_id,business")
+    return jsonify({"redirect": f"/campaigns/{camp['id']}", "note": cfg_note, "leads": len(rows)})
 
 
 REVENUE_BANDS = ["<$1M", "$1M–5M", "$5M–20M", "$20M–50M", "$50M+"]
@@ -1295,7 +1629,7 @@ def campaigns_list():
 
     body = f"""
     <div class="help"><div>A campaign = a batch of leads + your offer. Find or upload leads, wait for them to enrich (emails found automatically), then <strong>Start outreach</strong> to begin the automated 7-step drip. Nothing sends while a campaign is paused.</div></div>
-    <div style="display:flex;justify-content:flex-end;margin-bottom:14px"><a class="btn primary" href="/scrape">+ New campaign</a></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-bottom:14px"><a class="btn" href="/scrape">Find leads</a><a class="btn primary" href="/build">+ New campaign</a></div>
     <div class="block"><table class="act-table">
       <thead><tr><th>Campaign</th><th>Status</th><th>Leads</th><th>Ready</th><th>Enriching</th><th></th></tr></thead>
       <tbody>{rows}</tbody>
