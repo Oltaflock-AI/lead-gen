@@ -24,9 +24,10 @@ MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "outreach@oltaflock.ai")
-SENDER_NAME = os.environ.get("SENDER_NAME", "Khush")
-BOOKING_LINK = os.environ.get("BOOKING_LINK", "https://cal.com/khush0030/oltaflock-ai-demo")
-WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://oltaflock.ai")
+SENDER_NAME = os.environ.get("SENDER_NAME", "Khush Mutha")
+SENDER_TITLE = os.environ.get("SENDER_TITLE", "Founder, Oltaflock AI")
+BOOKING_LINK = os.environ.get("BOOKING_LINK", "https://cal.com/khush0030/oltaflock-ai-discovery-call")
+WEBSITE_URL = os.environ.get("WEBSITE_URL", "oltaflock.ai")
 
 OPEN_GATE_FROM_STEP = int(os.environ.get("LEADGEN_OPEN_GATE_FROM_STEP", "4"))
 MAX_STEP = 7
@@ -394,20 +395,43 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=
 
 
 # ─────────── Compose + send ───────────
+# Markdown link support: [text](url). The sequence signature and the manual
+# composer write the booking link as [Discovery Call](url) so it renders as a
+# named anchor in HTML and as "Discovery Call: <url>" in the plain-text part.
+_MD_LINK = re.compile(r'\[([^\]]+)\]\((https?://[^)\s]+)\)')
+
+
+def _md_to_text(s: str) -> str:
+    """Flatten markdown links for the text/plain alternative: [t](u) -> 't: u'."""
+    return _MD_LINK.sub(lambda m: f"{m.group(1)}: {m.group(2)}", s)
+
+
 def _signature() -> str:
     lines = [f"\n\n{SENDER_NAME}"]
+    if SENDER_TITLE:
+        lines.append(SENDER_TITLE)
     if WEBSITE_URL:
         lines.append(WEBSITE_URL)
     if BOOKING_LINK:
-        lines.append(f"Book a time: {BOOKING_LINK}")
+        lines.append(f"[Discovery Call]({BOOKING_LINK})")
     return "\n".join(lines)
 
 
 def _html_body(body: str) -> str:
     esc = (body.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-    # Wrap bare URLs in anchors so Resend's click tracking can rewrite them.
-    # Without a real <a href>, clicks are never tracked.
+    # Render markdown links first, stashing each as a sentinel so the bare-URL
+    # autolinker below does not double-wrap the URL inside the anchor we built.
+    stash: list[str] = []
+
+    def _stash(m):
+        stash.append(f'<a href="{m.group(2)}">{m.group(1)}</a>')
+        return f"\x00{len(stash) - 1}\x00"
+
+    esc = _MD_LINK.sub(_stash, esc)
+    # Wrap remaining bare URLs in anchors so Resend's click tracking can rewrite
+    # them. Without a real <a href>, clicks are never tracked.
     esc = re.sub(r'(https?://[^\s<]+)', r'<a href="\1">\1</a>', esc)
+    esc = re.sub(r'\x00(\d+)\x00', lambda m: stash[int(m.group(1))], esc)
     html = esc.replace("\n", "<br>")
     return f'<div style="font-family:Georgia,serif;font-size:15px;line-height:1.55;color:#111;">{html}</div>'
 
@@ -425,7 +449,7 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
         "from": RESEND_FROM,
         "to": [to],
         "subject": draft["subject"],
-        "text": body,
+        "text": _md_to_text(body),
         "html": _html_body(body),
         "tags": [
             {"name": "sequence_id", "value": str(seq_id)},
@@ -466,7 +490,7 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
         "from": frm,
         "to": [to_email],
         "subject": strip_dashes(subject),
-        "text": text,
+        "text": _md_to_text(text),
         "html": _html_body(text),
         "tags": [
             {"name": "sequence_id", "value": str(seq_id)},

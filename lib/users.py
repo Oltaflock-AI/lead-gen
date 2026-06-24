@@ -18,23 +18,46 @@ from lib import supabase as sb
 
 DOMAIN = os.environ.get("LEADGEN_MAIL_DOMAIN", "oltaflock.ai")
 _PBKDF2_ITERS = 120_000
-_TAGLINE = "Oltaflock | AI operations for growing businesses"
+
+# Shared Oltaflock discovery-call booking link. Override with BOOKING_LINK.
+BOOKING_LINK = os.environ.get(
+    "BOOKING_LINK", "https://cal.com/khush0030/oltaflock-ai-discovery-call")
 
 
-def _sigs(first: str, full: str) -> list[dict]:
-    """Two selectable signature variants. No em/en dashes (house rule)."""
+def _sigs(name: str, title: str = "Oltaflock AI") -> list[dict]:
+    """Selectable signature variants. No em/en dashes (house rule).
+
+    The cal.com link is written as a markdown [text](url) link so the email
+    pipeline renders it as a clickable "Discovery Call" anchor in HTML and
+    as "Discovery Call: <url>" in the plain-text alternative. The name is
+    whatever sender is selected (Khush, Vineet, Amaan)."""
+    full = f"{name}\n{title}\n{DOMAIN}\n[Discovery Call]({BOOKING_LINK})"
+    short = f"{name}\n{title}\n{DOMAIN}"
     return [
-        {"label": "Short", "text": f"{first}\nOltaflock\n{DOMAIN}"},
-        {"label": "Full",  "text": f"{full}\n{_TAGLINE}\n{DOMAIN}"},
+        {"label": "Full (with Discovery Call link)", "text": full},
+        {"label": "Short", "text": short},
     ]
 
 
 # Ordered so the From dropdown and login list are stable.
 USERS: dict[str, dict] = {
-    "khush":  {"name": "Khush Mutha",   "email": f"khush@{DOMAIN}",  "signatures": _sigs("Khush", "Khush Mutha")},
-    "vineet": {"name": "Vineet Patel",  "email": f"vineet@{DOMAIN}", "signatures": _sigs("Vineet", "Vineet Patel")},
-    "amaan":  {"name": "Amaan Barmare", "email": f"amaan@{DOMAIN}",  "signatures": _sigs("Amaan", "Amaan Barmare")},
+    "khush":  {"name": "Khush Mutha",   "email": f"khush@{DOMAIN}",  "signatures": _sigs("Khush Mutha", "Founder, Oltaflock AI")},
+    "vineet": {"name": "Vineet Patel",  "email": f"vineet@{DOMAIN}", "signatures": _sigs("Vineet Patel")},
+    "amaan":  {"name": "Amaan Barmare", "email": f"amaan@{DOMAIN}",  "signatures": _sigs("Amaan Barmare")},
 }
+
+
+def by_email(email: str) -> dict | None:
+    """Resolve the user identity for a selected From address (case-insensitive).
+    Used so a manual send's signature + display name follow the chosen From,
+    not just whoever is logged in. Returns None for shared/unknown addresses."""
+    if not email:
+        return None
+    e = email.strip().lower()
+    for u in USERS.values():
+        if u["email"].lower() == e:
+            return u
+    return None
 
 # Shared 'From' addresses every user can pick, in addition to their own.
 SHARED_FROM: list[str] = [f"admin@{DOMAIN}"]

@@ -1506,8 +1506,11 @@ def compose_send():
     from_email = request.form.get("from_email")
     if from_email not in users.FROM_OPTIONS:
         from_email = me.get("email")
-    from_name = me.get("name")
-    sigs = me.get("signatures", [])
+    # Signature + display name follow the SELECTED From address (Khush, Vineet,
+    # Amaan), falling back to the logged-in user for shared/unknown addresses.
+    sender = users.by_email(from_email) or me
+    from_name = sender.get("name")
+    sigs = sender.get("signatures", [])
     try:
         sig_text = sigs[int(request.form.get("signature_idx") or 0)]["text"]
     except (ValueError, IndexError, KeyError, TypeError):
