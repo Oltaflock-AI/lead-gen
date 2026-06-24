@@ -81,9 +81,13 @@ def angle_for(email: str, step: int) -> tuple[str, str]:
     return SUBJECT_ANGLES[idx]
 
 
-# ─────────── Step instructions (proven copy) ───────────
-STEP_INSTRUCTIONS = {
-    1: ("Step 1, first cold email (day 0, 90-140 words). Lead with a SPECIFIC observation pulled "
+# ─────────── Copy roles (proven instructions, keyed by role) ───────────
+# Each campaign's sequence is a list of these roles + cadence. The builder
+# composes N of them; NULL config falls back to DEFAULT_SEQUENCE (the original
+# 7-step drip, unchanged). The "Step N" prose inside each instruction is a
+# stylistic anchor for the model — the real ordinal is injected as "STEP x OF n".
+ROLE_INSTRUCTIONS = {
+    "first-touch": ("Step 1, first cold email (day 0, 90-140 words). Lead with a SPECIFIC observation pulled "
         "from the lead facts (business name, city, niche, and scale signals like review count). One "
         "short paragraph naming a likely operational drain for a business this size: hours lost to "
         "manual admin, slow lead follow-up, repetitive back-office work, scheduling or quoting by hand. "
@@ -91,35 +95,111 @@ STEP_INSTRUCTIONS = {
         "we build and run the AI systems that remove that waste. Deliver the risk reversal verbatim "
         "('you see measurable ROI within 2 to 3 months of going live or you do not pay'). Soft CTA: a "
         "short reply or a 15-minute call."),
-    2: ("Step 2, bump (day 3, 35-70 words). Acknowledge no reply in ONE casual line. Drop a single "
+    "bump": ("Step 2, bump (day 3, 35-70 words). Acknowledge no reply in ONE casual line. Drop a single "
         "concrete outcome framed generically: e.g. 'a similar business cut roughly 12 hours a week of "
         "manual admin in the first month after the audit'. End with a one-line question. No re-pitch of "
         "the offer."),
-    3: ("Step 3, competitor / FOMO angle (day 7, 90-140 words). Open with the observation that another "
+    "fomo": ("Step 3, competitor / FOMO angle (day 7, 90-140 words). Open with the observation that another "
         "business in the same space (do not name them) is already using AI to absorb the repetitive work "
         "and is moving faster on the same headcount. Use a believable stat to ground the cost of staying "
         "fully manual. Tie back to the risk reversal in one sentence. CTA: 'want me to send the 90-second "
         "overview of what we would audit first?'"),
-    4: ("Step 4, value drop (day 11, 70-110 words). Tease ONE concrete thing the audit surfaces for THIS "
+    "value-drop": ("Step 4, value drop (day 11, 70-110 words). Tease ONE concrete thing the audit surfaces for THIS "
         "niche (e.g. how many hours per week go to quoting, scheduling, and follow-up that AI can absorb). "
         "If a walkthrough or booking link is provided in the offer, paste it on its own line; otherwise "
         "offer to send it. CTA: reply 'yes' to talk it through."),
-    5: ("Step 5, grand-slam recap (day 16, 90-140 words). Frame the math so plainly that NOT trying it "
+    "recap": ("Step 5, grand-slam recap (day 16, 90-140 words). Frame the math so plainly that NOT trying it "
         "looks like the riskier choice. Structure: (1) one line naming what staying manual costs per month "
         "in believable time and money terms. (2) the offer restated in three short lines: free audit, we "
         "design and run the systems, you only pay once you see ROI in 2 to 3 months. (3) one line: 'the "
         "only way this costs you is if it works and you keep it.' CTA: 15 minutes this week, their pick of "
         "day. NO buzzwords, NO hype words. Just arithmetic."),
-    6: ("Step 6, quirky pattern interrupt (day 21, 60-100 words). Drop tone. Open with a self-aware "
+    "interrupt": ("Step 6, quirky pattern interrupt (day 21, 60-100 words). Drop tone. Open with a self-aware "
         "one-liner that admits they have been ignoring the thread, e.g. 'either my emails are landing in "
         "spam or the manual grind is not actually bothering you, and I genuinely cannot tell which.' Then "
         "ONE crisp benefit line tied to the niche. CTA must be a binary low-effort reply: 'reply yes for a "
         "5-min walkthrough, reply no and I close the loop.'"),
-    7: ("Step 7, breakup (day 28, 35-70 words). Last note. Polite, short, leaves the door open. Include "
+    "breakup": ("Step 7, breakup (day 28, 35-70 words). Last note. Polite, short, leaves the door open. Include "
         "this exact mechanic verbatim: 'Reply with one word and I will act on it: STOP means I will not "
         "email again. CALL means book a 15-minute slot. LATER means I circle back in 90 days.' One "
         "stat-free sentence above it framing why it still matters. Nothing else."),
 }
+
+# UI-facing metadata for each role (label + one-line description). Order here is
+# the order the builder presents them in. Keep keys in sync with ROLE_INSTRUCTIONS.
+ROLE_META = [
+    ("first-touch", "First touch", "Specific observation + the offer + risk reversal."),
+    ("bump", "Soft bump", "One casual line, a single concrete outcome, a question."),
+    ("fomo", "Competitor / FOMO", "A rival is already using AI and moving faster."),
+    ("value-drop", "Value drop", "Tease one concrete thing the audit surfaces."),
+    ("recap", "Grand-slam recap", "Plain arithmetic: staying manual is the riskier bet."),
+    ("interrupt", "Pattern interrupt", "Self-aware one-liner, one benefit, binary reply."),
+    ("breakup", "Breakup", "Polite last note with STOP / CALL / LATER mechanic."),
+]
+ROLE_LABELS = {k: lbl for k, lbl, _ in ROLE_META}
+
+# Canonical 7-step drip — the behavior every campaign had before configs existed.
+# gap_days = days to wait AFTER the previous step (first step is always 0).
+# Cumulative offsets reproduce the legacy {1:0,2:3,3:7,4:11,5:16,6:21,7:28}.
+DEFAULT_SEQUENCE = [
+    {"role": "first-touch", "gap_days": 0},
+    {"role": "bump", "gap_days": 3},
+    {"role": "fomo", "gap_days": 4},
+    {"role": "value-drop", "gap_days": 4},
+    {"role": "recap", "gap_days": 5},
+    {"role": "interrupt", "gap_days": 5},
+    {"role": "breakup", "gap_days": 7},
+]
+
+
+# ─────────── Config helpers ───────────
+def steps_of(config) -> list[dict]:
+    """Normalize a campaign's sequence_config into a list of step dicts.
+
+    Accepts: None / "" (→ DEFAULT_SEQUENCE), a {"steps": [...]} object, or a
+    bare list. Always returns a non-empty list with valid roles so the engine
+    can never blow up on a malformed config."""
+    raw = config
+    if isinstance(raw, dict):
+        raw = raw.get("steps")
+    if not raw or not isinstance(raw, list):
+        return DEFAULT_SEQUENCE
+    out = []
+    for i, st in enumerate(raw):
+        if not isinstance(st, dict):
+            continue
+        role = st.get("role")
+        if role not in ROLE_INSTRUCTIONS:
+            role = "first-touch" if i == 0 else "bump"
+        gap = st.get("gap_days", 0)
+        try:
+            gap = max(0, int(gap))
+        except (TypeError, ValueError):
+            gap = 0
+        out.append({"role": role, "gap_days": 0 if i == 0 else gap})
+    return out or DEFAULT_SEQUENCE
+
+
+def max_step(config) -> int:
+    return len(steps_of(config))
+
+
+def role_for(config, step: int) -> str:
+    steps = steps_of(config)
+    if 1 <= step <= len(steps):
+        return steps[step - 1]["role"]
+    return "first-touch"
+
+
+def instruction_for(config, step: int) -> str:
+    return ROLE_INSTRUCTIONS.get(role_for(config, step), ROLE_INSTRUCTIONS["first-touch"])
+
+
+def cold_offset_days(config, step: int) -> int:
+    """Cumulative cold-cadence days from step 1 through `step` (1-based)."""
+    steps = steps_of(config)
+    return sum(s["gap_days"] for s in steps[:max(0, step)])
+
 
 SUBJECT_MANDATE = (
     "SUBJECT RULES (hard): must contain ONE concrete identifier from this lead "
@@ -168,11 +248,12 @@ def _tz_for(region: str | None) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def next_send_at(step: int, opens: int, region: str | None, *, from_time: datetime | None = None) -> datetime:
+def next_send_at(step: int, opens: int, region: str | None, *, from_time: datetime | None = None, config=None) -> datetime:
     """Compute when the NEXT step should send.
 
     step = the step we just sent (or 0 if none). We schedule step+1.
     opens > 0 → hot, accelerated, weekday gate bypassed.
+    config = campaign sequence_config; None → DEFAULT_SEQUENCE cadence.
     """
     now = from_time or datetime.now(timezone.utc)
     nxt = step + 1
@@ -189,7 +270,7 @@ def next_send_at(step: int, opens: int, region: str | None, *, from_time: dateti
         return local.astimezone(timezone.utc)
 
     # Cold path — absolute offset, snap to Tue/Wed/Thu @ preferred hour local.
-    gap_days = STEP_OFFSETS_DAYS.get(nxt, 0) - STEP_OFFSETS_DAYS.get(step, 0)
+    gap_days = cold_offset_days(config, nxt) - cold_offset_days(config, step)
     target = now + timedelta(days=max(gap_days, 0))
     local = target.astimezone(tz).replace(hour=PREFERRED_HOUR, minute=0, second=0, microsecond=0)
     for _ in range(14):
@@ -253,14 +334,15 @@ def _fallback_draft(lead: dict, step: int, angle_name: str) -> dict:
     return {"subject": subject, "body": strip_dashes(body), "angle": angle_name, "model": "fallback"}
 
 
-def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None) -> dict:
+def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=None) -> dict:
     email = lead.get("email") or ""
     angle_name, angle_desc = angle_for(email, step)
 
     if not ANTHROPIC_API_KEY:
         return _fallback_draft(lead, step, angle_name)
 
-    instruction = STEP_INSTRUCTIONS.get(step, STEP_INSTRUCTIONS[1])
+    total = max_step(config)
+    instruction = instruction_for(config, step)
     mandate = SUBJECT_MANDATE.format(angle_name=angle_name, angle_desc=angle_desc)
 
     system = (
@@ -274,7 +356,7 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None) -> dict
     )
 
     user = (
-        f"STEP {step} OF 7 — INSTRUCTION:\n{instruction}\n\n"
+        f"STEP {step} OF {total} INSTRUCTION:\n{instruction}\n\n"
         f"LEAD FACTS:\n{_facts_block(lead)}\n\n"
         f"ENGAGEMENT:\n{_engagement_block(seq)}\n\n"
         f"{mandate}\n\n"

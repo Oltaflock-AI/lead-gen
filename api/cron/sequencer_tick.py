@@ -35,7 +35,17 @@ def _iso(dt: datetime) -> str:
 
 
 def _active_campaigns() -> dict[int, dict]:
-    rows = sb.select("campaigns", {"select": "id,offer_brief,region,active", "active": "eq.true"}, limit=500)
+    # Try to pull the per-campaign sequence_config; if the column hasn't been
+    # migrated yet the select 400s, so fall back to the legacy column set. Either
+    # way the engine treats a missing config as the default 7-step drip.
+    try:
+        rows = sb.select(
+            "campaigns",
+            {"select": "id,offer_brief,region,active,sequence_config", "active": "eq.true"},
+            limit=500,
+        )
+    except Exception:
+        rows = sb.select("campaigns", {"select": "id,offer_brief,region,active", "active": "eq.true"}, limit=500)
     return {c["id"]: c for c in rows}
 
 
@@ -107,8 +117,11 @@ def _process_one(s: dict, active: dict[int, dict]) -> dict:
         sb.update("sequences", {"id": s["id"]}, {"status": "paused", "paused_reason": "no-email", "next_send_at": None})
         return {"seq": s["id"], "skipped": "no-email"}
 
+    campaign = active.get(s["campaign_id"], {})
+    config = campaign.get("sequence_config")
+
     next_step = (s.get("current_step", 0) or 0) + 1
-    if next_step > seq.MAX_STEP:
+    if next_step > seq.max_step(config):
         sb.update("sequences", {"id": s["id"]}, {"status": "done", "paused_reason": "completed", "next_send_at": None})
         return {"seq": s["id"], "done": "completed"}
 
@@ -116,11 +129,10 @@ def _process_one(s: dict, active: dict[int, dict]) -> dict:
         sb.update("sequences", {"id": s["id"]}, {"status": "done", "paused_reason": f"no-opens-at-step-{next_step}", "next_send_at": None})
         return {"seq": s["id"], "done": "gated-no-opens"}
 
-    campaign = active.get(s["campaign_id"], {})
     offer = campaign.get("offer_brief")
     region = lead.get("country") or campaign.get("region")
 
-    draft = seq.draft_one(lead, s, next_step, offer)
+    draft = seq.draft_one(lead, s, next_step, offer, config)
     sb.insert("drafts", {
         "sequence_id": s["id"], "step": next_step,
         "subject": draft["subject"], "body": draft["body"],
@@ -138,7 +150,7 @@ def _process_one(s: dict, active: dict[int, dict]) -> dict:
         "sequence_id": s["id"], "step": next_step, "event_type": "sent",
         "resend_id": rid, "meta": {"subject": draft["subject"], "angle": draft.get("angle")},
     })
-    nxt = seq.next_send_at(next_step, s.get("opens", 0) or 0, region)
+    nxt = seq.next_send_at(next_step, s.get("opens", 0) or 0, region, config=config)
     sb.update("sequences", {"id": s["id"]}, {
         "current_step": next_step,
         "next_send_at": _iso(nxt),
