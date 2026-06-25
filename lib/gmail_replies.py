@@ -11,6 +11,10 @@ and secret fall back to GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
 
 Stateless and idempotent: a sequence already paused with reason 'replied' is
 skipped, so re-running never double-logs.
+
+Stop-intent: if the reply body signals the sender wants no further contact, the
+address is inserted into public.suppressions (reason='unsubscribe',
+source='gmail-reply') and the sequence is paused with paused_reason='unsubscribed'.
 """
 import json
 import os
@@ -20,6 +24,26 @@ from lib import supabase as sb
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 LOOKBACK_DAYS = int(os.environ.get("LEADGEN_REPLY_LOOKBACK_DAYS", "14"))
+
+# Word-boundary-aware patterns for stop intent.  A bare "stop" matches but
+# "non-stop" does not.  All comparisons are done on lowercased text.
+_STOP_PHRASES = re.compile(
+    r"\b(?:"
+    r"unsubscribe"
+    r"|stop emailing"
+    r"|remove me"
+    r"|take me off"
+    r"|do not contact"
+    r"|don'?t contact"
+    r"|not interested"
+    r"|no thanks"
+    r"|leave me alone"
+    r"|opt[\s-]out"
+    r"|fuck off"
+    r")\b"
+    r"|(?<!\w)stop(?!\w)",  # bare "stop" not preceded or followed by a word char
+    re.IGNORECASE,
+)
 
 
 def _token() -> dict | None:
@@ -65,8 +89,19 @@ def _contacted_map() -> dict[str, list[dict]]:
     return out
 
 
-def _matched_senders(svc, addrs: list[str]) -> set[str]:
-    found: set[str] = set()
+def _has_stop_intent(text: str) -> bool:
+    """Return True if *text* contains a stop/unsubscribe signal."""
+    return bool(_STOP_PHRASES.search(text or ""))
+
+
+def _matched_senders(svc, addrs: list[str]) -> dict[str, str]:
+    """Return {lowercased_email: snippet} for each addr that replied.
+
+    Fetches each matching message once with format='full' so we get both the
+    From header and the Gmail-generated snippet (≤200 chars of body preview)
+    in a single API call per message.
+    """
+    found: dict[str, str] = {}
     for i in range(0, len(addrs), 25):
         q = " OR ".join(f"from:{a}" for a in addrs[i:i + 25]) + f" newer_than:{LOOKBACK_DAYS}d"
         try:
@@ -76,12 +111,16 @@ def _matched_senders(svc, addrs: list[str]) -> set[str]:
         for m in resp.get("messages", []):
             try:
                 mm = svc.users().messages().get(
-                    userId="me", id=m["id"], format="metadata", metadataHeaders=["From"]
+                    userId="me", id=m["id"], format="full", metadataHeaders=["From"]
                 ).execute()
                 hs = {x["name"]: x["value"] for x in mm.get("payload", {}).get("headers", [])}
                 em = EMAIL_RE.search(hs.get("From", ""))
                 if em:
-                    found.add(em.group(0).lower())
+                    addr = em.group(0).lower()
+                    # Keep the longest snippet seen for this sender (most info).
+                    snippet = mm.get("snippet", "")
+                    if len(snippet) > len(found.get(addr, "")):
+                        found[addr] = snippet
             except Exception:
                 continue
     return found
@@ -101,20 +140,36 @@ def check_and_log_replies() -> dict:
 
     logged = 0
     replies = []
-    for em in found:
+    for em, snippet in found.items():
+        stop = _has_stop_intent(snippet)
+
+        if stop:
+            try:
+                sb.insert(
+                    "suppressions",
+                    {"email": em, "reason": "unsubscribe", "source": "gmail-reply"},
+                    on_conflict="email",
+                )
+            except Exception:
+                pass  # never let a failed suppression insert break the poll
+
         for s in contacted.get(em, []):
             if s.get("status") == "paused":  # already replied/paused — idempotent
                 continue
+            paused_reason = "unsubscribed" if stop else "replied"
             sb.update("sequences", {"id": s["id"]}, {
                 "replied": True, "status": "paused",
-                "paused_reason": "replied", "next_send_at": None,
+                "paused_reason": paused_reason, "next_send_at": None,
             })
             sb.insert("sequence_events", {
                 "sequence_id": s["id"], "event_type": "replied",
-                "meta": {"via": "gmail-poll", "from": em},
+                "meta": {"via": "gmail-poll", "from": em, "stop_intent": stop},
             })
             logged += 1
-            replies.append({"seq": s["id"], "email": em, "business": s.get("_business")})
+            replies.append({
+                "seq": s["id"], "email": em,
+                "business": s.get("_business"), "stop_intent": stop,
+            })
 
     return {"ok": True, "contacted": len(contacted), "matched": len(found),
             "logged": logged, "replies": replies}

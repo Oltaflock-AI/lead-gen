@@ -47,6 +47,13 @@ STEP_OFFSETS_DAYS = {1: 0, 2: 3, 3: 7, 4: 11, 5: 16, 6: 21, 7: 28}
 # Aggressive, back-to-back while engagement is fresh.
 HOT_GAP_HOURS = {1: 20, 2: 24, 3: 30, 4: 36, 5: 42, 6: 48, 7: 54}
 
+# Engaged-loop ("nurture") cadence. Once a lead keeps opening past the configured
+# sequence but never replies, we do NOT stop — we keep sending fresh-angle touches
+# on a slow, persistent cadence until they reply, go cold, or hit the hard cap.
+NURTURE_GAP_DAYS   = int(os.environ.get("LEADGEN_NURTURE_GAP_DAYS", "4"))    # days between nurture touches
+NURTURE_STALE_DAYS = int(os.environ.get("LEADGEN_NURTURE_STALE_DAYS", "21")) # no open in this long → stop
+HARD_CAP_STEPS     = int(os.environ.get("LEADGEN_HARD_CAP_STEPS", "15"))     # never send more than this many touches, ever
+
 # Tue / Wed / Thu, 10am local (proven send window for cold sends).
 ALLOWED_WEEKDAYS = {int(x) for x in os.environ.get("LEADGEN_SEND_WEEKDAYS", "1,2,3").split(",") if x.strip()}
 PREFERRED_HOUR = int(os.environ.get("LEADGEN_DEFAULT_SEND_HOUR", "10"))
@@ -124,6 +131,12 @@ ROLE_INSTRUCTIONS = {
         "this exact mechanic verbatim: 'Reply with one word and I will act on it: STOP means I will not "
         "email again. CALL means book a 15-minute slot. LATER means I circle back in 90 days.' One "
         "stat-free sentence above it framing why it still matters. Nothing else."),
+    "nurture": ("Ongoing nurture touch. This lead keeps OPENING your emails but has not replied, and you "
+        "are past the core sequence. 50-90 words. Tone: a helpful peer who keeps having useful ideas, not "
+        "a chaser. Do NOT say or imply you can see them opening. Lead with ONE fresh, specific, useful idea, "
+        "proof point, or question tied to their niche that you have NOT used earlier in this thread. No "
+        "re-pitch of the full offer. One low-friction CTA (a one-word reply or a 15-minute call). Always end "
+        "with the opt-out, verbatim: 'reply STOP and I will close the loop for good.'"),
 }
 
 # UI-facing metadata for each role (label + one-line description). Order here is
@@ -189,6 +202,8 @@ def role_for(config, step: int) -> str:
     steps = steps_of(config)
     if 1 <= step <= len(steps):
         return steps[step - 1]["role"]
+    if step > len(steps):
+        return "nurture"  # engaged-loop: past the configured sequence
     return "first-touch"
 
 
@@ -260,6 +275,15 @@ def next_send_at(step: int, opens: int, region: str | None, *, from_time: dateti
     nxt = step + 1
     tz = _tz_for(region)
 
+    if nxt > len(steps_of(config)):
+        # Nurture path — we are scheduling a touch beyond the configured sequence.
+        # Slow and persistent (not accelerated), any weekday, preferred hour.
+        target = now + timedelta(days=NURTURE_GAP_DAYS)
+        local = target.astimezone(tz).replace(hour=PREFERRED_HOUR, minute=0, second=0, microsecond=0)
+        if local < target.astimezone(tz):
+            local += timedelta(days=1)
+        return local.astimezone(timezone.utc)
+
     if opens > 0:
         # Hot path — back-to-back. Respect only the preferred hour, any weekday.
         gap_h = HOT_GAP_HOURS.get(step, 36)
@@ -297,19 +321,101 @@ def _facts_block(lead: dict) -> str:
     return "\n".join(f"- {k}: {v}" for k, v in facts.items() if v is not None)
 
 
-def _engagement_block(seq: dict) -> str:
-    opens = seq.get("opens", 0)
-    clicks = seq.get("clicks", 0)
-    step = seq.get("current_step", 0)
+def engagement_tier(seq: dict) -> str:
+    """cold (no opens) → warm (opened) → hot (clicked a link). Drives how
+    personalized and how direct the next draft is."""
+    if (seq.get("clicks", 0) or 0) > 0:
+        return "hot"
+    if (seq.get("opens", 0) or 0) > 0:
+        return "warm"
+    return "cold"
+
+
+def engagement_detail(seq_id: int) -> dict:
+    """Per-step open/click history for a sequence, newest first. Lets the next
+    draft reference WHAT the lead engaged with (which email, which link, how
+    recently) instead of only how many times. Returns a plain dict so draft_one
+    stays pure/testable; callers fetch this and pass it in."""
+    try:
+        rows = sb.select(
+            "sequence_events",
+            {"select": "step,event_type,ts",
+             "sequence_id": f"eq.{seq_id}",
+             "event_type": "in.(opened,clicked)",
+             "order": "ts.desc"},
+            limit=50,
+        )
+    except Exception:
+        rows = []
+    opened, clicked, last_open = [], [], None
+    for r in rows:
+        et, st = r.get("event_type"), r.get("step")
+        if et == "opened":
+            if st is not None and st not in opened:
+                opened.append(st)
+            if last_open is None:
+                last_open = r.get("ts")
+        elif et == "clicked":
+            if st is not None and st not in clicked:
+                clicked.append(st)
+    age_h = None
+    if last_open:
+        try:
+            dt = datetime.fromisoformat(last_open.replace("Z", "+00:00"))
+            age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+        except Exception:
+            age_h = None
+    return {"opened_steps": sorted(opened), "clicked_steps": sorted(clicked),
+            "last_open_age_h": age_h}
+
+
+def should_nurture(seq: dict, eng: dict | None, next_step: int) -> bool:
+    """Past the configured sequence, keep going ONLY if the lead is genuinely
+    engaged: has opened, opened recently (within NURTURE_STALE_DAYS), and we are
+    still under the hard safety cap. Otherwise the sequence completes."""
+    if next_step > HARD_CAP_STEPS:
+        return False
+    if (seq.get("opens", 0) or 0) <= 0:
+        return False
+    age = (eng or {}).get("last_open_age_h")
+    if age is None:
+        return False
+    return age <= NURTURE_STALE_DAYS * 24
+
+
+def _engagement_block(seq: dict, eng: dict | None = None) -> str:
+    opens = seq.get("opens", 0) or 0
+    clicks = seq.get("clicks", 0) or 0
+    step = seq.get("current_step", 0) or 0
+    tier = engagement_tier(seq)
     if step == 0:
-        return "No prior emails sent."
-    parts = [f"{step} email(s) sent so far."]
-    if opens:
-        parts.append(f"They have OPENED {opens} time(s) — they are warm, be more direct and time-sensitive.")
-    if clicks:
-        parts.append(f"They CLICKED {clicks} time(s) — high intent.")
-    if not opens:
-        parts.append("No opens yet — keep it short and pattern-interrupting.")
+        return "No prior emails sent. Tier: cold."
+    parts = [f"{step} email(s) sent so far. Tier: {tier}."]
+    eng = eng or {}
+    if eng.get("opened_steps"):
+        parts.append(f"They opened email step(s): {', '.join(map(str, eng['opened_steps']))}.")
+    elif opens:
+        parts.append(f"They have OPENED {opens} time(s).")
+    if eng.get("clicked_steps"):
+        parts.append(f"They CLICKED a link in step(s): {', '.join(map(str, eng['clicked_steps']))}.")
+    elif clicks:
+        parts.append(f"They CLICKED {clicks} time(s).")
+    age = eng.get("last_open_age_h")
+    if age is not None:
+        if age < 48:
+            parts.append("Last open was very recent (under 2 days), strike while it is hot.")
+        elif age < 24 * 7:
+            parts.append("Last open was within the past week.")
+        else:
+            parts.append(f"Last open was about {int(age // 24)} days ago.")
+    if tier == "hot":
+        parts.append("DIRECTIVE: high intent. Reference the specific thing they engaged with, escalate to a "
+                     "direct concrete CTA (book a 15-minute slot), be confident, not pushy.")
+    elif tier == "warm":
+        parts.append("DIRECTIVE: warm. They are reading but not replying. Be noticeably more specific and "
+                     "personal than a cold email, lower the friction of replying, add ONE new concrete proof point.")
+    else:
+        parts.append("DIRECTIVE: cold. Keep it short and pattern-interrupting.")
     return " ".join(parts)
 
 
@@ -335,7 +441,7 @@ def _fallback_draft(lead: dict, step: int, angle_name: str) -> dict:
     return {"subject": subject, "body": strip_dashes(body), "angle": angle_name, "model": "fallback"}
 
 
-def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=None) -> dict:
+def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=None, eng: dict | None = None) -> dict:
     email = lead.get("email") or ""
     angle_name, angle_desc = angle_for(email, step)
 
@@ -359,7 +465,7 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=
     user = (
         f"STEP {step} OF {total} INSTRUCTION:\n{instruction}\n\n"
         f"LEAD FACTS:\n{_facts_block(lead)}\n\n"
-        f"ENGAGEMENT:\n{_engagement_block(seq)}\n\n"
+        f"ENGAGEMENT:\n{_engagement_block(seq, eng)}\n\n"
         f"{mandate}\n\n"
         "Return ONLY the JSON object."
     )

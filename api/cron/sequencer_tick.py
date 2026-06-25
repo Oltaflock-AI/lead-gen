@@ -84,6 +84,17 @@ def _autocreate(active: dict[int, dict]) -> int:
     return len(rows)
 
 
+def _suppressed() -> set[str]:
+    """Hard opt-out set (replied STOP / unsubscribe). Loaded once per tick and
+    enforced at send time so a suppressed address never receives another email,
+    across any campaign or sequence."""
+    try:
+        rows = sb.select("suppressions", {"select": "email"}, limit=100000)
+    except Exception:
+        rows = []
+    return {(r.get("email") or "").lower() for r in rows if r.get("email")}
+
+
 def _due(active_ids: set[int]) -> list[dict]:
     rows = sb.select(
         "sequences",
@@ -94,7 +105,7 @@ def _due(active_ids: set[int]) -> list[dict]:
     return [r for r in rows if r["campaign_id"] in active_ids][:BATCH]
 
 
-def _process_one(s: dict, active: dict[int, dict]) -> dict:
+def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict:
     # Optimistic claim-lock: atomically push next_send_at forward, matching on its
     # CURRENT value. If another concurrent runner already claimed this row, the
     # update touches 0 rows and we bail before sending — kills double-sends.
@@ -117,22 +128,35 @@ def _process_one(s: dict, active: dict[int, dict]) -> dict:
         sb.update("sequences", {"id": s["id"]}, {"status": "paused", "paused_reason": "no-email", "next_send_at": None})
         return {"seq": s["id"], "skipped": "no-email"}
 
+    if lead["email"].lower() in suppressed:
+        # Hard opt-out — never email this address again.
+        sb.update("sequences", {"id": s["id"]}, {"status": "paused", "paused_reason": "suppressed", "next_send_at": None})
+        return {"seq": s["id"], "skipped": "suppressed"}
+
     campaign = active.get(s["campaign_id"], {})
     config = campaign.get("sequence_config")
 
     next_step = (s.get("current_step", 0) or 0) + 1
-    if next_step > seq.max_step(config):
-        sb.update("sequences", {"id": s["id"]}, {"status": "done", "paused_reason": "completed", "next_send_at": None})
-        return {"seq": s["id"], "done": "completed"}
 
-    if not seq.passes_open_gate(s, next_step):
+    # Per-step engagement history (which steps opened/clicked, recency). Drives
+    # both the personalization tier and the engaged-loop (nurture) decision.
+    eng = seq.engagement_detail(s["id"])
+
+    if next_step > seq.max_step(config):
+        # Past the configured sequence. Keep going only for still-engaged leads
+        # (the self-improving loop); otherwise complete.
+        if not seq.should_nurture(s, eng, next_step):
+            sb.update("sequences", {"id": s["id"]}, {"status": "done", "paused_reason": "completed", "next_send_at": None})
+            return {"seq": s["id"], "done": "completed"}
+        # fall through into a nurture touch
+    elif not seq.passes_open_gate(s, next_step):
         sb.update("sequences", {"id": s["id"]}, {"status": "done", "paused_reason": f"no-opens-at-step-{next_step}", "next_send_at": None})
         return {"seq": s["id"], "done": "gated-no-opens"}
 
     offer = campaign.get("offer_brief")
     region = lead.get("country") or campaign.get("region")
 
-    draft = seq.draft_one(lead, s, next_step, offer, config)
+    draft = seq.draft_one(lead, s, next_step, offer, config, eng=eng)
     sb.insert("drafts", {
         "sequence_id": s["id"], "step": next_step,
         "subject": draft["subject"], "body": draft["body"],
@@ -168,8 +192,9 @@ def _run() -> dict:
     if remaining <= 0:
         return {"ok": True, "created": created, "sent": 0, "reason": "daily-cap-reached", "cap": DAILY_CAP}
 
+    suppressed = _suppressed()
     due = _due(set(active))[:remaining]
-    results = [_process_one(s, active) for s in due]
+    results = [_process_one(s, active, suppressed) for s in due]
     sent = sum(1 for r in results if "sent_step" in r)
     return {"ok": True, "created": created, "due": len(due), "sent": sent,
             "sent_today_after": sent_today + sent, "cap": DAILY_CAP, "results": results}
