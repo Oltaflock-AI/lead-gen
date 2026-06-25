@@ -10,6 +10,7 @@ Ports the proven logic from the old Flask sequencer:
 
 All state lives in Supabase. No threads, no SQLite, no module-level workers.
 """
+import hashlib
 import json
 import os
 import re
@@ -18,7 +19,12 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from lib import learning
 from lib import supabase as sb
+
+# Epsilon-greedy: fraction of sends that keep EXPLORING (deterministic rotation)
+# so we never stop learning. The rest EXPLOIT the best-performing angles so far.
+ANGLE_EPSILON = float(os.environ.get("LEADGEN_ANGLE_EPSILON", "0.3"))
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -83,10 +89,35 @@ SUBJECT_ANGLES = [
 ]
 
 
+def _angle_by_name(name: str) -> tuple[str, str] | None:
+    for a in SUBJECT_ANGLES:
+        if a[0] == name:
+            return a
+    return None
+
+
 def angle_for(email: str, step: int) -> tuple[str, str]:
+    """Epsilon-greedy subject-angle selection (the self-improving loop).
+
+    EXPLORE (prob ANGLE_EPSILON, or always during cold start): deterministic
+    per-lead rotation — guarantees subject diversity and keeps feeding the
+    learner every angle. EXPLOIT (otherwise): pick from the best-performing
+    angles measured from real opens. The explore/exploit coin and the winner
+    pick are both seeded by (email, step) so a re-draft of the same step is
+    stable (idempotent) and different leads still get variety."""
     seed = f"{email}|{step}"
     idx = sum(ord(c) for c in seed) % len(SUBJECT_ANGLES)
-    return SUBJECT_ANGLES[idx]
+    explore = SUBJECT_ANGLES[idx]
+
+    h = int(hashlib.sha256(f"{seed}|bandit".encode()).hexdigest(), 16)
+    if (h % 10000) / 10000.0 < ANGLE_EPSILON:
+        return explore
+
+    winners = learning.best_angles(k=3)
+    if not winners:
+        return explore  # cold start — nothing proven yet
+    chosen = _angle_by_name(winners[h % len(winners)])
+    return chosen or explore
 
 
 # ─────────── Copy roles (proven instructions, keyed by role) ───────────
@@ -461,6 +492,9 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=
         "Use commas, periods, or parentheses instead. This is a strict brand rule, no exceptions.\n\n"
         f"OFFER / CONTEXT:\n{offer_brief or DEFAULT_OFFER}"
     )
+    brief = learning.whats_working_brief()
+    if brief:
+        system += "\n\n" + brief
 
     user = (
         f"STEP {step} OF {total} INSTRUCTION:\n{instruction}\n\n"

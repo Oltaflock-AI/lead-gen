@@ -8,6 +8,7 @@ on:
   schedule:
     - cron: '*/5 * * * *'   # every 5 min — sequencer
     - cron: '*/15 * * * *'  # every 15 min — enrichment
+    - cron: '0 6 * * *'     # nightly 06:00 UTC — learning tick
   workflow_dispatch: {}
 
 concurrency:
@@ -53,3 +54,16 @@ jobs:
           curl -fsS --max-time 290 \
             -H "Authorization: Bearer $CRON_SECRET" \
             "$BASE_URL/api/cron/replies_tick" | head -200
+
+  learning:
+    if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: tick learning
+        env:
+          BASE_URL: ${{ vars.VERCEL_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/learning_tick" | head -200
