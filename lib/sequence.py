@@ -486,17 +486,24 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
     text = strip_dashes(body) + sig
     addr = from_email or RESEND_FROM
     frm = f"{from_name} <{addr}>" if from_name else addr
+    # Only tag a real sequence id. seq_id is 0 for arbitrary recipients (typed-in
+    # "Extra emails" or campaign-less leads): emitting sequence_id=0 makes the
+    # webhook try to attach events to a non-existent sequence (FK error). Blast
+    # tracking correlates those by resend_id instead — see api/webhook/resend.py.
+    tags = [{"name": "kind", "value": "manual"}]
+    if seq_id:
+        tags = [
+            {"name": "sequence_id", "value": str(seq_id)},
+            {"name": "step", "value": "0"},
+            {"name": "kind", "value": "manual"},
+        ]
     payload = {
         "from": frm,
         "to": [to_email],
         "subject": strip_dashes(subject),
         "text": _md_to_text(text),
         "html": _html_body(text),
-        "tags": [
-            {"name": "sequence_id", "value": str(seq_id)},
-            {"name": "step", "value": "0"},
-            {"name": "kind", "value": "manual"},
-        ],
+        "tags": tags,
     }
     r = requests.post(
         "https://api.resend.com/emails",

@@ -414,6 +414,7 @@ def shell(active, crumb, h1, sub, body, badges=None):
     <div class="nav-section"><div class="nav-label">Workspace</div>
       <a class="nav-item {'active' if active=='build' else ''}" href="/build">New campaign</a>
       <a class="nav-item {'active' if active=='campaigns' else ''}" href="/campaigns">Campaigns</a>
+      <a class="nav-item {'active' if active=='blasts' else ''}" href="/blasts">Sent emails</a>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
       <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a>
       <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
@@ -1395,12 +1396,15 @@ def compose_page():
           f'<span class="rl">{_html.escape(loc)}</span></label>')
 
     sent, failed = request.args.get("sent"), request.args.get("failed")
+    blast = request.args.get("blast")
     flash = ""
     if sent is not None:
         msg = f'Sent {sent}'
         if failed and failed != "0":
             msg += f' · {failed} failed'
-        flash = f'<div class="note-bar" style="border-color:var(--good);color:var(--good)">{_html.escape(msg)}</div>'
+        link = (f' · <a href="/blasts/{_html.escape(blast)}" style="color:var(--good);text-decoration:underline">view tracking →</a>'
+                if blast else '')
+        flash = f'<div class="note-bar" style="border-color:var(--good);color:var(--good)">{_html.escape(msg)}{link}</div>'
     elif request.args.get("err") == "missing":
         flash = '<div class="note-bar" style="border-color:var(--danger,#c33);color:var(--danger,#c33)">Pick a recipient and fill subject + body.</div>'
 
@@ -1520,6 +1524,35 @@ def compose_send():
         return seq.send_manual(to, subj, bdy, sid, append_signature=sign,
                                signature=sig_text, from_email=from_email, from_name=from_name)
 
+    # Every composer send is recorded as a "blast" so it has its own tracking
+    # (open/click/reply rate) at /blasts — independent of campaigns. The Resend
+    # webhook correlates per-recipient events back here by resend_id. All blast
+    # bookkeeping is best-effort: if the blasts tables are unavailable (e.g. the
+    # migration hasn't run yet) it must never block the actual email send.
+    blast_id = None
+    try:
+        blast = sb.insert("blasts", {
+            "subject": subject, "body": body,
+            "from_email": from_email, "from_name": from_name,
+            "sent_by": me.get("id") or me.get("email"),
+        })
+        blast_id = blast[0]["id"] if blast else None
+    except Exception:
+        blast_id = None
+
+    def _track(email, res, *, business=None, lead_id=None):
+        """Log a blast_recipients row (one per outbound, success or failure)."""
+        if not blast_id:
+            return
+        try:
+            sb.insert("blast_recipients", {
+                "blast_id": blast_id, "email": email, "business": business,
+                "lead_id": lead_id, "resend_id": res.get("resend_id"),
+                "status": "failed" if "error" in res else "sent",
+            })
+        except Exception:
+            pass
+
     sent = failed = 0
     if ids:
         in_list = ",".join(str(i) for i in ids)
@@ -1531,21 +1564,145 @@ def compose_send():
                 continue
             sid = _manual_seq_id(l)
             res = _send(to, _merge(subject, l), _merge(body, l), sid or 0)
+            _track(to, res, business=l.get("business"), lead_id=l.get("id"))
             if "error" in res:
                 failed += 1
                 continue
             sent += 1
+            # Campaign leads also flow into the global KPIs via sequence_events.
             if sid:
                 sb.insert("sequence_events", {
                     "sequence_id": sid, "step": 0, "event_type": "sent",
                     "resend_id": res.get("resend_id"),
-                    "meta": {"subject": subject, "kind": "manual", "by": me.get("id"), "from": from_email},
+                    "meta": {"subject": subject, "kind": "manual", "by": me.get("id"),
+                             "from": from_email, "blast_id": blast_id},
                 })
     for e in extra:
         res = _send(e, _merge(subject, {}), _merge(body, {}), 0)
+        _track(e, res)
         failed += 1 if "error" in res else 0
         sent += 0 if "error" in res else 1
-    return redirect(f"/compose?sent={sent}&failed={failed}")
+
+    if blast_id:
+        try:
+            sb.update("blasts", {"id": blast_id}, {"recipients": sent})
+        except Exception:
+            pass
+    return redirect(f"/compose?sent={sent}&failed={failed}&blast={blast_id or ''}")
+
+
+def _blast_stats(recips: list) -> dict:
+    """Aggregate per-blast recipient rows into headline counts + rates."""
+    delivered = [r for r in recips if r.get("status") != "failed"]
+    n = len(delivered)
+    o = sum(1 for r in delivered if r.get("opened"))
+    c = sum(1 for r in delivered if r.get("clicked"))
+    rep = sum(1 for r in delivered if r.get("replied"))
+    b = sum(1 for r in delivered if r.get("bounced"))
+    f = sum(1 for r in recips if r.get("status") == "failed")
+    return {"n": n, "opened": o, "clicked": c, "replied": rep, "bounced": b,
+            "failed": f, "orate": _rate(o, n), "crate": _rate(c, n),
+            "rrate": _rate(rep, n)}
+
+
+@app.route("/blasts")
+def blasts_page():
+    import html as _html
+    blasts = sb.select("blasts", {"select": "*", "order": "created_at.desc"}, limit=200)
+    by_blast = defaultdict(list)
+    if blasts:
+        ids = ",".join(str(b["id"]) for b in blasts)
+        recips = sb.select("blast_recipients",
+                           {"select": "blast_id,status,opened,clicked,replied,bounced",
+                            "blast_id": f"in.({ids})"}, limit=50000)
+        for r in recips:
+            by_blast[r["blast_id"]].append(r)
+
+    rows = ""
+    for bl in blasts:
+        s = _blast_stats(by_blast.get(bl["id"], []))
+        subj = _html.escape((bl.get("subject") or "(no subject)")[:80])
+        when = (bl.get("created_at") or "")[:16].replace("T", " ")
+        frm = _html.escape(bl.get("from_email") or "")
+        rows += (
+          f'<tr onclick="location.href=\'/blasts/{bl["id"]}\'" style="cursor:pointer">'
+          f'<td class="subj">{subj}</td>'
+          f'<td class="when">{when}</td>'
+          f'<td>{frm}</td>'
+          f'<td style="text-align:right">{s["n"]}</td>'
+          f'<td style="text-align:right">{s["orate"]}%</td>'
+          f'<td style="text-align:right">{s["crate"]}%</td>'
+          f'<td style="text-align:right">{s["rrate"]}%</td></tr>')
+    if not rows:
+        rows = ('<tr><td colspan="7" style="padding:40px;text-align:center;color:var(--ink-mute)">'
+                'No sends yet. Use <strong>Send email</strong> to send your first one-off blast.</td></tr>')
+
+    body = f"""
+    <div class="help"><div>Every one-off send from <b>Send email</b> is tracked here — including emails to manually typed-in addresses that aren’t saved leads. Open and click rates fill in as recipients engage (bot opens within 35s are filtered out). Click a row for per-recipient detail.</div></div>
+    <div class="block"><div class="block-body" style="padding:0">
+    <table class="tbl">
+      <thead><tr><th>Subject</th><th>Sent</th><th>From</th><th style="text-align:right">Recipients</th><th style="text-align:right">Open rate</th><th style="text-align:right">Click rate</th><th style="text-align:right">Reply rate</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    </div></div>
+    <style>.tbl{{width:100%;border-collapse:collapse;font-size:13px}}.tbl th{{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--ink-mute);font-size:11px;text-transform:uppercase;letter-spacing:.04em}}.tbl td{{padding:11px 14px;border-bottom:1px solid var(--line)}}.tbl tbody tr:hover{{background:var(--bg-soft)}}.tbl .subj{{font-weight:600;color:var(--ink)}}.tbl .when{{color:var(--ink-mute);font-variant-numeric:tabular-nums}}</style>"""
+    return shell("blasts", "workspace / sends", "Sent emails", "One-off sends and their tracking", body)
+
+
+@app.route("/blasts/<int:bid>")
+def blast_detail(bid):
+    import html as _html
+    rows_b = sb.select("blasts", {"select": "*", "id": f"eq.{bid}"}, limit=1)
+    if not rows_b:
+        return redirect("/blasts")
+    bl = rows_b[0]
+    recips = sb.select("blast_recipients",
+                       {"select": "*", "blast_id": f"eq.{bid}", "order": "created_at.asc"},
+                       limit=50000)
+    s = _blast_stats(recips)
+
+    def _state(r):
+        if r.get("status") == "failed":
+            return chip("bounced", "failed")
+        if r.get("replied"):
+            return chip("replied", "replied")
+        if r.get("bounced"):
+            return chip("bounced", "bounced")
+        if r.get("clicked"):
+            return chip("clicked", "clicked")
+        if r.get("opened"):
+            return chip("opened", "opened")
+        return chip("sent", "sent")
+
+    rrows = "".join(
+      f'<tr><td>{_html.escape(r.get("business") or "")}</td>'
+      f'<td class="email">{_html.escape(r.get("email") or "")}</td>'
+      f'<td>{_state(r)}</td></tr>' for r in recips) or \
+      '<tr><td colspan="3" style="padding:30px;text-align:center;color:var(--ink-mute)">No recipients.</td></tr>'
+
+    subj = _html.escape(bl.get("subject") or "(no subject)")
+    when = (bl.get("created_at") or "")[:16].replace("T", " ")
+    frm = _html.escape(bl.get("from_email") or "")
+    body = f"""
+    <div style="margin-bottom:14px"><a href="/blasts" style="font-size:13px;color:var(--accent)">← All sends</a></div>
+    <div class="block"><div class="block-body">
+      <div style="font-weight:600;font-size:15px;margin-bottom:4px">{subj}</div>
+      <div class="muted" style="font-size:12px;color:var(--ink-mute)">{when} · from {frm}</div>
+    </div></div>
+    <div class="kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0">
+      <div class="kpi"><div class="kpi-label">Recipients</div><div class="kpi-num">{s['n']}</div><div class="kpi-meta">{s['failed']} failed</div></div>
+      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">{s['orate']}<span class="unit">%</span></div><div class="kpi-meta">{s['opened']} opened</div></div>
+      <div class="kpi"><div class="kpi-label">Click rate</div><div class="kpi-num">{s['crate']}<span class="unit">%</span></div><div class="kpi-meta">{s['clicked']} clicked</div></div>
+      <div class="kpi"><div class="kpi-label">Reply rate</div><div class="kpi-num">{s['rrate']}<span class="unit">%</span></div><div class="kpi-meta">{s['replied']} replied</div></div>
+    </div>
+    <div class="block"><div class="block-body" style="padding:0">
+    <table class="tbl">
+      <thead><tr><th>Business</th><th>Email</th><th>Status</th></tr></thead>
+      <tbody>{rrows}</tbody>
+    </table>
+    </div></div>
+    <style>.tbl{{width:100%;border-collapse:collapse;font-size:13px}}.tbl th{{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--ink-mute);font-size:11px;text-transform:uppercase;letter-spacing:.04em}}.tbl td{{padding:10px 14px;border-bottom:1px solid var(--line)}}.tbl .email{{color:var(--ink-mute)}}</style>"""
+    return shell("blasts", "workspace / sends", "Send detail", subj, body)
 
 
 @app.route("/compose/draft", methods=["POST"])

@@ -44,7 +44,17 @@ def _sender(payload: dict) -> str | None:
     return None
 
 
+def _mark_blast_replied(email: str) -> None:
+    """A reply from this address counts toward any manual blast it received.
+    Best-effort and independent of the sequence/lead match below."""
+    try:
+        sb.update("blast_recipients", {"email": email}, {"replied": True})
+    except Exception:
+        pass
+
+
 def _pause_for_reply(email: str) -> dict:
+    _mark_blast_replied(email)
     leads = sb.select("leads", {"select": "id", "email": f"eq.{email}"}, limit=50)
     if not leads:
         return {"matched": False, "email": email}

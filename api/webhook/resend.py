@@ -126,6 +126,39 @@ def _accelerate_on_open(sequence_id: int) -> None:
         sb.update("sequences", {"id": sequence_id}, {"next_send_at": target.isoformat()})
 
 
+def _update_blast_recipient(resend_id: str | None, event_type: str) -> None:
+    """Correlate a webhook event to a manual-blast recipient by resend_id and
+    flip the matching flag. Best-effort: blast tracking is independent of the
+    sequence pipeline, so failures here must never break event recording."""
+    if not resend_id:
+        return
+    rows = sb.select("blast_recipients",
+                     {"select": "id,created_at,opened,clicked",
+                      "resend_id": f"eq.{resend_id}"}, limit=1)
+    if not rows:
+        return
+    from datetime import datetime, timezone
+    r = rows[0]
+    now = datetime.now(timezone.utc)
+
+    def _fresh() -> bool:  # same <35s bot-open/click guard as sequences
+        try:
+            t = datetime.fromisoformat((r.get("created_at") or "").replace("Z", "+00:00"))
+            return (now - t).total_seconds() < 35
+        except Exception:
+            return False
+
+    patch = {}
+    if event_type == "opened" and not _fresh():
+        patch = {"opened": True, "opened_at": now.isoformat()}
+    elif event_type == "clicked" and not _fresh():
+        patch = {"clicked": True, "clicked_at": now.isoformat()}
+    elif event_type == "bounced":
+        patch = {"bounced": True}
+    if patch:
+        sb.update("blast_recipients", {"id": r["id"]}, patch)
+
+
 def _record(payload: dict) -> dict:
     raw_type = payload.get("type", "")
     event_type = EVENT_MAP.get(raw_type)
@@ -135,6 +168,15 @@ def _record(payload: dict) -> dict:
     data = payload.get("data") or {}
     resend_id = data.get("email_id") or data.get("id")
     tags = data.get("tags")
+
+    # Manual-blast tracking runs alongside (and independent of) the sequence
+    # pipeline below. Recipients of one-off composer sends — including arbitrary
+    # typed-in addresses with no lead/sequence — are correlated here by resend_id.
+    try:
+        _update_blast_recipient(resend_id, event_type)
+    except Exception:
+        pass
+
     sequence_id, step = _find_sequence_step(resend_id, tags) if resend_id else (None, None)
 
     row = {
