@@ -29,6 +29,10 @@ ANGLE_EPSILON = float(os.environ.get("LEADGEN_ANGLE_EPSILON", "0.3"))
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# OpenAI is a fallback only (used when Claude errors / is out of credits).
+# Claude stays the primary writer. Set OPENAI_API_KEY to enable.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "outreach@oltaflock.ai")
 SENDER_NAME = os.environ.get("SENDER_NAME", "Khush Mutha")
@@ -42,10 +46,11 @@ MAX_STEP = 7
 # Default offer used when a campaign has no offer_brief. Oltaflock's horizontal
 # AI operations-audit play with the 2-to-3-month ROI guarantee. No em/en dashes.
 DEFAULT_OFFER = (
-    "Oltaflock runs a free AI operations audit for your business. We map where time and "
-    "money leak (manual admin, slow lead follow-up, repetitive back-office work, scheduling, "
-    "quoting), then design and run the AI systems that remove that waste. You see measurable "
-    "ROI within 2 to 3 months of going live or you do not pay. No long contracts."
+    "Oltaflock helps service businesses close more of the leads they already get. Most lose deals "
+    "to slow follow-up, missed calls, and manual back-and-forth. We set up systems that answer every "
+    "lead in seconds, book more appointments, and take the busywork off the team, so they win revenue "
+    "they are currently leaving on the table. Measurable results within 2 to 3 months or you do not pay. "
+    "No long contracts. (The systems run on AI, but that is the how, not the pitch.)"
 )
 
 # Cold cadence — absolute days from step 1.
@@ -72,6 +77,7 @@ REGION_TZ = {
     "australia": "Australia/Sydney", "au": "Australia/Sydney",
     "new zealand": "Pacific/Auckland", "nz": "Pacific/Auckland",
     "india": "Asia/Kolkata", "in": "Asia/Kolkata",
+    "uae": "Asia/Dubai", "united arab emirates": "Asia/Dubai", "ae": "Asia/Dubai",
 }
 
 
@@ -127,23 +133,23 @@ def angle_for(email: str, step: int) -> tuple[str, str]:
 # 7-step drip, unchanged). The "Step N" prose inside each instruction is a
 # stylistic anchor for the model — the real ordinal is injected as "STEP x OF n".
 ROLE_INSTRUCTIONS = {
-    "first-touch": ("Step 1, first cold email (day 0, 90-140 words). Lead with a SPECIFIC observation pulled "
-        "from the lead facts (business name, city, niche, and scale signals like review count). One "
-        "short paragraph naming a likely operational drain for a business this size: hours lost to "
-        "manual admin, slow lead follow-up, repetitive back-office work, scheduling or quoting by hand. "
-        "Introduce the offer: a free AI operations audit that pinpoints where time and money leak, then "
-        "we build and run the AI systems that remove that waste. Deliver the risk reversal verbatim "
-        "('you see measurable ROI within 2 to 3 months of going live or you do not pay'). Soft CTA: a "
-        "short reply or a 15-minute call."),
-    "bump": ("Step 2, bump (day 3, 35-70 words). Acknowledge no reply in ONE casual line. Drop a single "
-        "concrete outcome framed generically: e.g. 'a similar business cut roughly 12 hours a week of "
-        "manual admin in the first month after the audit'. End with a one-line question. No re-pitch of "
-        "the offer."),
-    "fomo": ("Step 3, competitor / FOMO angle (day 7, 90-140 words). Open with the observation that another "
-        "business in the same space (do not name them) is already using AI to absorb the repetitive work "
-        "and is moving faster on the same headcount. Use a believable stat to ground the cost of staying "
-        "fully manual. Tie back to the risk reversal in one sentence. CTA: 'want me to send the 90-second "
-        "overview of what we would audit first?'"),
+    "first-touch": ("First cold email (80-120 words, shorter is better). Open with ONE sharp line about THEM, "
+        "pulled from the lead facts (their business, city, how busy/established they look from review count "
+        "or rating), so it is obvious this is not a blast. Then name the single most likely way a business "
+        "like theirs is leaving money on the table: leads that go cold before anyone follows up, calls missed "
+        "after hours, deals lost to whoever replied first. Make the cost feel real and current. Frame the fix "
+        "as the OUTCOME (more booked jobs, more closings, revenue recovered), with the how as a brief aside. "
+        "State the risk reversal in plain words (measurable results in 2 to 3 months or they do not pay). End "
+        "with one tiny ask, like 'worth a quick look?' or 'want the 2-line version?'. No booking link."),
+    "bump": ("Short bump (30-55 words). One casual line acknowledging no reply, no guilt. Then ONE concrete, "
+        "believable result a similar local business got, phrased like a story (e.g. 'a realtor a few suburbs "
+        "over started replying to web leads in under a minute and booked three extra showings that week'). "
+        "End with a single low-effort question. No re-pitch."),
+    "fomo": ("Competitor nudge (60-100 words). Without naming names, point out that someone in their market is "
+        "already answering every lead instantly and winning the deals that used to be a coin flip. Make the "
+        "stakes feel present, not hypothetical: the deals slipping away while their leads sit unanswered. Tie "
+        "back to the outcome in one line. CTA is a single specific question, like 'want to see what they are "
+        "doing differently?'. No booking link."),
     "value-drop": ("Step 4, value drop (day 11, 70-110 words). Tease ONE concrete thing the audit surfaces for THIS "
         "niche (e.g. how many hours per week go to quoting, scheduling, and follow-up that AI can absorb). "
         "If a walkthrough or booking link is provided in the offer, paste it on its own line; otherwise "
@@ -169,6 +175,64 @@ ROLE_INSTRUCTIONS = {
         "proof point, or question tied to their niche that you have NOT used earlier in this thread. No "
         "re-pitch of the full offer. One low-friction CTA (a one-word reply or a 15-minute call). Always end "
         "with the opt-out, verbatim: 'reply STOP and I will close the loop for good.'"),
+}
+
+# ─────────── Travel-agency niche instruction set ───────────
+# Selected per-campaign via sequence_config {"instruction_set": "travel"}. Same
+# roles + cadence as the default drip; only the copy brief changes so the emails
+# read as the AI itinerary generator pitch, not the ops audit. The concrete offer
+# specifics still come from the campaign's offer_brief. (Step 1 is normally a
+# seeded, hand-reviewed email — this first-touch entry is only a fallback.)
+ROLE_INSTRUCTIONS_TRAVEL = {
+    "first-touch": ("Step 1, first cold email (day 0, 90-140 words). Open with the reality for THIS agency: "
+        "travel clients message several agencies at once and whoever sends a solid quote first usually wins "
+        "the booking, while the rest are still building theirs a day later. Name the drain: agents spending "
+        "1 to 2 days hand-building custom itineraries and quotes. Introduce the offer from the OFFER/CONTEXT "
+        "above (an AI itinerary generator that returns client-ready itineraries and quotes in minutes, freeing "
+        "up hours each week per agent), done-for-you, pay only once it is live and saving time. Note a couple "
+        "of agencies in their region are already quoting same-minute (do not name them). Soft CTA: offer to "
+        "send a free 2-minute sample itinerary built for their agency. Use the business name and city."),
+    "bump": ("Step 2, bump (day 3, 35-70 words). Acknowledge no reply in ONE casual line. Drop a single "
+        "concrete outcome: an agency turning quotes around in minutes instead of a day and catching bookings "
+        "that used to go cold to a faster competitor. End with a one-line question. No re-pitch of the offer."),
+    "fomo": ("Step 3, competitor / FOMO angle (day 7, 90-140 words). Open with the observation that another "
+        "agency in the same space (do not name them) is already replying to inquiries same-minute with full "
+        "itineraries and winning bookings that used to be a coin toss. Ground the cost of staying manual: "
+        "every inquiry that waits a day is one a faster agency already quoted. Tie back to the offer in one "
+        "line. CTA: 'want me to send the free 2-minute sample itinerary built for your agency?'"),
+    "value-drop": ("Step 4, value drop (day 11, 70-110 words). Tease ONE concrete thing the AI itinerary "
+        "generator does: takes a destination, dates, budget and group size and returns a branded, "
+        "client-ready itinerary with pricing in minutes, on WhatsApp or email, at any hour. If a sample or "
+        "booking link is in the offer, paste it on its own line; otherwise offer to send the free 2-minute "
+        "sample. CTA: reply 'yes' and I send it."),
+    "recap": ("Step 5, grand-slam recap (day 16, 90-140 words). Make staying manual look like the riskier "
+        "choice. Structure: (1) one line on what slow quoting costs each month, inquiries they already paid "
+        "to get, lost to whoever replied first. (2) the offer in three short lines: we build and run the AI "
+        "itinerary generator for them, quotes out in minutes not days, they pay only once it is live and "
+        "saving time. (3) one line: 'the only way this costs you is if it works and you keep it.' Mention "
+        "city exclusivity once. CTA: 15 minutes this week, their pick of day. Plain arithmetic, no hype."),
+    "interrupt": ("Step 6, quirky pattern interrupt (day 21, 60-100 words). Drop the tone. Open with a "
+        "self-aware one-liner admitting they have ignored the thread, e.g. 'either these are landing in spam "
+        "or hand-building itineraries genuinely is not slowing your team down, and I honestly cannot tell "
+        "which.' Then ONE crisp benefit line tied to quoting speed. CTA must be a binary low-effort reply: "
+        "'reply yes for the free 2-minute sample, reply no and I close the loop.'"),
+    "breakup": ("Step 7, breakup (day 28, 35-70 words). Last note. Polite, short, leaves the door open. One "
+        "sentence on why speed-to-quote still decides bookings for an agency their size. Then verbatim: "
+        "'Reply with one word and I will act on it: STOP means I will not email again. CALL means book a "
+        "15-minute slot. LATER means I circle back in 90 days.' Nothing else."),
+    "nurture": ("Ongoing nurture touch. This agency keeps OPENING your emails but has not replied, and you "
+        "are past the core sequence. 50-90 words. Tone: a helpful peer with useful ideas, not a chaser. Do "
+        "NOT say or imply you can see them opening. Lead with ONE fresh, specific idea tied to travel agency "
+        "operations or itinerary/quote speed that you have NOT used earlier in the thread. No re-pitch of the "
+        "full offer. One low-friction CTA. End verbatim: 'reply STOP and I will close the loop for good.'"),
+}
+
+# Named instruction sets a campaign can opt into via sequence_config.instruction_set.
+# Missing / unknown name falls back to the default ops-audit copy, so existing
+# campaigns are untouched.
+INSTRUCTION_SETS = {
+    "default": ROLE_INSTRUCTIONS,
+    "travel": ROLE_INSTRUCTIONS_TRAVEL,
 }
 
 # UI-facing metadata for each role (label + one-line description). Order here is
@@ -239,8 +303,20 @@ def role_for(config, step: int) -> str:
     return "first-touch"
 
 
+def _instruction_set(config) -> dict:
+    """Per-campaign copy set. config.instruction_set picks a named set
+    (e.g. 'travel'); anything missing or unknown falls back to the default."""
+    if isinstance(config, dict):
+        name = config.get("instruction_set")
+        if name in INSTRUCTION_SETS:
+            return INSTRUCTION_SETS[name]
+    return ROLE_INSTRUCTIONS
+
+
 def instruction_for(config, step: int) -> str:
-    return ROLE_INSTRUCTIONS.get(role_for(config, step), ROLE_INSTRUCTIONS["first-touch"])
+    iset = _instruction_set(config)
+    role = role_for(config, step)
+    return iset.get(role) or ROLE_INSTRUCTIONS.get(role) or ROLE_INSTRUCTIONS["first-touch"]
 
 
 def cold_offset_days(config, step: int) -> int:
@@ -339,9 +415,39 @@ def next_send_at(step: int, opens: int, region: str | None, *, from_time: dateti
 
 
 # ─────────── Drafting ───────────
+def _signals(lead: dict) -> dict:
+    """Lead.signals as a dict, tolerating a JSON-string column value."""
+    s = lead.get("signals")
+    if isinstance(s, str):
+        try:
+            s = json.loads(s)
+        except Exception:
+            s = {}
+    return s or {}
+
+
+def seed_draft(lead: dict, step: int) -> dict | None:
+    """If a lead carries a pre-written, hand-reviewed email for this step
+    (imported via CSV into signals.seed_body / seed_subject), return it as a
+    ready draft so the engine sends it verbatim instead of asking Claude to
+    write one. Used for step 1 of seeded campaigns. The structured signature is
+    still appended downstream by send_email, so the seed body must NOT include a
+    signoff. Returns None when there is no seed for this step."""
+    s = _signals(lead)
+    if int(s.get("seed_step", 1)) != step:
+        return None
+    body = (s.get("seed_body") or "").strip()
+    if not body:
+        return None
+    subject = (s.get("seed_subject") or "").strip() or f"quick one, {lead.get('business', '')}".strip(", ")
+    return {"subject": strip_dashes(subject)[:120], "body": strip_dashes(body),
+            "angle": "seed", "model": "seed"}
+
+
 def _facts_block(lead: dict) -> str:
-    s = lead.get("signals") or {}
+    s = _signals(lead)
     facts = {
+        "contact_first_name": s.get("contact_first_name"),
         "business": lead.get("business"),
         "city": lead.get("city"),
         "country": lead.get("country"),
@@ -451,47 +557,131 @@ def _engagement_block(seq: dict, eng: dict | None = None) -> str:
     return " ".join(parts)
 
 
-def _fallback_draft(lead: dict, step: int, angle_name: str) -> dict:
+def _fallback_draft(lead: dict, step: int, angle_name: str, config=None) -> dict:
+    """Degraded-path draft used only when Claude is unavailable. Stays on-brand
+    for the campaign's instruction set and carries NO signoff (the structured
+    signature is appended at send time)."""
     biz = lead.get("business", "your team")
     city = lead.get("city") or ""
-    subs = {
-        1: f"quick one about {biz}".lower()[:45],
-        2: f"following up on {biz}".lower()[:45],
-        3: f"what {city or 'a competitor'} is trying".lower()[:45],
-        4: f"60-sec overview for {biz}".lower()[:45],
-        5: f"the math on {biz}".lower()[:45],
-        6: f"last useful idea for {biz}".lower()[:45],
-        7: f"closing the loop, {biz}".lower()[:45],
-    }
-    body = (f"Hi,\n\nReaching out about {biz}"
-            + (f" in {city}" if city else "")
-            + ". We run a free AI operations audit that finds where time and money leak in "
-              "businesses like yours, then build the AI systems to fix it. You see measurable "
-              "ROI within 2 to 3 months or you do not pay.\n\n"
-              "Worth a quick 15-minute call?\n\n" + SENDER_NAME)
-    subject = strip_dashes(subs.get(step, f"re: {biz}".lower()[:45]))
+    where = f" in {city}" if city else ""
+    travel = _instruction_set(config) is ROLE_INSTRUCTIONS_TRAVEL
+    if travel:
+        subs = {
+            1: f"quick one, {biz}", 2: f"following up, {biz}",
+            3: f"what a faster agency is doing", 4: f"2-min sample for {biz}",
+            5: f"the math for {biz}", 6: f"last idea for {biz}",
+            7: f"closing the loop, {biz}",
+        }
+        body = (f"Hi,\n\nReaching out about {biz}{where}. We set up AI itinerary generators for "
+                "travel agencies so client-ready itineraries and quotes go out in minutes instead "
+                "of a day or two, freeing up about 12 hours a week per agent. Done-for-you, and you "
+                "only start paying once it is live and saving time.\n\n"
+                f"Want me to send a free 2-minute sample itinerary built for {biz}?")
+    else:
+        subs = {
+            1: f"quick one about {biz}", 2: f"following up on {biz}",
+            3: f"what {city or 'a competitor'} is trying", 4: f"60-sec overview for {biz}",
+            5: f"the math on {biz}", 6: f"last useful idea for {biz}",
+            7: f"closing the loop, {biz}",
+        }
+        body = (f"Hi,\n\nReaching out about {biz}{where}. We run a free AI operations audit that "
+                "finds where time and money leak in businesses like yours, then build the AI systems "
+                "to fix it. You see measurable ROI within 2 to 3 months or you do not pay.\n\n"
+                "Worth a quick 15-minute call?")
+    subject = strip_dashes(subs.get(step, f"re: {biz}").lower()[:45])
     return {"subject": subject, "body": strip_dashes(body), "angle": angle_name, "model": "fallback"}
+
+
+def _extract_json(text: str) -> dict | None:
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    try:
+        d = json.loads(m.group(0) if m else (text or ""))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _claude_json(system: str, user: str) -> dict | None:
+    """Primary writer. Returns parsed {subject, body, _model} or None on any failure."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": MODEL, "max_tokens": 900,
+                  "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                  "messages": [{"role": "user", "content": user}]},
+            timeout=60,
+        )
+        if r.status_code != 200:
+            return None
+        text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        d = _extract_json(text)
+        if d:
+            d["_model"] = MODEL
+        return d
+    except Exception:
+        return None
+
+
+def _openai_json(system: str, user: str) -> dict | None:
+    """Fallback writer, used only when Claude returns nothing. Same prompt."""
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": OPENAI_MODEL, "max_tokens": 900,
+                  "response_format": {"type": "json_object"},
+                  "messages": [{"role": "system", "content": system},
+                               {"role": "user", "content": user}]},
+            timeout=60,
+        )
+        if r.status_code != 200:
+            return None
+        text = (((r.json() or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        d = _extract_json(text)
+        if d:
+            d["_model"] = f"openai:{OPENAI_MODEL}"
+        return d
+    except Exception:
+        return None
 
 
 def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=None,
               eng: dict | None = None, research: dict | None = None) -> dict:
+    # Hand-reviewed seeded email (e.g. the approved step-1 copy imported per
+    # lead). Sent verbatim; no Claude call, no angle bandit.
+    seeded = seed_draft(lead, step)
+    if seeded:
+        return seeded
+
     email = lead.get("email") or ""
     angle_name, angle_desc = angle_for(email, step)
-
-    if not ANTHROPIC_API_KEY:
-        return _fallback_draft(lead, step, angle_name)
 
     total = max_step(config)
     instruction = instruction_for(config, step)
     mandate = SUBJECT_MANDATE.format(angle_name=angle_name, angle_desc=angle_desc)
 
     system = (
-        "You write cold outreach emails that book qualified meetings. Plain, specific, "
-        "human, never corporate or buzzwordy. You return ONLY valid JSON: "
-        '{"subject": "...", "body": "..."}. The body is plain text, no signature '
-        "(it is appended later). Use real line breaks.\n\n"
-        "HARD STYLE RULE: never use em dashes or en dashes anywhere in the subject or body. "
-        "Use commas, periods, or parentheses instead. This is a strict brand rule, no exceptions.\n\n"
+        "You write cold outreach that sounds like a sharp human who actually understands this business, "
+        "not a marketer and not a bot. You return ONLY valid JSON: "
+        '{"subject": "...", "body": "..."}. The body is plain text, no signature (appended later), real line breaks.\n\n'
+        "VOICE (follow exactly):\n"
+        "- Lead with THEIR outcome: more deals closed, more revenue, more booked jobs, hours back. The "
+        "mechanism (AI, automation) is at most a short aside, never the headline or the subject.\n"
+        "- Write like you talk. Short sentences. One idea per email. It should read like a real person "
+        "typed it in 60 seconds, not like a campaign.\n"
+        "- Make it unmistakably about THIS lead using the facts given. If you cannot be specific, be shorter.\n"
+        "- Banned: 'I hope this finds you well', 'I wanted to reach out', 'just following up', 'circle back', "
+        "'leverage', 'solutions', 'streamline', 'cutting-edge', 'revolutionize', 'synergy', 'game-changer'. "
+        "No hype, no emoji, no stacked exclamation marks.\n"
+        "- Earn the reply: make the ask tiny and concrete.\n\n"
+        "HARD RULES: never use em dashes or en dashes (use commas, periods, or parentheses). Never paste a "
+        "booking or scheduling link; if you propose a call, just ask what times work. These are strict, no exceptions.\n\n"
         f"OFFER / CONTEXT:\n{offer_brief or DEFAULT_OFFER}"
     )
     brief = learning.whats_working_brief()
@@ -520,34 +710,15 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=
         "Return ONLY the JSON object."
     )
 
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": MODEL,
-                "max_tokens": 900,
-                "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                "messages": [{"role": "user", "content": user}],
-            },
-            timeout=60,
-        )
-        if r.status_code != 200:
-            return _fallback_draft(lead, step, angle_name)
-        text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        data = json.loads(m.group(0) if m else text)
-        subject = strip_dashes((data.get("subject") or "").strip())[:120]
-        body = strip_dashes((data.get("body") or "").strip())
-        if not subject or not body:
-            return _fallback_draft(lead, step, angle_name)
-        return {"subject": subject, "body": body, "angle": angle_name, "model": MODEL}
-    except Exception:
-        return _fallback_draft(lead, step, angle_name)
+    # Claude primary, OpenAI fallback, canned template last.
+    raw = _claude_json(system, user) or _openai_json(system, user)
+    if raw:
+        subject = strip_dashes((raw.get("subject") or "").strip())[:120]
+        body = strip_dashes((raw.get("body") or "").strip())
+        if subject and body:
+            return {"subject": subject, "body": body, "angle": angle_name,
+                    "model": raw.get("_model", "llm")}
+    return _fallback_draft(lead, step, angle_name, config)
 
 
 # ─────────── Compose + send ───────────
@@ -568,8 +739,6 @@ def _signature() -> str:
         lines.append(SENDER_TITLE)
     if WEBSITE_URL:
         lines.append(WEBSITE_URL)
-    if BOOKING_LINK:
-        lines.append(f"[Discovery Call]({BOOKING_LINK})")
     return "\n".join(lines)
 
 
@@ -588,8 +757,13 @@ def _html_body(body: str) -> str:
     # them. Without a real <a href>, clicks are never tracked.
     esc = re.sub(r'(https?://[^\s<]+)', r'<a href="\1">\1</a>', esc)
     esc = re.sub(r'\x00(\d+)\x00', lambda m: stash[int(m.group(1))], esc)
-    html = esc.replace("\n", "<br>")
-    return f'<div style="font-family:Georgia,serif;font-size:15px;line-height:1.55;color:#111;">{html}</div>'
+    # Blank lines separate paragraphs (spaced <p>); single newlines stay <br>
+    # within a paragraph. Gives proper email spacing instead of a cramped wall.
+    paras = [p for p in re.split(r"\n{2,}", esc) if p.strip()]
+    blocks = "".join(
+        f'<p style="margin:0 0 14px">{p.replace(chr(10), "<br>")}</p>' for p in paras
+    )
+    return f'<div style="font-family:Georgia,serif;font-size:15px;line-height:1.6;color:#111;">{blocks}</div>'
 
 
 def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:

@@ -25,17 +25,11 @@ BOOKING_LINK = os.environ.get(
 
 
 def _sigs(name: str, title: str = "Oltaflock AI") -> list[dict]:
-    """Selectable signature variants. No em/en dashes (house rule).
-
-    The cal.com link is written as a markdown [text](url) link so the email
-    pipeline renders it as a clickable "Discovery Call" anchor in HTML and
-    as "Discovery Call: <url>" in the plain-text alternative. The name is
-    whatever sender is selected (Khush, Vineet, Amaan)."""
-    full = f"{name}\n{title}\n{DOMAIN}\n[Discovery Call]({BOOKING_LINK})"
+    """Selectable signature variants. No em/en dashes (house rule), and no
+    booking link in any outbound email (removed per operator request)."""
     short = f"{name}\n{title}\n{DOMAIN}"
     return [
-        {"label": "Full (with Discovery Call link)", "text": full},
-        {"label": "Short", "text": short},
+        {"label": "Standard", "text": short},
     ]
 
 
