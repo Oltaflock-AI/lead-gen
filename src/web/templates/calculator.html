@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Leak calc — lead-gen{% endblock %}
+{% block breadcrumb %}workspace / leak calc{% endblock %}
+{% block heading %}Revenue Leak Calculator{% endblock %}
+{% block subheading %}Show a prospect the money they're leaking by responding slowly to inbound leads.{% endblock %}
+
+{% block content %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl">
+
+  {# ---------- Inputs ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="n-block-title mb-4">Prospect inputs</div>
+
+    <div class="flex flex-wrap gap-2 mb-5">
+      <button type="button" class="btn btn-sm preset" data-cur="$" data-leads="40"  data-price="420000"  data-comm="2.5">US · standard</button>
+      <button type="button" class="btn btn-sm preset" data-cur="$" data-leads="25"  data-price="1100000" data-comm="2.5">US · luxury</button>
+      <button type="button" class="btn btn-sm preset" data-cur="AED " data-leads="50" data-price="1500000" data-comm="2">UAE · Dubai</button>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+      <div>
+        <label class="n-label" for="cur">Currency symbol</label>
+        <input id="cur" type="text" value="$" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="leads">Leads / month</label>
+        <input id="leads" type="number" min="0" value="40" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="price">Average sale price</label>
+        <input id="price" type="number" min="0" value="420000" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="comm">Commission % (your side)</label>
+        <input id="comm" type="number" min="0" step="0.1" value="2.5" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="cur_conv">Current conversion % (slow)</label>
+        <input id="cur_conv" type="number" min="0" step="0.1" value="1" class="n-input">
+      </div>
+      <div>
+        <label class="n-label" for="fast_conv">Achievable conversion % (instant)</label>
+        <input id="fast_conv" type="number" min="0" step="0.1" value="2" class="n-input">
+      </div>
+    </div>
+
+    <p class="text-xs mt-4" style="color: var(--ink-mute);">
+      Defaults are conservative: a 1%&rarr;2% lift from instant response. Industry data supports far more
+      &mdash; 78% of buyers go with the first agent to respond; the average agent takes 15+ hours.
+    </p>
+  </section>
+
+  {# ---------- Outputs ---------- #}
+  <section class="n-card" style="padding: 22px 26px;">
+    <div class="n-block-title mb-4">The leak</div>
+
+    <div class="text-center py-4 mb-4" style="background: var(--accent-soft); border-radius: 10px;">
+      <div class="text-xs uppercase tracking-wide" style="color: var(--ink-mute);">Money on the table / year</div>
+      <div id="o_recovered" style="font-family: 'Fraunces', serif; font-size: 40px; font-weight: 600; color: var(--ink); line-height: 1.1; margin-top: 4px;">$50,400</div>
+      <div id="o_monthly" class="text-xs mt-1" style="color: var(--ink-mute);">~$4,200 / month</div>
+    </div>
+
+    <div class="divide-y" style="border-color: var(--line);">
+      <div class="flex items-center justify-between py-2.5">
+        <span class="text-sm" style="color: var(--ink-soft);">Commission per deal</span>
+        <span id="o_comm" class="text-sm" style="color: var(--ink); font-weight: 500;">$10,500</span>
+      </div>
+      <div class="flex items-center justify-between py-2.5">
+        <span class="text-sm" style="color: var(--ink-soft);">Deals / year &mdash; now</span>
+        <span id="o_now" class="text-sm" style="color: var(--ink); font-weight: 500;">5</span>
+      </div>
+      <div class="flex items-center justify-between py-2.5">
+        <span class="text-sm" style="color: var(--ink-soft);">Deals / year &mdash; instant response</span>
+        <span id="o_fast" class="text-sm" style="color: var(--ink); font-weight: 500;">10</span>
+      </div>
+      <div class="flex items-center justify-between py-2.5">
+        <span class="text-sm" style="color: var(--ink-soft);">Extra deals / year</span>
+        <span id="o_extra" class="text-sm" style="color: var(--accent); font-weight: 600;">5</span>
+      </div>
+    </div>
+  </section>
+
+  {# ---------- Email hook ---------- #}
+  <section class="n-card lg:col-span-2" style="padding: 22px 26px;">
+    <div class="flex items-center justify-between mb-3">
+      <div class="n-block-title">One-line email hook</div>
+      <button type="button" id="copyBtn" class="btn btn-sm">Copy</button>
+    </div>
+    <p id="o_hook" style="color: var(--ink); line-height: 1.6;"></p>
+  </section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const ids = ['cur','leads','price','comm','cur_conv','fast_conv'];
+  const el = {};
+  ids.forEach(i => el[i] = document.getElementById(i));
+
+  const num = (id) => parseFloat(el[id].value) || 0;
+  const fmt = (n) => Math.round(n).toLocaleString('en-US');
+  const dealsFmt = (n) => Math.round(n).toLocaleString('en-US');
+
+  function recompute() {
+    const cur = el.cur.value || '$';
+    const leads = num('leads');
+    const price = num('price');
+    const comm = num('comm') / 100;
+    const cConv = num('cur_conv') / 100;
+    const fConv = num('fast_conv') / 100;
+
+    const commPerDeal = price * comm;
+    const dealsNow = leads * 12 * cConv;
+    const dealsFast = leads * 12 * fConv;
+    const extra = dealsFast - dealsNow;
+    const recovered = extra * commPerDeal;
+
+    document.getElementById('o_recovered').textContent = cur + fmt(recovered);
+    document.getElementById('o_monthly').textContent = '~' + cur + fmt(recovered / 12) + ' / month';
+    document.getElementById('o_comm').textContent = cur + fmt(commPerDeal);
+    document.getElementById('o_now').textContent = dealsFmt(dealsNow);
+    document.getElementById('o_fast').textContent = dealsFmt(dealsFast);
+    document.getElementById('o_extra').textContent = '+' + dealsFmt(extra);
+
+    document.getElementById('o_hook').textContent =
+      "You're running ~" + fmt(leads) + " leads a month. At your current response speed you're closing about " +
+      dealsFmt(dealsNow) + " deals a year. Calling every lead in under 60 seconds could take you to ~" +
+      dealsFmt(dealsFast) + " — that's ~" + dealsFmt(extra) + " extra deals, or about " + cur + fmt(recovered) +
+      " a year you're currently handing to faster competitors.";
+  }
+
+  ids.forEach(i => el[i].addEventListener('input', recompute));
+
+  document.querySelectorAll('.preset').forEach(b => {
+    b.addEventListener('click', () => {
+      el.cur.value = b.dataset.cur;
+      el.leads.value = b.dataset.leads;
+      el.price.value = b.dataset.price;
+      el.comm.value = b.dataset.comm;
+      recompute();
+    });
+  });
+
+  const copyBtn = document.getElementById('copyBtn');
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById('o_hook').textContent);
+      const t = copyBtn.textContent; copyBtn.textContent = 'Copied';
+      setTimeout(() => copyBtn.textContent = t, 1400);
+    } catch (e) { /* ignore */ }
+  });
+
+  recompute();
+})();
+</script>
+{% endblock %}

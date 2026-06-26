@@ -567,29 +567,72 @@ def _fallback_draft(lead: dict, step: int, angle_name: str, config=None) -> dict
     travel = _instruction_set(config) is ROLE_INSTRUCTIONS_TRAVEL
     if travel:
         subs = {
-            1: f"quick one, {biz}", 2: f"following up, {biz}",
-            3: f"what a faster agency is doing", 4: f"2-min sample for {biz}",
-            5: f"the math for {biz}", 6: f"last idea for {biz}",
-            7: f"closing the loop, {biz}",
+            1: f"{biz}: itineraries eating your week?",
+            2: f"quick follow up, {biz}",
+            3: "what a faster agency is doing",
+            4: f"a 2-min sample for {biz}",
+            5: f"the math for {biz}",
+            6: "should i close the loop?",
+            7: f"last note on {biz}",
         }
-        body = (f"Hi,\n\nReaching out about {biz}{where}. We set up AI itinerary generators for "
-                "travel agencies so client-ready itineraries and quotes go out in minutes instead "
-                "of a day or two, freeing up about 12 hours a week per agent. Done-for-you, and you "
-                "only start paying once it is live and saving time.\n\n"
-                f"Want me to send a free 2-minute sample itinerary built for {biz}?")
+        bodies = {
+            1: (f"Hi,\n\nQuick one about {biz}{where}. If your agents still build itineraries and quotes by "
+                "hand, each one can eat a day, and the client who waits often books with whoever replied "
+                "first. We set up an AI itinerary generator that turns a few trip details into a client-ready "
+                "itinerary and quote in minutes, so you reply first and book more trips. Done for you, and you "
+                f"only start paying once it is live and saving time.\n\nWant a free 2-minute sample built for {biz}?"),
+            2: (f"Hi,\n\nFollowing up on {biz}. Short version: agencies that send a polished itinerary the same "
+                "hour an enquiry lands win noticeably more bookings, and we make that automatic.\n\nWant the sample?"),
+            3: (f"Hi,\n\nOdds are a faster agency near {city or 'you'} is already sending same-hour itineraries "
+                "and winning trips that used to be yours. The enquiries sitting overnight are the ones slipping "
+                "away.\n\nWant to see how they turn it around so fast?"),
+            4: (f"Hi,\n\nEasier to just show you. Send me one recent trip request and our AI will build a "
+                f"2-minute sample itinerary for {biz}, free, so you can judge the quality yourself.\n\nWorth a look?"),
+            5: (f"Hi,\n\nSimple math for {biz}: if even two extra trips a month came from replying faster, this "
+                "pays for itself many times over, and you only pay once it is live and saving time.\n\nWorth 15 "
+                "minutes to run your numbers?"),
+            6: (f"Hi,\n\nI have sent a few ideas for {biz} and do not want to crowd your inbox. If now is not "
+                "the time, no problem.\n\nShould I close the loop, or is this worth a quick look?"),
+            7: (f"Hi,\n\nLast note. If getting itineraries out faster and booking more trips is on your list "
+                "this quarter, I would love 15 minutes. If not, I will leave you to it.\n\nReply with one word "
+                "and I will act on it: SAMPLE, LATER, or STOP."),
+        }
     else:
         subs = {
-            1: f"quick one about {biz}", 2: f"following up on {biz}",
-            3: f"what {city or 'a competitor'} is trying", 4: f"60-sec overview for {biz}",
-            5: f"the math on {biz}", 6: f"last useful idea for {biz}",
-            7: f"closing the loop, {biz}",
+            1: f"{biz}: leads slipping away?",
+            2: f"quick follow up, {biz}",
+            3: "what your competitors are doing",
+            4: f"the 2-line version for {biz}",
+            5: f"the math for {biz}",
+            6: "should i close the loop?",
+            7: f"last note on {biz}",
         }
-        body = (f"Hi,\n\nReaching out about {biz}{where}. We run a free AI operations audit that "
-                "finds where time and money leak in businesses like yours, then build the AI systems "
-                "to fix it. You see measurable ROI within 2 to 3 months or you do not pay.\n\n"
-                "Worth a quick 15-minute call?")
+        bodies = {
+            1: (f"Hi,\n\nQuick one about {biz}{where}. Most teams like yours lose a few deals a month to leads "
+                "that go cold before anyone follows up, or calls that come in after hours. We set up systems "
+                "that answer every lead in seconds and book more of them, so you keep revenue you are leaving "
+                "on the table right now. Measurable results in 2 to 3 months or you do not pay.\n\nWorth a quick look?"),
+            2: (f"Hi,\n\nFollowing up on {biz}. Short version: businesses that reply to new leads in under a "
+                "minute book noticeably more of them, and we make that automatic.\n\nWant the 2-line version of "
+                "how it would work for you?"),
+            3: (f"Hi,\n\nOdds are a competitor near {city or 'you'} is already answering every lead instantly "
+                "and winning deals that used to be a toss-up. The leads sitting unanswered overnight are the "
+                "ones slipping away.\n\nWant to see what they are doing differently?"),
+            4: (f"Hi,\n\nThe 2-line version for {biz}: every new lead gets an instant, personal reply and a "
+                "booked slot, with zero extra work for your team. You close more of what you already pay to "
+                "generate.\n\nWant me to map it to your setup?"),
+            5: (f"Hi,\n\nSimple math for {biz}: if even two deals a month are slipping through on slow "
+                "follow-up, fixing that pays for itself many times over. Measurable results in 2 to 3 months "
+                "or you do not pay.\n\nWorth 15 minutes to see the numbers for your business?"),
+            6: (f"Hi,\n\nI have sent a few ideas for {biz} and do not want to crowd your inbox. If now is not "
+                "the time, no problem.\n\nShould I close the loop, or is this worth a quick look?"),
+            7: (f"Hi,\n\nLast note on this. If winning more of the leads you already get is on your list this "
+                "quarter, I would love 15 minutes. If not, I will leave you to it.\n\nReply with one word and I "
+                "will act on it: CALL, LATER, or STOP."),
+        }
     subject = strip_dashes(subs.get(step, f"re: {biz}").lower()[:45])
-    return {"subject": subject, "body": strip_dashes(body), "angle": angle_name, "model": "fallback"}
+    body = strip_dashes(bodies.get(step, bodies[1]))
+    return {"subject": subject, "body": body, "angle": angle_name, "model": "fallback"}
 
 
 def _extract_json(text: str) -> dict | None:

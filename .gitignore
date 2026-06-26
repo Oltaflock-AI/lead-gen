@@ -11,7 +11,12 @@ data/imports/*.csv
 data/cache/
 data/*.db
 data/*.db.bak.*
+data/*.csv
+data/*.sqlite3
 *.bak
+
+# Supabase CLI scratch
+supabase/.temp/
 
 # Python
 __pycache__/

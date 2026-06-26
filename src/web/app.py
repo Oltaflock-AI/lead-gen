@@ -2568,6 +2568,11 @@ def api_scrape_detail(sid):
 # ─────────────────────────── offers + sequences ───────────────────────────
 
 
+@app.route("/calculator")
+def calculator_page():
+    return render_template("calculator.html")
+
+
 @app.route("/offers")
 def offers_page():
     offers = db.list_niche_offers()

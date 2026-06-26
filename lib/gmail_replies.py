@@ -16,14 +16,67 @@ Stop-intent: if the reply body signals the sender wants no further contact, the
 address is inserted into public.suppressions (reason='unsubscribe',
 source='gmail-reply') and the sequence is paused with paused_reason='unsubscribed'.
 """
+import base64
 import json
 import os
 import re
 
+from lib import enrich       # reuse _strip_html for html-only replies
+from lib import reply_ai
 from lib import supabase as sb
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 LOOKBACK_DAYS = int(os.environ.get("LEADGEN_REPLY_LOOKBACK_DAYS", "14"))
+DRAFT_CAP = int(os.environ.get("LEADGEN_REPLY_DRAFT_CAP", "25"))  # max new replies drafted per poll
+BODY_CAP = 4000
+
+# Quoted-original markers — cut the reply body here so we classify only what the
+# lead actually wrote, not the cold email they quoted back.
+_QUOTE_MARKERS = [
+    re.compile(r"\nOn .{0,120}wrote:", re.DOTALL),
+    re.compile(r"\n-+ ?Original Message ?-+", re.IGNORECASE),
+    re.compile(r"\n_{5,}"),
+    re.compile(r"\nFrom: .+", re.IGNORECASE),
+]
+
+
+def _decode_b64(data: str) -> str:
+    try:
+        return base64.urlsafe_b64decode(data + "===").decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def _walk_text(payload: dict) -> str:
+    """Pull the best body text from a Gmail message payload (prefer text/plain)."""
+    if not payload:
+        return ""
+    mime = payload.get("mimeType", "")
+    data = (payload.get("body") or {}).get("data")
+    if data and mime in ("text/plain", "text/html"):
+        raw = _decode_b64(data)
+        return raw if mime == "text/plain" else enrich._strip_html(raw)
+    best = ""
+    for p in payload.get("parts") or []:
+        t = _walk_text(p)
+        if t:
+            best = t
+            if p.get("mimeType") == "text/plain":
+                break  # plain wins
+    return best
+
+
+def _dequote(text: str) -> str:
+    """Strip the quoted original message + quoted lines from a reply body."""
+    if not text:
+        return ""
+    cut = len(text)
+    for m in (rx.search(text) for rx in _QUOTE_MARKERS):
+        if m:
+            cut = min(cut, m.start())
+    text = text[:cut]
+    lines = [ln for ln in text.splitlines() if not ln.strip().startswith(">")]
+    return "\n".join(lines).strip()[:BODY_CAP]
 
 # Word-boundary-aware patterns for stop intent.  A bare "stop" matches but
 # "non-stop" does not.  All comparisons are done on lowercased text.
@@ -78,13 +131,14 @@ def _contacted_map() -> dict[str, list[dict]]:
     leads: dict[int, dict] = {}
     for i in range(0, len(lead_ids), 200):
         chunk = ",".join(str(x) for x in lead_ids[i:i + 200])
-        for l in sb.select("leads", {"select": "id,business,email", "id": f"in.({chunk})"}, limit=500):
+        for l in sb.select("leads", {"select": "id,business,email,city,country", "id": f"in.({chunk})"}, limit=500):
             leads[l["id"]] = l
     out: dict[str, list[dict]] = {}
     for s in seqs:
         l = leads.get(s["lead_id"])
         if l and l.get("email"):
             s["_business"] = l.get("business")
+            s["_lead"] = l
             out.setdefault(l["email"].lower(), []).append(s)
     return out
 
@@ -94,14 +148,15 @@ def _has_stop_intent(text: str) -> bool:
     return bool(_STOP_PHRASES.search(text or ""))
 
 
-def _matched_senders(svc, addrs: list[str]) -> dict[str, str]:
-    """Return {lowercased_email: snippet} for each addr that replied.
+def _matched_senders(svc, addrs: list[str]) -> dict[str, list[dict]]:
+    """Return {lowercased_email: [message, ...]} for each addr that replied.
 
-    Fetches each matching message once with format='full' so we get both the
-    From header and the Gmail-generated snippet (≤200 chars of body preview)
-    in a single API call per message.
+    Each message is {msg_id, subject, snippet, body}. Fetched once per message
+    with format='full' so we get the From/Subject headers, the Gmail snippet, and
+    the full (de-quoted) body in a single API call.
     """
-    found: dict[str, str] = {}
+    found: dict[str, list[dict]] = {}
+    seen: set[str] = set()
     for i in range(0, len(addrs), 25):
         q = " OR ".join(f"from:{a}" for a in addrs[i:i + 25]) + f" newer_than:{LOOKBACK_DAYS}d"
         try:
@@ -109,18 +164,22 @@ def _matched_senders(svc, addrs: list[str]) -> dict[str, str]:
         except Exception:
             continue
         for m in resp.get("messages", []):
+            if m["id"] in seen:
+                continue
+            seen.add(m["id"])
             try:
-                mm = svc.users().messages().get(
-                    userId="me", id=m["id"], format="full", metadataHeaders=["From"]
-                ).execute()
-                hs = {x["name"]: x["value"] for x in mm.get("payload", {}).get("headers", [])}
-                em = EMAIL_RE.search(hs.get("From", ""))
-                if em:
-                    addr = em.group(0).lower()
-                    # Keep the longest snippet seen for this sender (most info).
-                    snippet = mm.get("snippet", "")
-                    if len(snippet) > len(found.get(addr, "")):
-                        found[addr] = snippet
+                mm = svc.users().messages().get(userId="me", id=m["id"], format="full").execute()
+                hs = {x["name"].lower(): x["value"] for x in mm.get("payload", {}).get("headers", [])}
+                em = EMAIL_RE.search(hs.get("from", ""))
+                if not em:
+                    continue
+                addr = em.group(0).lower()
+                found.setdefault(addr, []).append({
+                    "msg_id": m["id"],
+                    "subject": hs.get("subject", ""),
+                    "snippet": mm.get("snippet", ""),
+                    "body": _dequote(_walk_text(mm.get("payload", {}))) or mm.get("snippet", ""),
+                })
             except Exception:
                 continue
     return found
@@ -138,10 +197,24 @@ def check_and_log_replies() -> dict:
     svc = _service(tok)
     found = _matched_senders(svc, list(contacted.keys()))
 
+    # Which inbound messages have we already captured? Skip them so we never
+    # re-draft (idempotent + saves an LLM call per poll).
+    msg_ids = [m["msg_id"] for msgs in found.values() for m in msgs]
+    seen_msgs: set[str] = set()
+    for i in range(0, len(msg_ids), 200):
+        chunk = ",".join(msg_ids[i:i + 200])
+        try:
+            for r in sb.select("replies", {"select": "gmail_msg_id", "gmail_msg_id": f"in.({chunk})"}, limit=500):
+                seen_msgs.add(r["gmail_msg_id"])
+        except Exception:
+            break  # replies table not migrated yet — pausing logic still runs below
+
     logged = 0
+    drafted = 0
     replies = []
-    for em, snippet in found.items():
-        stop = _has_stop_intent(snippet)
+    for em, msgs in found.items():
+        combined = " ".join((m.get("body") or m.get("snippet") or "") for m in msgs)
+        stop = _has_stop_intent(combined)
 
         if stop:
             try:
@@ -153,7 +226,8 @@ def check_and_log_replies() -> dict:
             except Exception:
                 pass  # never let a failed suppression insert break the poll
 
-        for s in contacted.get(em, []):
+        seqs = contacted.get(em, [])
+        for s in seqs:
             if s.get("status") == "paused":  # already replied/paused — idempotent
                 continue
             paused_reason = "unsubscribed" if stop else "replied"
@@ -171,5 +245,40 @@ def check_and_log_replies() -> dict:
                 "business": s.get("_business"), "stop_intent": stop,
             })
 
+        # Capture each new inbound message into the reply inbox. Stop replies are
+        # recorded but auto-dismissed (already suppressed); the rest get an AI
+        # intent + draft for one-click send.
+        first = seqs[0] if seqs else {}
+        lead = first.get("_lead") or {"business": first.get("_business"), "email": em}
+        for msg in msgs:
+            if msg["msg_id"] in seen_msgs:
+                continue
+            body = (msg.get("body") or msg.get("snippet") or "")[:BODY_CAP]
+            row = {
+                "gmail_msg_id": msg["msg_id"],
+                "sequence_id": first.get("id"),
+                "lead_id": (first.get("_lead") or {}).get("id"),
+                "from_email": em,
+                "business": first.get("_business"),
+                "in_subject": msg.get("subject"),
+                "in_body": body,
+            }
+            if stop:
+                row.update({"intent": "stop", "status": "dismissed"})
+            elif drafted >= DRAFT_CAP:
+                continue  # leave for the next poll rather than over-spend per tick
+            else:
+                d = reply_ai.classify_and_draft(body, msg.get("subject"), lead, hint_stop=stop)
+                row.update({
+                    "intent": d["intent"], "draft_subject": d["subject"],
+                    "draft_body": d["body"], "model": d.get("model"), "status": "pending",
+                })
+                drafted += 1
+            try:
+                sb.insert("replies", row)
+                seen_msgs.add(msg["msg_id"])
+            except Exception:
+                pass  # table missing or unique race — never break the poll
+
     return {"ok": True, "contacted": len(contacted), "matched": len(found),
-            "logged": logged, "replies": replies}
+            "logged": logged, "drafted": drafted, "replies": replies}

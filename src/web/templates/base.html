@@ -44,6 +44,7 @@
         <a href="/scrape" class="nav-link {{ 'active' if request.endpoint == 'scrape_page' else '' }}">Scrape</a>
         <a href="/scrapes" class="nav-link {{ 'active' if request.endpoint == 'scrapes_history_page' else '' }}">Scrape history</a>
         <a href="/offers" class="nav-link {{ 'active' if request.endpoint == 'offers_page' else '' }}">Offers</a>
+        <a href="/calculator" class="nav-link {{ 'active' if request.endpoint == 'calculator_page' else '' }}">Leak calc</a>
         <a href="/leads" class="nav-link {{ 'active' if request.endpoint in ('leads_index','leads_detail') else '' }}">
           Leads{% if pending_leads %}<span class="chip chip-gray ml-auto">{{ pending_leads }}</span>{% endif %}
         </a>

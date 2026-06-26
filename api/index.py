@@ -392,6 +392,15 @@ def _spark_14d():
 
 
 # ════════════════ Shell ════════════════
+def _replies_pending_count() -> int:
+    """Count pending reply rows. Returns 0 if the table does not exist yet."""
+    try:
+        rows = sb.select("replies", {"select": "id", "status": "eq.pending"}, limit=200)
+        return len(rows)
+    except Exception:
+        return 0
+
+
 def _user_nav() -> str:
     u = getattr(g, "user", None)
     if not u:
@@ -403,6 +412,8 @@ def _user_nav() -> str:
 
 def shell(active, crumb, h1, sub, body, badges=None):
     badges = badges or {}
+    if "replies" not in badges:
+        badges["replies"] = _replies_pending_count()
     out_b = f' <span class="badge">{badges["outreach"]}</span>' if badges.get("outreach") else ""
     seq_b = f' <span class="badge">{badges.get("sequences", 0)}</span>'
     send_icon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>'
@@ -415,6 +426,7 @@ def shell(active, crumb, h1, sub, body, badges=None):
       <a class="nav-item {'active' if active=='build' else ''}" href="/build">New campaign</a>
       <a class="nav-item {'active' if active=='campaigns' else ''}" href="/campaigns">Campaigns</a>
       <a class="nav-item {'active' if active=='blasts' else ''}" href="/blasts">Sent emails</a>
+      <a class="nav-item {'active' if active=='replies' else ''} {'warn' if badges.get('replies') else ''}" href="/replies">Replies{f' <span class="badge">{badges["replies"]}</span>' if badges.get('replies') else ''}</a>
       <a class="nav-item {'active' if active=='leads' else ''}" href="/leads">Leads</a>
       <a class="nav-item {'active' if active=='dashboard' else ''}" href="/">Dashboard</a>
       <a class="nav-item {'active' if active=='events' else ''}" href="/events">Activity</a></div>
@@ -710,6 +722,10 @@ _CSV_FIELD_ALIASES = {
     "address":  ("address", "full_address", "street", "location", "company_address"),
     "city":     ("city", "town", "suburb", "company_city"),
     "country":  ("country", "nation", "company_country"),
+    "contact":  ("first_name", "firstname", "first", "fname", "contact_first_name",
+                 "given_name"),
+    "seed_subject": ("subject", "seed_subject", "email_subject", "subject_line"),
+    "seed_body":    ("body", "seed_body", "email_body", "message", "copy", "email_copy"),
 }
 
 
@@ -735,6 +751,19 @@ def _csv_row_to_lead(raw: dict, campaign_id: int) -> dict | None:
     if not business:
         return None
     email = _csv_pick(row_lc, "email").lower()
+    signals = {"source": "csv"}
+    contact = _csv_pick(row_lc, "contact")
+    if contact:
+        signals["contact_first_name"] = contact
+    # Pre-written, hand-reviewed step-1 copy (optional). When present the
+    # sequencer sends it verbatim as step 1 instead of drafting one. The
+    # structured signature is appended at send time, so the body must NOT
+    # carry its own signoff.
+    seed_body = _csv_pick(row_lc, "seed_body")
+    if seed_body:
+        signals["seed_body"] = seed_body
+        signals["seed_subject"] = _csv_pick(row_lc, "seed_subject")
+        signals["seed_step"] = 1
     lead = {
         "campaign_id": campaign_id,
         "business": business,
@@ -744,8 +773,10 @@ def _csv_row_to_lead(raw: dict, campaign_id: int) -> dict | None:
         "city": _csv_pick(row_lc, "city") or None,
         "country": _csv_pick(row_lc, "country") or None,
         "source": "csv",
-        "enrichment_status": "pending",
-        "signals": {"source": "csv"},
+        # A provided email is ready to send, so it skips the enrichment queue
+        # (these are pre-verified imports, not scraped leads needing lookup).
+        "enrichment_status": "enriched" if email else "pending",
+        "signals": signals,
     }
     if email:
         lead["email"] = email
@@ -764,13 +795,24 @@ def upload_csv():
         name = (request.form.get("name") or "").strip() or _slug("csv", f.filename.rsplit(".", 1)[0])
         raw = f.read().decode("utf-8-sig", errors="replace")
         reader = _csv.DictReader(_io.StringIO(raw))
-        camp = sb.insert("campaigns", {
+        iset = (request.form.get("instruction_set") or "").strip()
+        seq_cfg = json.dumps({"instruction_set": iset}) if iset and iset != "default" else None
+        camp_row = {
             "name": name, "niche": "csv-upload", "region": region,
             "offer_brief": (request.form.get("offer_brief") or "").strip() or None,
             "daily_scrape_target": 0,
             "active": False,
             "notes": json.dumps({"source": "csv"}),
-        }, on_conflict="name")[0]
+        }
+        if seq_cfg:
+            camp_row["sequence_config"] = seq_cfg
+        try:
+            camp = sb.insert("campaigns", camp_row, on_conflict="name")[0]
+        except Exception:
+            # sequence_config column may not be migrated on this deploy — retry
+            # without it so import never hard-fails (default copy then applies).
+            camp_row.pop("sequence_config", None)
+            camp = sb.insert("campaigns", camp_row, on_conflict="name")[0]
         rows, seen = [], set()
         for r in reader:
             lead = _csv_row_to_lead(r, camp["id"])
@@ -787,13 +829,14 @@ def upload_csv():
     <div class="block"><div class="block-head"><div><div class="block-title">Upload leads</div><div class="block-sub">Bring your own CSV. These leads are imported as-is and never scraped.</div></div></div>
     <div class="block-body">
       {alert}
-      <div class="note-bar">Recognized columns (any order, case-insensitive): <strong>business</strong> (required), website, email, phone, address, city, country. The campaign stays <strong>paused</strong> until you click <strong>Start outreach</strong>.</div>
+      <div class="note-bar">Recognized columns (any order, case-insensitive): <strong>business</strong> (required), website, email, phone, address, city, country, first_name, and optional <strong>subject</strong> + <strong>body</strong> (pre-written step-1 copy, sent verbatim). The campaign stays <strong>paused</strong> until you click <strong>Start outreach</strong>.</div>
       <form method="post" action="/upload" enctype="multipart/form-data" style="max-width:680px">
         <div class="field"><label>CSV file</label><input name="file" type="file" accept=".csv,text/csv" required></div>
         <div class="row-2" style="grid-template-columns:1fr 1fr">
           <div class="field"><label>List name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="name" placeholder="defaults to file name"></div>
           <div class="field"><label>Region <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="region" placeholder="United States"></div>
         </div>
+        <div class="field"><label>Email sequence style <span style="text-transform:none;color:var(--ink-faint)">(drives the copy for steps 2-7)</span></label><select name="instruction_set"><option value="default">Default (AI ops audit)</option><option value="travel">Travel agencies (AI itinerary generator)</option></select></div>
         <div class="field"><label>Offer brief <span style="text-transform:none;color:var(--ink-faint)">(what you pitch — used to write the emails)</span></label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0-12l-4 4m4-4l4 4M5 21h14"/></svg> Import CSV</button>
@@ -2071,3 +2114,155 @@ def settings_page():
         <div class="conn-row" style="border:none"><div style="flex:1"><div style="font-weight:500">Crons</div><div class="muted" style="font-size:12px">scrape 08:00 · digest 16:00 UTC · sequencer every 5m (GitHub Actions)</div></div><span class="mono">live</span></div>
       </div></div>"""
     return shell("settings", "workspace / settings", "Settings", "Plumbing", body)
+
+
+# ════════════════ Replies inbox ════════════════
+
+_INTENT_CHIP = {
+    "interested": ("active", "interested"),
+    "objection":  ("paused",  "objection"),
+    "not_now":    ("done",    "not now"),
+    "stop":       ("bounced", "stop"),
+    "other":      ("delivered", "other"),
+}
+
+
+@app.route("/replies")
+def replies_page():
+    import html as _html
+    try:
+        replies = sb.select(
+            "replies",
+            {"select": "*", "status": "eq.pending", "order": "created_at.desc"},
+            limit=200,
+        )
+    except Exception:
+        replies = []
+
+    flash = ""
+    if request.args.get("sent") == "1":
+        rid = request.args.get("id", "")
+        flash = (
+            f'<div class="note-bar" style="border-color:var(--good);color:var(--good)">'
+            f'Reply sent. <a href="/replies" style="color:var(--good);text-decoration:underline">Back to inbox</a></div>'
+        )
+    elif request.args.get("dismissed") == "1":
+        flash = '<div class="note-bar">Reply dismissed.</div>'
+    elif request.args.get("err"):
+        flash = (f'<div class="note-bar" style="border-color:var(--warn);color:var(--warn)">'
+                 f'{_html.escape(request.args.get("err", ""))}</div>')
+
+    cards = ""
+    for r in replies:
+        chip_cls, chip_label = _INTENT_CHIP.get(r.get("intent") or "other", ("delivered", "other"))
+        biz = _html.escape(r.get("business") or "")
+        frm = _html.escape(r.get("from_email") or "")
+        subj_in = _html.escape(r.get("in_subject") or "")
+        body_in = _html.escape(r.get("in_body") or "")
+        draft_subj = _html.escape(r.get("draft_subject") or "")
+        draft_body = _html.escape(r.get("draft_body") or "")
+        when = (r.get("created_at") or "")[:16].replace("T", " ")
+        rid = int(r["id"])
+        cards += f"""
+<div class="block" style="margin-bottom:18px">
+  <div class="block-head" style="padding:14px 18px 10px">
+    <div style="flex:1">
+      <div style="font-weight:600;font-size:14px">{biz or frm}</div>
+      <div style="font-size:12px;color:var(--ink-mute);margin-top:1px">{frm} &middot; {when}</div>
+    </div>
+    <span class="chip {chip_cls}">{chip_label}</span>
+  </div>
+  <div class="block-body" style="padding:0 18px 14px">
+    <div style="font-size:12px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">Their message</div>
+    <div style="font-weight:500;margin-bottom:4px">{subj_in}</div>
+    <pre style="white-space:pre-wrap;font-size:12px;color:var(--ink-soft);font-family:inherit;margin:0 0 16px;background:var(--bg-soft,rgba(0,0,0,.03));padding:10px 12px;border-radius:6px;border:1px solid var(--line)">{body_in}</pre>
+    <form method="post" action="/replies/send">
+      <input type="hidden" name="reply_id" value="{rid}">
+      <div class="field"><label>Reply subject</label>
+        <input name="draft_subject" value="{draft_subj}" required style="width:100%"></div>
+      <div class="field"><label>Reply body <span style="text-transform:none;color:var(--ink-faint)">(signature appended automatically)</span></label>
+        <textarea name="draft_body" rows="8" required style="width:100%">{draft_body}</textarea></div>
+      <div style="display:flex;gap:10px;margin-top:10px">
+        <button class="btn primary" type="submit" style="width:auto;padding:8px 18px">Send reply</button>
+      </div>
+    </form>
+    <form method="post" action="/replies/dismiss" style="margin-top:8px">
+      <input type="hidden" name="reply_id" value="{rid}">
+      <button class="btn" type="submit"
+        style="width:auto;padding:6px 14px;font-size:12px;background:none;border:1px solid var(--line);color:var(--ink-mute)">
+        Dismiss</button>
+    </form>
+  </div>
+</div>"""
+
+    if not cards:
+        cards = '<div class="block"><div class="block-body" style="padding:40px;text-align:center;color:var(--ink-mute)">Inbox zero. No pending replies.</div></div>'
+
+    body = flash + cards
+    return shell("replies", "workspace / replies", "Replies", "Inbound replies awaiting a response", body)
+
+
+@app.route("/replies/send", methods=["POST"])
+def replies_send():
+    import html as _html
+    rid = request.form.get("reply_id", "").strip()
+    if not rid or not rid.isdigit():
+        return redirect("/replies?err=Bad+request")
+
+    rows = sb.select("replies", {"select": "*", "id": f"eq.{rid}"}, limit=1)
+    if not rows:
+        return redirect("/replies?err=Reply+not+found")
+    reply = rows[0]
+
+    draft_subject = (request.form.get("draft_subject") or "").strip()
+    draft_body = (request.form.get("draft_body") or "").strip()
+    if not draft_subject or not draft_body:
+        return redirect(f"/replies?err=Subject+and+body+required")
+
+    # Per-user identity: same resolution as compose_send.
+    # Signature + display name follow the logged-in user (replies use the
+    # dashboard operator's identity, not the original sequence sender).
+    me = getattr(g, "user", {}) or {}
+    from_email = me.get("email")
+    sender = users.by_email(from_email) or me
+    from_name = sender.get("name")
+    sigs = sender.get("signatures", [])
+    sig_text = sigs[0]["text"] if sigs else None
+
+    res = seq.send_manual(
+        reply["from_email"],
+        draft_subject,
+        draft_body,
+        reply.get("sequence_id") or 0,
+        append_signature=True,
+        signature=sig_text,
+        from_email=from_email,
+        from_name=from_name,
+    )
+
+    if "error" in res:
+        err = _html.escape((res["error"] or "Send failed")[:120])
+        return redirect(f"/replies?err={err}")
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+    sb.update(
+        "replies",
+        {"id": rid},
+        {"status": "sent", "handled_by": me.get("id") or me.get("email"), "handled_at": now_ts},
+    )
+    return redirect(f"/replies?sent=1&id={rid}")
+
+
+@app.route("/replies/dismiss", methods=["POST"])
+def replies_dismiss():
+    rid = request.form.get("reply_id", "").strip()
+    if not rid or not rid.isdigit():
+        return redirect("/replies?err=Bad+request")
+    me = getattr(g, "user", {}) or {}
+    now_ts = datetime.now(timezone.utc).isoformat()
+    sb.update(
+        "replies",
+        {"id": rid},
+        {"status": "dismissed", "handled_by": me.get("id") or me.get("email"), "handled_at": now_ts},
+    )
+    return redirect("/replies?dismissed=1")
