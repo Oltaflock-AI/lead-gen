@@ -55,6 +55,19 @@ jobs:
             -H "Authorization: Bearer $CRON_SECRET" \
             "$BASE_URL/api/cron/replies_tick" | head -200
 
+  research:
+    if: github.event.schedule == '*/15 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: tick research
+        env:
+          BASE_URL: ${{ vars.VERCEL_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/research_tick" | head -200
+
   learning:
     if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

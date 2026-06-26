@@ -156,7 +156,12 @@ def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict
     offer = campaign.get("offer_brief")
     region = lead.get("country") or campaign.get("region")
 
-    draft = seq.draft_one(lead, s, next_step, offer, config, eng=eng)
+    # Fresh research (cached by the research tick) only feeds engaged leads; cold
+    # leads get the cheap standard cold email.
+    tier = seq.engagement_tier(s)
+    research = lead.get("research") if tier in ("warm", "hot") else None
+
+    draft = seq.draft_one(lead, s, next_step, offer, config, eng=eng, research=research)
     sb.insert("drafts", {
         "sequence_id": s["id"], "step": next_step,
         "subject": draft["subject"], "body": draft["body"],
