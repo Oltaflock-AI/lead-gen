@@ -3,8 +3,8 @@
 Renders each lead's email exactly as Resend would receive it: the body plus the
 auto-appended signature, run through the same strip_dashes / signature pipeline
 the live sender uses. Step 1 is the hand-reviewed seeded copy (sent verbatim);
-steps 2-7 are drafted live by Claude using the travel instruction set (only when
---full is passed and ANTHROPIC_API_KEY is set).
+steps 2-7 are drafted live by the model (OpenAI) using the travel instruction set
+(only when --full is passed and OPENAI_API_KEY is set).
 
 Usage (from project root):
     python -m scripts.preview_travel_drip                 # step 1 for all leads
@@ -61,7 +61,7 @@ def render(draft: dict) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lead", type=int, help="1-based row number (default: all)")
-    ap.add_argument("--full", action="store_true", help="draft steps 2-7 too (needs ANTHROPIC_API_KEY)")
+    ap.add_argument("--full", action="store_true", help="draft steps 2-7 too (needs OPENAI_API_KEY)")
     args = ap.parse_args()
 
     rows = list(csv.DictReader(open(CSV_PATH, encoding="utf-8")))

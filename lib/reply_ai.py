@@ -1,22 +1,17 @@
 """Phase 4 — reply intelligence: classify a lead's reply and draft a response.
 
-The Gmail poller captures inbound replies; this module asks Claude to (1) label
-the intent and (2) draft a tailored response the operator can send in one click
-from the dashboard inbox. We reuse the sequencer's brand rules (no em/en dashes,
-sell the outcome not the AI, no booking links — CTAs live in the body as a plain
-ask for availability) and the offer context, so replies sound like the same
-person who sent the cold email.
+The Gmail poller captures inbound replies; this module asks the model (OpenAI,
+see lib/llm.py) to (1) label the intent and (2) draft a tailored response the
+operator can send in one click from the dashboard inbox. We reuse the sequencer's
+brand rules (no em/en dashes, sell the outcome not the AI, no booking links, CTAs
+live in the body as a plain ask for availability) and the offer context, so
+replies sound like the same person who sent the cold email.
 
-Best-effort: if the API key is missing or Claude fails, we fall back to a safe
+Best-effort: if the API key is missing or the call fails, we fall back to a safe
 generic acknowledgement so a reply is never dropped on the floor.
 """
-import json
-import os
-import re
-
-import requests
-
-from lib import sequence as seq  # reuse MODEL, key, offer, strip_dashes, sender name
+from lib import llm
+from lib import sequence as seq  # reuse offer brief + strip_dashes (brand rules)
 
 INTENTS = {"interested", "objection", "not_now", "stop", "other"}
 
@@ -73,7 +68,7 @@ def classify_and_draft(in_body: str, in_subject: str | None, lead: dict,
     """Return {intent, subject, body, model}. `hint_stop` biases toward 'stop'
     when the regex pre-filter already flagged opt-out language."""
     pre = "stop" if hint_stop else "other"
-    if not seq.ANTHROPIC_API_KEY or not (in_body or "").strip():
+    if not llm.enabled() or not (in_body or "").strip():
         return _fallback(pre, lead)
 
     reply_subject = (in_subject or "").strip() or "(no subject)"
@@ -88,35 +83,14 @@ def classify_and_draft(in_body: str, in_subject: str | None, lead: dict,
           "Return ONLY the JSON object."
     )
 
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": seq.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": seq.MODEL,
-                "max_tokens": 700,
-                "system": [{"type": "text", "text": _system(offer_brief),
-                            "cache_control": {"type": "ephemeral"}}],
-                "messages": [{"role": "user", "content": user}],
-            },
-            timeout=60,
-        )
-        if r.status_code != 200:
-            return _fallback(pre, lead)
-        text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        data = json.loads(m.group(0) if m else text)
-        intent = (data.get("intent") or "").strip().lower()
-        if intent not in INTENTS:
-            intent = pre
-        subject = seq.strip_dashes((data.get("subject") or "").strip())[:160] or "re: your note"
-        body = seq.strip_dashes((data.get("body") or "").strip())
-        if not body:
-            return _fallback(intent, lead)
-        return {"intent": intent, "subject": subject, "body": body, "model": seq.MODEL}
-    except Exception:
+    data = llm.chat_json(_system(offer_brief), user, max_tokens=700)
+    if not data:
         return _fallback(pre, lead)
+    intent = (data.get("intent") or "").strip().lower()
+    if intent not in INTENTS:
+        intent = pre
+    subject = seq.strip_dashes((data.get("subject") or "").strip())[:160] or "re: your note"
+    body = seq.strip_dashes((data.get("body") or "").strip())
+    if not body:
+        return _fallback(intent, lead)
+    return {"intent": intent, "subject": subject, "body": body, "model": data.get("_model", "openai")}

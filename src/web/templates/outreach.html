@@ -2,7 +2,7 @@
 {% block title %}Outreach — lead-gen{% endblock %}
 {% block breadcrumb %}workspace / outreach{% endblock %}
 {% block heading %}Outreach{% endblock %}
-{% block subheading %}Personalize and send cold emails via Resend.{% if not claude_enabled %} <span style="color: var(--warn);">ANTHROPIC_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
+{% block subheading %}Personalize and send cold emails via Resend.{% if not ai_enabled %} <span style="color: var(--warn);">OPENAI_API_KEY not set — using static template.</span>{% endif %}{% endblock %}
 
 {% block content %}
 
@@ -175,7 +175,7 @@
       <button type="button" onclick="selectUnsent()" id="select-unsent-btn" class="btn btn-ghost btn-sm" title="Tick checkboxes only for leads with no outreach yet">Select unsent</button>
       <button type="button" onclick="clearSelection()" class="btn btn-ghost btn-sm" title="Untick every row">Clear</button>
       <button type="button" onclick="generateDrafts(false)" class="btn btn-primary btn-sm" id="gen-btn">Generate drafts</button>
-      <button type="button" onclick="generateDrafts(true)" class="btn btn-ghost btn-sm" id="regen-btn" title="Re-run Claude on every selected lead even if a draft is saved">Re-generate</button>
+      <button type="button" onclick="generateDrafts(true)" class="btn btn-ghost btn-sm" id="regen-btn" title="Re-run AI on every selected lead even if a draft is saved">Re-generate</button>
       <button type="button" onclick="retryFailed()" id="retry-btn" class="btn btn-sm" title="Re-send to every row currently showing 'failed' status, using its saved draft" {% if not resend_enabled %}disabled{% endif %}>Retry failed</button>
       <button type="button" onclick="sendAll()" id="send-btn" class="btn btn-primary btn-sm" {% if not resend_enabled %}disabled{% endif %}>Send all</button>
     </div>
@@ -193,7 +193,7 @@
       <thead>
         <tr>
           <th></th>
-          <th class="text-right" title="Claude-scored 0-100. How likely this lead becomes a customer based on rating, reviews, contact info, niche fit. See Leads page for full rubric.">AI Score</th>
+          <th class="text-right" title="AI-scored 0-100. How likely this lead becomes a customer based on rating, reviews, contact info, niche fit. See Leads page for full rubric.">AI Score</th>
           <th>Business</th>
           <th>Email</th>
           <th>City</th>

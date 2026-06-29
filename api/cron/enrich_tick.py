@@ -4,7 +4,7 @@ Each tick:
   1. Find up to ENRICH_BATCH leads with enrichment_status='pending'
      (oldest first).
   2. Deep-research each: enrich.enrich_lead(lead) → patch (website scrape +
-     buying signals + intent score + decision maker via Claude).
+     buying signals + intent score + decision maker via the model).
   3. Persist the patch onto the lead row. sequencer_tick then auto-creates a
      sequence once enrichment_status flips to 'enriched'.
 

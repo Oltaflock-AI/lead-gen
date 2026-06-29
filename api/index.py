@@ -2096,7 +2096,7 @@ def settings_page():
         return "on" if os.environ.get(name) else "off"
     conns = [
         ("Supabase", "SUPABASE_SERVICE_KEY", "state of truth"),
-        ("Anthropic (Claude)", "ANTHROPIC_API_KEY", "email drafting + enrichment"),
+        ("OpenAI", "OPENAI_API_KEY", "email drafting + enrichment"),
         ("Resend", "RESEND_API_KEY", "email sending"),
         ("Resend webhook", "RESEND_WEBHOOK_SECRET", "open/click/bounce events"),
         ("Google Places", "GOOGLE_PLACES_API_KEY", "scraping"),

@@ -9,7 +9,7 @@ Cadence (offsets from step 1 send time, span ~28 days):
   step 6  ·  day 21  — quirky pattern interrupt
   step 7  ·  day 28  — pizza breakup (PIZZA / CALL / LATER)
 
-Drafting is done up-front by Claude using the lead facts + per-niche offer
+Drafting is done up-front by AI using the lead facts + per-niche offer
 record (offer copy + tone notes + Loom URL). Sending is via Resend. Reply
 detection (Gmail) flips status='paused' with reason='replied'.
 
@@ -39,8 +39,8 @@ log = logging.getLogger(__name__)
 STEP_OFFSETS_DAYS = {1: 0, 2: 3, 3: 7, 4: 11, 5: 16, 6: 21, 7: 28}
 NUM_STEPS = 7
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 # ─────────────────────────── drafting ───────────────────────────
@@ -321,11 +321,11 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
     tone = (offer_record or {}).get("tone", "") or ""
     loom_url = (offer_record or {}).get("loom_url", "") or ""
 
-    if not ANTHROPIC_API_KEY:
+    if not OPENAI_API_KEY:
         return _fallback_draft(step, lead, offer_text, loom_url, sender_name)
 
     try:
-        from anthropic import Anthropic
+        from openai import OpenAI
     except ImportError:
         return _fallback_draft(step, lead, offer_text, loom_url, sender_name)
 
@@ -349,10 +349,10 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
     )
 
     brief = niche_briefs.get_brief_for_lead(lead, niche=lead.get("niche", ""))
-    sys_blocks = [{"type": "text", "text": _SYSTEM,
-                   "cache_control": {"type": "ephemeral"}}]
+    system_text = _SYSTEM
     if brief:
-        sys_blocks.extend(niche_briefs.system_blocks(brief))
+        for blk in niche_briefs.system_blocks(brief):
+            system_text += "\n\n" + blk.get("text", "")
         user_msg += niche_briefs.user_directive(brief, lead)
 
     # Self-improvement: feed proven subject lines (open rate >= 20%, 2+ sends)
@@ -392,15 +392,16 @@ def _draft_one(step, lead, offer_record, sender_name, prior_msgs=None):
     )
 
     try:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
             model=MODEL,
             max_tokens=700,
-            system=sys_blocks,
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_msg},
+            ],
         )
-        text = "".join(b.text for b in resp.content
-                       if getattr(b, "type", "") == "text").strip()
+        text = (resp.choices[0].message.content or "").strip()
         if os.getenv("LEADGEN_DEBUG_DRAFT"):
             log.warning("DRAFT_DEBUG step=%s lead=%s raw=%s",
                         step, lead.get("email"), text[:400])

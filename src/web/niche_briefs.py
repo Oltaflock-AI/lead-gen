@@ -3,9 +3,8 @@
 Currently supports the Home Services brief (`home-services-offer.md`).
 Expand by adding a (matcher, file) entry to `_BRIEFS`.
 
-The brief markdown is injected as a cached system block on cold-email and
-sequence-step generation so Claude follows the country/business-type rules
-without re-sending tokens on every call.
+The brief markdown is injected as a system block on cold-email and
+sequence-step generation so the model follows the country/business-type rules.
 """
 from __future__ import annotations
 
@@ -122,7 +121,7 @@ def _match_brief(niche: str, business_type: str) -> Optional[dict]:
 
 def infer_country(lead: dict) -> str:
     """Return ISO-ish country code (AU/US/UK/...) inferred from lead fields.
-    Empty string when unknown — Claude will fall back to neutral phrasing.
+    Empty string when unknown; the model will fall back to neutral phrasing.
     """
     explicit = _norm(lead.get("country", ""))
     if explicit:
@@ -184,7 +183,7 @@ def _db_brief(niche: str) -> str:
 
 
 def system_blocks(brief: dict) -> list[dict]:
-    """Anthropic system blocks for a brief — cache the heavy markdown."""
+    """System text blocks for a brief (header + the playbook markdown)."""
     country = brief.get("country") or "unknown"
     header = (
         "You have a niche playbook below. Treat it as the single source of "
@@ -202,11 +201,7 @@ def system_blocks(brief: dict) -> list[dict]:
     )
     return [
         {"type": "text", "text": header},
-        {
-            "type": "text",
-            "text": brief["markdown"],
-            "cache_control": {"type": "ephemeral"},
-        },
+        {"type": "text", "text": brief["markdown"]},
     ]
 
 
@@ -217,7 +212,7 @@ _LABEL_TO_NICHE = {
 
 
 def user_directive(brief: dict, lead: dict) -> str:
-    """Tail text appended to the user message so Claude knows which slice."""
+    """Tail text appended to the user message so the model knows which slice."""
     country = brief.get("country") or "infer from address"
     label = brief.get("label") or "custom"
     niche_h = _LABEL_TO_NICHE.get(label, lead.get("niche") or "the playbook niche")

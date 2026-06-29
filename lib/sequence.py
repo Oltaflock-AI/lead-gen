@@ -5,7 +5,7 @@ Ports the proven logic from the old Flask sequencer:
   - deterministic per-lead subject-angle rotation (kills batch-identical subjects)
   - open gate: steps 1-3 to everyone, steps 4+ only to confirmed openers
   - open-triggered ACCELERATION: engaged leads get a hot, back-to-back cadence
-  - Claude-drafted subject+body personalized from lead signals + offer brief
+  - model-drafted subject+body personalized from lead signals + offer brief
   - send via Resend with {sequence_id, step} tags so the webhook can correlate
 
 All state lives in Supabase. No threads, no SQLite, no module-level workers.
@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from lib import learning
+from lib import llm
 from lib import research as research_module
 from lib import supabase as sb
 
@@ -27,12 +28,7 @@ from lib import supabase as sb
 # so we never stop learning. The rest EXPLOIT the best-performing angles so far.
 ANGLE_EPSILON = float(os.environ.get("LEADGEN_ANGLE_EPSILON", "0.3"))
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-# OpenAI is a fallback only (used when Claude errors / is out of credits).
-# Claude stays the primary writer. Set OPENAI_API_KEY to enable.
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+# All copy is written by OpenAI via lib/llm.py (the only LLM provider).
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM = os.environ.get("RESEND_FROM", "outreach@oltaflock.ai")
 SENDER_NAME = os.environ.get("SENDER_NAME", "Khush Mutha")
@@ -429,7 +425,7 @@ def _signals(lead: dict) -> dict:
 def seed_draft(lead: dict, step: int) -> dict | None:
     """If a lead carries a pre-written, hand-reviewed email for this step
     (imported via CSV into signals.seed_body / seed_subject), return it as a
-    ready draft so the engine sends it verbatim instead of asking Claude to
+    ready draft so the engine sends it verbatim instead of asking the model to
     write one. Used for step 1 of seeded campaigns. The structured signature is
     still appended downstream by send_email, so the seed body must NOT include a
     signoff. Returns None when there is no seed for this step."""
@@ -558,7 +554,7 @@ def _engagement_block(seq: dict, eng: dict | None = None) -> str:
 
 
 def _fallback_draft(lead: dict, step: int, angle_name: str, config=None) -> dict:
-    """Degraded-path draft used only when Claude is unavailable. Stays on-brand
+    """Degraded-path draft used only when the model is unavailable. Stays on-brand
     for the campaign's instruction set and carries NO signoff (the structured
     signature is appended at send time)."""
     biz = lead.get("business", "your team")
@@ -635,69 +631,10 @@ def _fallback_draft(lead: dict, step: int, angle_name: str, config=None) -> dict
     return {"subject": subject, "body": body, "angle": angle_name, "model": "fallback"}
 
 
-def _extract_json(text: str) -> dict | None:
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    try:
-        d = json.loads(m.group(0) if m else (text or ""))
-        return d if isinstance(d, dict) else None
-    except Exception:
-        return None
-
-
-def _claude_json(system: str, user: str) -> dict | None:
-    """Primary writer. Returns parsed {subject, body, _model} or None on any failure."""
-    if not ANTHROPIC_API_KEY:
-        return None
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": MODEL, "max_tokens": 900,
-                  "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                  "messages": [{"role": "user", "content": user}]},
-            timeout=60,
-        )
-        if r.status_code != 200:
-            return None
-        text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-        d = _extract_json(text)
-        if d:
-            d["_model"] = MODEL
-        return d
-    except Exception:
-        return None
-
-
-def _openai_json(system: str, user: str) -> dict | None:
-    """Fallback writer, used only when Claude returns nothing. Same prompt."""
-    if not OPENAI_API_KEY:
-        return None
-    try:
-        r = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-            json={"model": OPENAI_MODEL, "max_tokens": 900,
-                  "response_format": {"type": "json_object"},
-                  "messages": [{"role": "system", "content": system},
-                               {"role": "user", "content": user}]},
-            timeout=60,
-        )
-        if r.status_code != 200:
-            return None
-        text = (((r.json() or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
-        d = _extract_json(text)
-        if d:
-            d["_model"] = f"openai:{OPENAI_MODEL}"
-        return d
-    except Exception:
-        return None
-
-
 def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=None,
               eng: dict | None = None, research: dict | None = None) -> dict:
     # Hand-reviewed seeded email (e.g. the approved step-1 copy imported per
-    # lead). Sent verbatim; no Claude call, no angle bandit.
+    # lead). Sent verbatim; no model call, no angle bandit.
     seeded = seed_draft(lead, step)
     if seeded:
         return seeded
@@ -753,8 +690,8 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=
         "Return ONLY the JSON object."
     )
 
-    # Claude primary, OpenAI fallback, canned template last.
-    raw = _claude_json(system, user) or _openai_json(system, user)
+    # OpenAI writes the copy; canned template is the last-resort fallback.
+    raw = llm.chat_json(system, user)
     if raw:
         subject = strip_dashes((raw.get("subject") or "").strip())[:120]
         body = strip_dashes((raw.get("body") or "").strip())

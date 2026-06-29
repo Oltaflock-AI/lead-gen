@@ -10,7 +10,7 @@
 <section class="n-card mb-5" style="padding: 16px 20px; background: var(--bg-elev);">
   <div class="n-block-title mb-2">How sequences work</div>
   <ol class="text-xs" style="color: var(--ink-soft); padding-left: 18px; margin: 0; line-height: 1.7;">
-    <li><strong>Enqueue a CSV</strong> — every lead with an email gets enrolled in a 7-step nurture (one per row). Claude drafts all 7 emails up-front using the lead's business + niche so each is hyper-personalized.</li>
+    <li><strong>Enqueue a CSV</strong> — every lead with an email gets enrolled in a 7-step nurture (one per row). AI drafts all 7 emails up-front using the lead's business + niche so each is hyper-personalized.</li>
     <li><strong>Background scheduler</strong> wakes every 60 seconds and sends any step whose <code>scheduled_for</code> time has elapsed. You don't have to do anything once enrolled.</li>
     <li><strong>Cadence (28 days):</strong> day 0 cold → day 3 bump → day 7 FOMO → day 11 Loom → day 16 math → day 21 quirky → day 28 pizza breakup.</li>
     <li><strong>Replies pause the sequence automatically</strong> via the Gmail scan + Resend webhook. No more emails go to anyone who's already engaged.</li>
@@ -128,7 +128,7 @@
       <input id="niche_override" class="n-input" placeholder="leave blank to use Business Type column">
     </div>
     <div class="flex gap-2">
-      <button class="btn btn-primary" onclick="enqueueCsv()" title="Enrol every emailable lead in a 7-step nurture. Claude drafts all 7 emails up-front. Step 1 sends today, the rest on schedule.">Enrol leads in 7-step sequence</button>
+      <button class="btn btn-primary" onclick="enqueueCsv()" title="Enrol every emailable lead in a 7-step nurture. AI drafts all 7 emails up-front. Step 1 sends today, the rest on schedule.">Enrol leads in 7-step sequence</button>
       <button class="btn" onclick="manualTick()" title="Manually trigger the background scheduler to send any due steps now (it normally runs every 60 seconds).">Send due steps now</button>
     </div>
   </div>
@@ -139,7 +139,7 @@
 {# ---------- Manual single-lead add ---------- #}
 <section class="n-card mb-6" style="padding: 18px 22px;">
   <div class="n-block-title mb-3">Add a single lead manually</div>
-  <p class="text-xs mb-3" style="color: var(--ink-mute);">For one-off prospects you didn't scrape. Same 7-step sequence, drafted by Claude using the niche + business name.</p>
+  <p class="text-xs mb-3" style="color: var(--ink-mute);">For one-off prospects you didn't scrape. Same 7-step sequence, drafted by AI using the niche + business name.</p>
   <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
     <div>
       <label class="n-label" for="m_email">Email</label>

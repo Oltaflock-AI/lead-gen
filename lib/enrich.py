@@ -5,23 +5,21 @@ returns a PATCH dict for that row — it does NOT touch the database (the cron
 handler owns the writes). Logic:
 
   1. If the lead has a website, fetch + strip it to plain text (best-effort).
-  2. Ask Claude to extract buying signals, pain, decision-maker, intent score
-     and a one-line summary as strict JSON (same REST shape as sequence.py).
+  2. Ask the model (OpenAI, see lib/llm.py) to extract buying signals, pain,
+     decision-maker, intent score and a one-line summary as strict JSON.
   3. Merge the extracted signals onto any existing lead["signals"] and stamp
      enrichment_status='enriched' so the lead never gets stuck 'pending'.
 
-If ANTHROPIC_API_KEY is missing or Claude fails we STILL return an 'enriched'
+If OPENAI_API_KEY is missing or the model fails we STILL return an 'enriched'
 patch (with an enrich_note) — but we never fabricate intent_score, it stays None.
 """
-import json
 import os
 import re
 from datetime import datetime, timezone
 
 import requests
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+from lib import llm
 
 USER_AGENT = os.environ.get(
     "LEADGEN_ENRICH_UA",
@@ -68,7 +66,7 @@ def _strip_html(html: str) -> str:
     return text[:SITE_TEXT_CAP]
 
 
-# ─────────── Claude extraction ───────────
+# ─────────── Model extraction ───────────
 def _facts_block(lead: dict) -> str:
     s = lead.get("signals") or {}
     facts = {
@@ -86,8 +84,8 @@ def _facts_block(lead: dict) -> str:
 
 
 def _extract(lead: dict, site_text: str) -> dict:
-    """Call Claude for structured research. Returns {} on any failure."""
-    if not ANTHROPIC_API_KEY:
+    """Call the model for structured research. Returns {} on any failure."""
+    if not llm.enabled():
         return {}
 
     system = (
@@ -115,29 +113,7 @@ def _extract(lead: dict, site_text: str) -> dict:
         "Return ONLY the JSON object."
     )
 
-    try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": MODEL,
-                "max_tokens": 700,
-                "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                "messages": [{"role": "user", "content": user}],
-            },
-            timeout=60,
-        )
-        if r.status_code != 200:
-            return {}
-        text = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        return json.loads(m.group(0) if m else text)
-    except Exception:
-        return {}
+    return llm.chat_json(system, user, max_tokens=700, tag=False) or {}
 
 
 # ─────────── Normalisation ───────────
@@ -150,7 +126,7 @@ def _coerce_int_0_100(value) -> int | None:
 
 
 def _clean_signals(data: dict) -> dict:
-    """Pull the signal-shaped fields out of Claude's JSON into a flat dict."""
+    """Pull the signal-shaped fields out of the model's JSON into a flat dict."""
     out: dict = {}
     bs = data.get("buying_signals")
     if isinstance(bs, list):

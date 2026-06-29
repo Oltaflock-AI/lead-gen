@@ -93,7 +93,7 @@ app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload limit
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "http://localhost:5001/auth/callback")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM = os.getenv("RESEND_FROM", "")
@@ -318,7 +318,7 @@ def _ctx():
     return {
         "google_connected": _google_creds() is not None,
         "has_oauth_config": _has_oauth_config(),
-        "claude_enabled": ai_metrics.is_enabled(),
+        "ai_enabled": ai_metrics.is_enabled(),
         "asana_enabled": asana_api.is_configured(),
         "resend_enabled": resend_send.is_configured(),
         "sidebar_counts": {"fail": fail_count, "sequences": active_seq},
@@ -939,7 +939,7 @@ def settings_page():
             "GOOGLE_PLACES_API_KEY": bool(GOOGLE_PLACES_API_KEY),
             "GOOGLE_CLIENT_ID": bool(GOOGLE_CLIENT_ID),
             "GOOGLE_CLIENT_SECRET": bool(GOOGLE_CLIENT_SECRET),
-            "ANTHROPIC_API_KEY": bool(ANTHROPIC_API_KEY),
+            "OPENAI_API_KEY": bool(OPENAI_API_KEY),
             "RESEND_API_KEY": bool(RESEND_API_KEY),
             "RESEND_FROM": bool(RESEND_FROM),
         },
@@ -1419,7 +1419,7 @@ def api_outreach_preview():
     t0 = datetime.now()
     if to_generate:
         fresh = draft_emails_batch(to_generate, sender_name=sender)
-        engine = "claude" if ANTHROPIC_API_KEY else "template"
+        engine = "openai" if OPENAI_API_KEY else "template"
         for i, d in zip(to_generate_idx, fresh):
             d["cached"] = False
             out[i] = d
@@ -1438,7 +1438,7 @@ def api_outreach_preview():
                  1 for x in out if not x or not x.get("cached")), elapsed)
     return jsonify({
         "drafts": out,
-        "personalized_engine": "claude" if ANTHROPIC_API_KEY else "template",
+        "personalized_engine": "openai" if OPENAI_API_KEY else "template",
         "elapsed_sec": round(elapsed, 2),
         "generated": len(to_generate),
         "from_cache": sum(1 for x in out if x and x.get("cached")),
@@ -1479,11 +1479,11 @@ def api_outreach_refine():
         return jsonify({"error": "instruction required"}), 400
     if not current_body:
         return jsonify({"error": "no draft to refine"}), 400
-    if not ANTHROPIC_API_KEY:
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 400
+    if not OPENAI_API_KEY:
+        return jsonify({"error": "OPENAI_API_KEY not configured"}), 400
 
     try:
-        from anthropic import Anthropic
+        from openai import OpenAI
         from .personalize import SYSTEM_PROMPT, BATCH_MODEL, BATCH_MAX_TOKENS
         from . import niche_briefs
     except Exception as e:
@@ -1491,10 +1491,10 @@ def api_outreach_refine():
 
     sender = db.get_setting("sender_name", "") or ""
     brief = niche_briefs.get_brief_for_lead(norm) if norm else None
-    sys_blocks = [{"type": "text", "text": SYSTEM_PROMPT,
-                   "cache_control": {"type": "ephemeral"}}]
+    system_text = SYSTEM_PROMPT
     if brief:
-        sys_blocks.extend(niche_briefs.system_blocks(brief))
+        for blk in niche_briefs.system_blocks(brief):
+            system_text += "\n\n" + blk.get("text", "")
 
     facts = (
         f"business_name: {norm.get('business_name','')}\n"
@@ -1514,15 +1514,16 @@ def api_outreach_refine():
     )
 
     try:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
             model=BATCH_MODEL,
             max_tokens=BATCH_MAX_TOKENS,
-            system=sys_blocks,
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_msg},
+            ],
         )
-        text = "".join(b.text for b in resp.content
-                       if getattr(b, "type", "") == "text").strip()
+        text = (resp.choices[0].message.content or "").strip()
         import re as _re, json as _json
         m = _re.search(r"\{.*\}", text, _re.DOTALL)
         if not m:
@@ -1543,7 +1544,7 @@ def api_outreach_refine():
             subject=new_subject,
             body=new_body,
             business_name=norm.get("business_name", ""),
-            engine="claude-refine",
+            engine="openai-refine",
         )
     return jsonify({"subject": new_subject, "body": new_body})
 
@@ -1566,11 +1567,11 @@ def api_outreach_regen_field():
         return jsonify({"error": "field must be 'subject' or 'body'"}), 400
     if not norm.get("email"):
         return jsonify({"error": "lead missing email"}), 400
-    if not ANTHROPIC_API_KEY:
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 400
+    if not OPENAI_API_KEY:
+        return jsonify({"error": "OPENAI_API_KEY not configured"}), 400
 
     try:
-        from anthropic import Anthropic
+        from openai import OpenAI
         from .personalize import SYSTEM_PROMPT, BATCH_MODEL
         from . import niche_briefs
     except Exception as e:
@@ -1578,10 +1579,10 @@ def api_outreach_regen_field():
 
     sender = db.get_setting("sender_name", "") or ""
     brief = niche_briefs.get_brief_for_lead(norm)
-    sys_blocks = [{"type": "text", "text": SYSTEM_PROMPT,
-                   "cache_control": {"type": "ephemeral"}}]
+    system_text = SYSTEM_PROMPT
     if brief:
-        sys_blocks.extend(niche_briefs.system_blocks(brief))
+        for blk in niche_briefs.system_blocks(brief):
+            system_text += "\n\n" + blk.get("text", "")
 
     facts = (
         f"business_name: {norm.get('business_name','')}\n"
@@ -1615,15 +1616,16 @@ def api_outreach_regen_field():
         max_tokens = 500
 
     try:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
-        resp = client.messages.create(
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        resp = client.chat.completions.create(
             model=BATCH_MODEL,
             max_tokens=max_tokens,
-            system=sys_blocks,
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_msg},
+            ],
         )
-        text = "".join(b.text for b in resp.content
-                       if getattr(b, "type", "") == "text").strip()
+        text = (resp.choices[0].message.content or "").strip()
         import re as _re, json as _json
         m = _re.search(r"\{.*\}", text, _re.DOTALL)
         if not m:
@@ -1648,7 +1650,7 @@ def api_outreach_regen_field():
             subject=new_subject,
             body=new_body,
             business_name=norm.get("business_name", ""),
-            engine=f"claude-regen-{field}",
+            engine=f"openai-regen-{field}",
         )
     return jsonify({"subject": new_subject, "body": new_body, "field": field})
 
@@ -2388,7 +2390,7 @@ def api_fitcheck():
 @app.route("/api/ai/score-leads", methods=["POST"])
 def api_ai_score_leads():
     if not ai_metrics.is_enabled():
-        return jsonify({"error": "ANTHROPIC_API_KEY not set"}), 400
+        return jsonify({"error": "OPENAI_API_KEY not set"}), 400
     data = request.json or {}
     leads = data.get("leads", [])
     csv_name = data.get("csv_name", "")
@@ -3072,8 +3074,8 @@ if __name__ == "__main__":
         print("WARNING: GOOGLE_PLACES_API_KEY not set in .env")
     if not _has_oauth_config():
         print("WARNING: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — Sheets + Gmail disabled")
-    if not ANTHROPIC_API_KEY:
-        print("INFO: ANTHROPIC_API_KEY not set — outreach will use static template")
+    if not OPENAI_API_KEY:
+        print("INFO: OPENAI_API_KEY not set — outreach will use static template")
     # use_reloader=False: Werkzeug's file-watcher restarts the whole process
     # on any source save, which kills in-flight background jobs (Send All,
     # scrape, bulk verify). Override with LEADGEN_RELOAD=1 if you want the

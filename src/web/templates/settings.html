@@ -64,18 +64,18 @@
         {% endif %}
       </div>
 
-      {# Claude #}
+      {# AI (OpenAI) #}
       <div class="flex items-center justify-between py-3">
         <div class="flex items-center gap-3">
-          <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background: {{ 'var(--accent)' if claude_enabled else 'transparent' }}; {{ '' if claude_enabled else 'border:1.5px solid var(--ink-faint);' }}"></span>
+          <span style="display:inline-block; width:7px; height:7px; border-radius:50%; background: {{ 'var(--accent)' if ai_enabled else 'transparent' }}; {{ '' if ai_enabled else 'border:1.5px solid var(--ink-faint);' }}"></span>
           <div>
-            <div style="color: var(--ink); font-weight: 500;">Claude</div>
+            <div style="color: var(--ink); font-weight: 500;">AI</div>
             <div class="text-xs" style="color: var(--ink-mute);">
-              {% if claude_enabled %}AI personalization & lead scoring enabled.{% else %}Set <code>ANTHROPIC_API_KEY</code> in <code>.env</code>.{% endif %}
+              {% if ai_enabled %}AI personalization & lead scoring enabled.{% else %}Set <code>OPENAI_API_KEY</code> in <code>.env</code>.{% endif %}
             </div>
           </div>
         </div>
-        <span class="text-xs" style="color: var(--ink-mute);">{{ 'on' if claude_enabled else 'off' }}</span>
+        <span class="text-xs" style="color: var(--ink-mute);">{{ 'on' if ai_enabled else 'off' }}</span>
       </div>
 
       {# Resend #}

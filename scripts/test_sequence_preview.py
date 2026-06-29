@@ -5,10 +5,10 @@ Run from project root:
     python -m scripts.test_sequence_preview khush@oltaflock.ai
 
 What it does:
-    1. Loads .env (Resend + Anthropic keys).
+    1. Loads .env (Resend + OpenAI keys).
     2. Ensures a 'plumbers' niche_offer exists (seeds from the playbook if missing).
     3. Builds a realistic home-services stub lead.
-    4. Calls sequencer.draft_all_steps() — Claude drafts all 7 emails up-front.
+    4. Calls sequencer.draft_all_steps() — the model drafts all 7 emails up-front.
     5. Sends each step via Resend with a ~12s gap so the inbox renders them in
        order and Resend doesn't rate-limit.
     6. Prints subject + word count + first body line for every step.

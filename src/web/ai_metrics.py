@@ -1,18 +1,18 @@
-"""Claude-driven pipeline forecast + per-lead scoring.
+"""AI-driven pipeline forecast + per-lead scoring.
 
 Two entry points:
 
   forecast_pipeline(per_csv_summaries, niche_hint=None)
-    → asks Claude to estimate realistic monthly + annual revenue from the
+    -> asks the AI to estimate realistic monthly + annual revenue from the
       current lead pool, given typical close rates for AI-services cold outreach
       and per-niche fit.
 
   score_leads(leads)
-    → scores up to 50 leads at a time on a 0-100 scale with a one-line reason
+    -> scores up to 50 leads at a time on a 0-100 scale with a one-line reason
       each, optimized for "would this business pay $200-1500/mo for an AI voice
       agent or chatbot?".
 
-Both fall back gracefully when ANTHROPIC_API_KEY is missing.
+Both fall back gracefully when OPENAI_API_KEY is missing.
 """
 import json
 import os
@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 SYSTEM_FORECAST = """You are a sales operations analyst forecasting revenue for an AI services agency that sells:
 - 24/7 AI voice agents that answer calls and book appointments ($300-1500/month subscriptions)
@@ -80,12 +80,12 @@ Output a JSON array with EXACTLY one entry per input lead, in the same order:
 
 
 def is_enabled():
-    return bool(ANTHROPIC_API_KEY)
+    return bool(OPENAI_API_KEY)
 
 
 def _client():
-    from anthropic import Anthropic
-    return Anthropic(api_key=ANTHROPIC_API_KEY)
+    from openai import OpenAI
+    return OpenAI(api_key=OPENAI_API_KEY)
 
 
 def _extract_json(text, container):
@@ -109,9 +109,9 @@ def _extract_json(text, container):
 
 
 def forecast_pipeline(per_csv_summaries):
-    """Returns dict with the Claude forecast or {error: ...} on failure."""
+    """Returns dict with the AI forecast or {error: ...} on failure."""
     if not is_enabled():
-        return {"error": "ANTHROPIC_API_KEY not set"}
+        return {"error": "OPENAI_API_KEY not set"}
 
     payload = []
     for c in per_csv_summaries:
@@ -134,17 +134,19 @@ def forecast_pipeline(per_csv_summaries):
     )
 
     try:
-        resp = _client().messages.create(
+        resp = _client().chat.completions.create(
             model=MODEL,
             max_tokens=1500,
-            system=[{"type": "text", "text": SYSTEM_FORECAST,
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_msg}],
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SYSTEM_FORECAST},
+                {"role": "user", "content": user_msg},
+            ],
         )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        text = (resp.choices[0].message.content or "").strip()
         parsed = _extract_json(text, "{")
         if not parsed:
-            return {"error": "Could not parse Claude response", "raw": text[:500]}
+            return {"error": "Could not parse AI response", "raw": text[:500]}
         return parsed
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
@@ -153,7 +155,7 @@ def forecast_pipeline(per_csv_summaries):
 def score_leads(leads):
     """Bulk score up to 50 leads. Returns list of {niche_fit, lead_score, reason}."""
     if not is_enabled():
-        return [{"niche_fit": None, "lead_score": None, "reason": "AI scoring disabled (no ANTHROPIC_API_KEY)"} for _ in leads]
+        return [{"niche_fit": None, "lead_score": None, "reason": "AI scoring disabled (no OPENAI_API_KEY)"} for _ in leads]
     if not leads:
         return []
 
@@ -177,14 +179,15 @@ def score_leads(leads):
     )
 
     try:
-        resp = _client().messages.create(
+        resp = _client().chat.completions.create(
             model=MODEL,
             max_tokens=4000,
-            system=[{"type": "text", "text": SYSTEM_SCORE_LEADS,
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[
+                {"role": "system", "content": SYSTEM_SCORE_LEADS},
+                {"role": "user", "content": user_msg},
+            ],
         )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        text = (resp.choices[0].message.content or "").strip()
         parsed = _extract_json(text, "[")
         if not isinstance(parsed, list):
             return [{"niche_fit": None, "lead_score": None, "reason": "no JSON array in response"} for _ in batch]

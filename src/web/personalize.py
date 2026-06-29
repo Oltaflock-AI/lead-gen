@@ -1,4 +1,4 @@
-"""Claude-powered personalization for cold outreach emails.
+"""AI-powered personalization for cold outreach emails.
 
 Pitches our AI services (voice agent, chatbot, automation) to a business given
 its name, niche, location, rating, and review count. Falls back to a static
@@ -16,10 +16,10 @@ load_dotenv()
 
 log = logging.getLogger(__name__)
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-# Faster model for batch preview drafts. Haiku is plenty for 100-word emails.
-BATCH_MODEL = os.getenv("CLAUDE_MODEL_FAST", "claude-haiku-4-5-20251001")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Faster/cheaper model for batch preview drafts.
+BATCH_MODEL = os.getenv("OPENAI_MODEL_FAST", "gpt-4o-mini")
 BATCH_WORKERS = int(os.getenv("OUTREACH_BATCH_WORKERS", "8"))
 BATCH_MAX_TOKENS = int(os.getenv("OUTREACH_BATCH_MAX_TOKENS", "400"))
 
@@ -104,19 +104,19 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
     """Return {subject, body, personalized: bool}.
 
     `lead` is a normalized dict (see metrics.normalize_lead).
-    `model` defaults to MODEL (Sonnet). Pass BATCH_MODEL for fast preview runs.
-    `client` lets callers reuse one Anthropic client across many calls.
+    `model` defaults to MODEL. Pass BATCH_MODEL for fast preview runs.
+    `client` lets callers reuse one OpenAI client across many calls.
     """
-    if not ANTHROPIC_API_KEY:
+    if not OPENAI_API_KEY:
         return _template(lead, sender_name)
 
     try:
-        from anthropic import Anthropic
+        from openai import OpenAI
     except ImportError:
         return _template(lead, sender_name)
 
     if client is None:
-        client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY)
     chosen_model = model or MODEL
 
     _has_site = bool(lead.get("has_website")) or bool(lead.get("website"))
@@ -173,15 +173,10 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
     )
 
     brief = niche_briefs.get_brief_for_lead(lead)
-    system_blocks = [
-        {
-            "type": "text",
-            "text": SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
+    system_text = SYSTEM_PROMPT
     if brief:
-        system_blocks.extend(niche_briefs.system_blocks(brief))
+        for blk in niche_briefs.system_blocks(brief):
+            system_text += "\n\n" + blk.get("text", "")
         user_msg += niche_briefs.user_directive(brief, lead)
 
     # Self-improvement loop: inject our own top-performing subject lines
@@ -204,13 +199,15 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
         )
 
     try:
-        resp = client.messages.create(
+        resp = client.chat.completions.create(
             model=chosen_model,
             max_tokens=max_tokens,
-            system=system_blocks,
-            messages=[{"role": "user", "content": user_msg}],
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_msg},
+            ],
         )
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        text = (resp.choices[0].message.content or "").strip()
     except Exception as e:
         fallback = _template(lead, sender_name)
         fallback["error"] = str(e)
@@ -237,11 +234,10 @@ def draft_email(lead, sender_name="", model=None, max_tokens=600, client=None):
 def draft_emails_batch(leads, sender_name=""):
     """Draft N emails fast. Strategy:
 
-      1. Warm prompt cache with one sequential call (so the niche brief block
-         is a cache HIT for everyone else — saves tokens + latency).
-      2. Fan out remaining leads via a thread pool (Anthropic SDK is
+      1. Run first lead sequentially (warms any internal caches).
+      2. Fan out remaining leads via a thread pool (OpenAI SDK is
          thread-safe; HTTP-bound so threads work fine).
-      3. Use Haiku 4.5 (BATCH_MODEL) — plenty for 100-word cold emails.
+      3. Use BATCH_MODEL — gpt-4o-mini by default.
       4. Reduced max_tokens (BATCH_MAX_TOKENS).
 
     Returns a list of {subject, body, personalized, lead} in the original order.
@@ -249,15 +245,15 @@ def draft_emails_batch(leads, sender_name=""):
     if not leads:
         return []
 
-    if not ANTHROPIC_API_KEY:
+    if not OPENAI_API_KEY:
         return [{**_template(l, sender_name), "lead": l} for l in leads]
 
     try:
-        from anthropic import Anthropic
+        from openai import OpenAI
     except ImportError:
         return [{**_template(l, sender_name), "lead": l} for l in leads]
 
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY)
     results = [None] * len(leads)
 
     def _one(i, lead):
