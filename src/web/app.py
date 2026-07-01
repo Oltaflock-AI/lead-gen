@@ -36,6 +36,7 @@ from .scraper_runner import list_scrapers, run_scraper_stream
 from .sheets import SCOPES, add_tab, ensure_master_spreadsheet, update_tab
 from .verify import verify_lead_email, update_csv_email
 from .fitcheck import compute_fit, update_csv_fit
+from . import waterfall
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -2353,6 +2354,138 @@ def api_bulk_verify_existing():
             "skipped": skipped,
             "persisted": persisted,
         }
+        jobs.append(jid, {"type": "done", **result})
+        jobs.finish(jid, result=result)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid, "label": label})
+
+
+# ─────────────────────────── waterfall enrichment ───────────────────────────
+# Clay-style provider waterfall (see src/web/waterfall.py). Providers are tried
+# in priority order until one resolves each target field.
+
+
+def _load_waterfall_config():
+    raw = db.get_setting("waterfall_config")
+    parsed = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            parsed = {}
+    return waterfall.normalize_config(parsed)
+
+
+@app.route("/waterfall")
+def waterfall_page():
+    return render_template(
+        "waterfall.html",
+        catalog=waterfall.catalog(),
+        config=_load_waterfall_config(),
+        csvs=metrics.list_csvs(),
+        target_fields=list(waterfall.TARGET_FIELDS),
+    )
+
+
+@app.route("/api/waterfall/config", methods=["GET", "POST"])
+def api_waterfall_config():
+    if request.method == "POST":
+        cfg = waterfall.normalize_config(request.json or {})
+        db.set_setting("waterfall_config", json.dumps(cfg))
+        return jsonify({"ok": True, "config": cfg})
+    return jsonify({"config": _load_waterfall_config(), "catalog": waterfall.catalog()})
+
+
+@app.route("/api/waterfall/test", methods=["POST"])
+def api_waterfall_test():
+    """Run a single lead through the waterfall synchronously (dry-run, no write)."""
+    data = request.json or {}
+    lead = {
+        "business_name": (data.get("business_name") or "").strip(),
+        "city": (data.get("city") or data.get("region") or "").strip(),
+        "country": (data.get("country") or "").strip(),
+        "website": (data.get("website") or "").strip(),
+        "email": (data.get("email") or "").strip(),
+        "linkedin": (data.get("linkedin") or "").strip(),
+        "contact_name": (data.get("contact_name") or "").strip(),
+    }
+    if not lead["business_name"] and not lead["website"]:
+        return jsonify({"error": "business_name or website required"}), 400
+    targets = tuple(t for t in (data.get("targets") or ["email"])
+                    if t in waterfall.TARGET_FIELDS) or ("email",)
+    out = waterfall.run_waterfall(lead, _load_waterfall_config(), targets=targets)
+    return jsonify(out)
+
+
+@app.route("/api/waterfall/run", methods=["POST"])
+def api_waterfall_run():
+    """Run every lead in a CSV through the waterfall, persisting email + website."""
+    data = request.json or {}
+    csv_name = data.get("csv_name", "")
+    only_missing = bool(data.get("only_missing", True))
+    targets = tuple(t for t in (data.get("targets") or ["email"])
+                    if t in waterfall.TARGET_FIELDS) or ("email",)
+    path = _safe_csv_path(csv_name)
+    if not path:
+        return jsonify({"error": f"CSV not found: {csv_name}"}), 404
+
+    cfg = _load_waterfall_config()
+    _, rows = metrics.read_csv_with_scores(path)
+    total = len(rows)
+    label = f"Waterfall · {csv_name}"
+    jid = jobs.create_job("waterfall", label)
+
+    def worker():
+        from .verify import update_csv_website
+        filled_email = filled_site = spent = skipped = 0
+        credits = 0.0
+        for i, r in enumerate(rows, 1):
+            if jobs.is_cancelled(jid):
+                jobs.append(jid, {"type": "log", "line": f"✋ cancelled at {i-1}/{total}"})
+                break
+            n = r["_normalized"]
+            name = n["business_name"]
+            if not name:
+                continue
+            lead = {
+                "business_name": name, "city": n.get("city", ""),
+                "country": n.get("country", ""), "website": n.get("website", ""),
+                "email": n.get("email", ""), "phone": n.get("phone", ""),
+            }
+            need_email = "email" in targets and not lead["email"]
+            need_site = "website" in targets and not lead["website"]
+            if only_missing and not need_email and not need_site:
+                skipped += 1
+                continue
+
+            out = waterfall.run_waterfall(lead, cfg, targets=targets)
+            credits += out["cost"]
+            got = out["fields"]
+            if got.get("email"):
+                prov = out["provenance"].get("email", {})
+                v = verify_lead_email(name, got["email"], n.get("city", ""),
+                                      n.get("country", ""), skip_search=True)
+                update_csv_email(path, name, got["email"],
+                                 verified=v.get("verified"), kind=v.get("kind"),
+                                 legit=v.get("legit"), smtp_check=v.get("smtp_check"))
+                filled_email += 1
+                jobs.append(jid, {"type": "log",
+                    "line": f"✉ {name}: {got['email']} via {prov.get('label', '?')}"})
+            if got.get("website"):
+                update_csv_website(path, name, got["website"])
+                filled_site += 1
+            spent += 1
+            jobs.append(jid, {
+                "type": "progress", "i": i, "total": total, "name": name,
+                "email": got.get("email", lead["email"]),
+                "filled_email": filled_email, "filled_site": filled_site,
+                "skipped": skipped, "credits": round(credits, 2),
+                "trace": out["trace"],
+            })
+        result = {"processed": spent, "filled_email": filled_email,
+                  "filled_site": filled_site, "skipped": skipped,
+                  "credits": round(credits, 2), "csv": csv_name}
         jobs.append(jid, {"type": "done", **result})
         jobs.finish(jid, result=result)
 

@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}Waterfall — lead-gen{% endblock %}
+{% block breadcrumb %}workspace / waterfall{% endblock %}
+{% block heading %}Enrichment waterfall{% endblock %}
+{% block subheading %}Clay-style provider chain · tried top-to-bottom until each field is resolved · drag to reorder, toggle to disable{% endblock %}
+
+{% block content %}
+<div class="grid" style="grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start;">
+
+  <!-- ── Provider chain config ── -->
+  <section class="n-card" style="padding: 18px;">
+    <div class="n-block-title" style="margin: 0 0 4px;">Provider chain</div>
+    <div class="text-xs" style="color: var(--ink-mute); margin-bottom: 14px;">
+      Highest-trust / cheapest first. Grey-ed rows are missing their API key —
+      add it in <code>.env</code> to enable them. The chain still runs without them.
+    </div>
+
+    <div class="mb-3">
+      <label class="text-xs" style="color: var(--ink-mute); display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" id="stop-at-first" {{ 'checked' if config.stop_at_first else '' }}>
+        <span>Stop at first hit <span style="color: var(--ink-faint);">— save credits (Clay default). Off = query every provider.</span></span>
+      </label>
+    </div>
+
+    <ul id="provider-list" style="list-style: none; padding: 0; margin: 0;">
+      {% for key in config.order %}
+        {% for p in catalog if p.key == key %}
+        <li class="wf-row" data-key="{{ p.key }}" draggable="true"
+            style="display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; background: var(--surface); cursor: grab; {{ 'opacity: .5;' if not p.available else '' }}">
+          <span class="wf-handle" style="color: var(--ink-faint); cursor: grab;">⠿</span>
+          <input type="checkbox" class="wf-enabled" {{ 'checked' if config.enabled.get(p.key, True) else '' }}>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-weight: 600;">{{ p.label }}
+              {% if not p.available %}<span class="chip chip-gray">needs key</span>{% endif %}
+            </div>
+            <div class="text-xs" style="color: var(--ink-mute);">
+              fills {{ p.provides | join(', ') }} · {{ 'free' if p.cost == 0 else (p.cost | int ~ ' credit' ~ ('s' if p.cost != 1 else '')) }}
+              {% if p.requires_env %}· {{ p.requires_env | join(', ') }}{% endif %}
+            </div>
+          </div>
+        </li>
+        {% endfor %}
+      {% endfor %}
+    </ul>
+
+    <div class="flex items-center gap-3 mt-3">
+      <button id="save-config" class="n-btn n-btn-primary">Save chain</button>
+      <span id="save-status" class="text-xs" style="color: var(--ink-mute);"></span>
+    </div>
+  </section>
+
+  <!-- ── Test a single lead ── -->
+  <section class="n-card" style="padding: 18px;">
+    <div class="n-block-title" style="margin: 0 0 4px;">Test one lead</div>
+    <div class="text-xs" style="color: var(--ink-mute); margin-bottom: 14px;">
+      Dry-run — nothing is written. See exactly which rung resolves each field.
+    </div>
+    <div class="grid" style="grid-template-columns: 1fr 1fr; gap: 8px;">
+      <input id="t-name" class="n-input" placeholder="Business name">
+      <input id="t-city" class="n-input" placeholder="City / region">
+      <input id="t-website" class="n-input" placeholder="Website (optional)">
+      <input id="t-email" class="n-input" placeholder="Known email (optional)">
+    </div>
+    <div class="flex items-center gap-2 mt-2" style="flex-wrap: wrap;">
+      {% for f in target_fields %}
+      <label class="text-xs" style="display: inline-flex; align-items: center; gap: 4px;">
+        <input type="checkbox" class="t-target" value="{{ f }}" {{ 'checked' if f == 'email' else '' }}> {{ f }}
+      </label>
+      {% endfor %}
+    </div>
+    <button id="run-test" class="n-btn n-btn-primary mt-3">Run waterfall</button>
+    <div id="test-out" class="mt-3" style="display: none;"></div>
+  </section>
+</div>
+
+<!-- ── Bulk run over a CSV ── -->
+<section class="n-card mt-4" style="padding: 18px;">
+  <div class="n-block-title" style="margin: 0 0 4px;">Run on a CSV</div>
+  <div class="text-xs" style="color: var(--ink-mute); margin-bottom: 14px;">
+    Enriches every lead through the chain above and writes email + website back to the file.
+  </div>
+  <div class="flex items-center gap-2" style="flex-wrap: wrap;">
+    <select id="run-csv" class="n-input" style="min-width: 260px;">
+      <option value="">Select a CSV…</option>
+      {% for c in csvs %}<option value="{{ c.name }}">{{ c.name }} ({{ c.rows }} rows)</option>{% endfor %}
+    </select>
+    <label class="text-xs" style="display: inline-flex; align-items: center; gap: 6px;">
+      <input type="checkbox" id="run-only-missing" checked> Only rows missing the field
+    </label>
+    <button id="run-bulk" class="n-btn n-btn-primary">Run waterfall</button>
+  </div>
+  <div id="run-progress" class="mt-3 text-xs" style="display: none; font-family: var(--font-mono, monospace);"></div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const catalog = {{ catalog | tojson }};
+
+// ── drag-to-reorder ──
+const list = document.getElementById('provider-list');
+let dragEl = null;
+list.addEventListener('dragstart', e => { dragEl = e.target.closest('.wf-row'); dragEl.style.opacity = '.4'; });
+list.addEventListener('dragend', e => { if (dragEl) dragEl.style.opacity = ''; dragEl = null; });
+list.addEventListener('dragover', e => {
+  e.preventDefault();
+  const after = [...list.querySelectorAll('.wf-row:not([style*="opacity: 0.4"])')]
+    .find(row => e.clientY <= row.getBoundingClientRect().top + row.offsetHeight / 2);
+  if (!dragEl) return;
+  if (after) list.insertBefore(dragEl, after); else list.appendChild(dragEl);
+});
+
+function readConfig() {
+  const order = [...list.querySelectorAll('.wf-row')].map(r => r.dataset.key);
+  const enabled = {};
+  list.querySelectorAll('.wf-row').forEach(r => {
+    enabled[r.dataset.key] = r.querySelector('.wf-enabled').checked;
+  });
+  return { order, enabled, stop_at_first: document.getElementById('stop-at-first').checked };
+}
+
+document.getElementById('save-config').onclick = async () => {
+  const status = document.getElementById('save-status');
+  status.textContent = 'saving…';
+  const r = await fetch('/api/waterfall/config', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(readConfig()),
+  });
+  status.textContent = r.ok ? '✓ saved' : '✗ failed';
+  setTimeout(() => status.textContent = '', 2500);
+};
+
+// ── single-lead test ──
+document.getElementById('run-test').onclick = async () => {
+  const btn = document.getElementById('run-test');
+  const out = document.getElementById('test-out');
+  const targets = [...document.querySelectorAll('.t-target:checked')].map(c => c.value);
+  btn.disabled = true; btn.textContent = 'Running…';
+  out.style.display = 'block'; out.innerHTML = '<span class="text-xs" style="color:var(--ink-mute)">running the chain…</span>';
+  try {
+    const r = await fetch('/api/waterfall/test', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        business_name: document.getElementById('t-name').value,
+        city: document.getElementById('t-city').value,
+        website: document.getElementById('t-website').value,
+        email: document.getElementById('t-email').value,
+        targets,
+      }),
+    });
+    const d = await r.json();
+    if (d.error) { out.innerHTML = `<span class="chip chip-red">${d.error}</span>`; return; }
+    out.innerHTML = renderResult(d);
+  } finally { btn.disabled = false; btn.textContent = 'Run waterfall'; }
+};
+
+function renderResult(d) {
+  const fields = Object.entries(d.fields || {}).map(([k, v]) => {
+    const p = d.provenance[k] || {};
+    return `<div><b>${k}:</b> ${v} <span class="chip chip-gray">${p.label || '?'}</span>
+      <span class="text-xs" style="color:var(--ink-faint)">conf ${(p.confidence*100||0)|0}%</span></div>`;
+  }).join('') || '<div class="text-xs" style="color:var(--ink-mute)">no new fields resolved</div>';
+  const trace = (d.trace || []).map(t => {
+    const icon = t.filled.length ? '✅' : (t.ran ? '·' : '⏭');
+    const filled = t.filled.length ? ` → ${t.filled.join(', ')}` : '';
+    return `<div style="color:${t.filled.length ? 'var(--ink)' : 'var(--ink-mute)'}">${icon} ${t.provider}${filled}
+      <span style="color:var(--ink-faint)">— ${t.note}</span></div>`;
+  }).join('');
+  return `<div class="mb-2">${fields}</div>
+    <div class="text-xs" style="color:var(--ink-mute); margin: 8px 0 4px;">Chain trace · ${d.cost} credits spent</div>
+    <div class="text-xs" style="font-family: var(--font-mono, monospace); line-height: 1.6;">${trace}</div>`;
+}
+
+// ── bulk run ──
+document.getElementById('run-bulk').onclick = async () => {
+  const csv = document.getElementById('run-csv').value;
+  const prog = document.getElementById('run-progress');
+  if (!csv) { alert('Pick a CSV first'); return; }
+  const targets = [...document.querySelectorAll('.t-target:checked')].map(c => c.value);
+  prog.style.display = 'block'; prog.textContent = 'starting…\n';
+  const btn = document.getElementById('run-bulk'); btn.disabled = true;
+  await startJob('/api/waterfall/run', {
+    csv_name: csv,
+    only_missing: document.getElementById('run-only-missing').checked,
+    targets: targets.length ? targets : ['email'],
+  }, ev => {
+    if (ev.type === 'progress') {
+      prog.textContent = `${ev.i}/${ev.total} · ${ev.name}\n`
+        + `emails +${ev.filled_email} · sites +${ev.filled_site} · skipped ${ev.skipped} · ${ev.credits} credits`;
+    } else if (ev.type === 'log') {
+      prog.textContent += '\n' + ev.line;
+    } else if (ev.type === 'done' || ev.type === '_end') {
+      const r = ev.result || ev;
+      prog.textContent += `\n\n✓ done — ${r.filled_email || 0} emails, ${r.filled_site || 0} sites, ${r.credits || 0} credits`;
+      btn.disabled = false;
+    } else if (ev.type === '_error') {
+      prog.textContent += '\n✗ ' + ev.error; btn.disabled = false;
+    }
+  });
+};
+</script>
+{% endblock %}

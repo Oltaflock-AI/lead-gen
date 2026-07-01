@@ -48,6 +48,7 @@
         <a href="/leads" class="nav-link {{ 'active' if request.endpoint in ('leads_index','leads_detail') else '' }}">
           Leads{% if pending_leads %}<span class="chip chip-gray ml-auto">{{ pending_leads }}</span>{% endif %}
         </a>
+        <a href="/waterfall" class="nav-link {{ 'active' if request.endpoint == 'waterfall_page' else '' }}">Waterfall</a>
         {% set pending_fail = (sidebar_counts.fail if sidebar_counts and sidebar_counts.fail else 0) %}
         <a href="/outreach" class="nav-link {{ 'active' if request.endpoint == 'outreach_page' else '' }} {% if pending_fail %}warn{% endif %}">
           Outreach{% if pending_fail %}<span class="chip chip-red ml-auto">{{ pending_fail }} fail</span>{% endif %}
