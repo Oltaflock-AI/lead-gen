@@ -746,6 +746,15 @@ def _html_body(body: str) -> str:
     return f'<div style="font-family:Georgia,serif;font-size:15px;line-height:1.6;color:#111;">{blocks}</div>'
 
 
+def _test_guard(addr: str) -> str:
+    """F02 hard safety net: when LEADGEN_TEST_MODE is on, redirect EVERY recipient
+    to the sandbox address so a stray/test send can never reach a real lead. This
+    is the single choke point for both the sequence and manual send paths."""
+    if os.environ.get("LEADGEN_TEST_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return os.environ.get("LEADGEN_TEST_RECIPIENT", "admin@oltaflock.ai")
+    return addr
+
+
 def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
     """Send via Resend with correlation tags. Returns {resend_id} or {error}."""
     if not RESEND_API_KEY:
@@ -753,6 +762,7 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
     to = lead.get("email")
     if not to:
         return {"error": "lead has no email"}
+    to = _test_guard(to)
 
     body = draft["body"] + _signature()
     payload = {
@@ -789,6 +799,7 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
         return {"error": "RESEND_API_KEY missing"}
     if not to_email:
         return {"error": "no recipient"}
+    to_email = _test_guard(to_email)
     if append_signature:
         sig = ("\n\n" + signature.strip()) if signature else _signature()
     else:

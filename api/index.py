@@ -26,6 +26,14 @@ ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
 PROD_URL = "https://lead-gen-fawn-seven.vercel.app"
 
 
+def _esc(v) -> str:
+    """HTML-escape any value before it is interpolated into an f-string page.
+    F03 guard: lead/business/email/subject/body come from scraped Google data,
+    CSV uploads, and LLM output, so every such site MUST pass through here."""
+    import html as _h
+    return _h.escape("" if v is None else str(v))
+
+
 def _logo_data_uri():
     """OltaFlock logo as a base64 data URI (avoids Vercel static-routing). Cached."""
     root = os.path.dirname(os.path.dirname(__file__))
@@ -568,9 +576,9 @@ def home():
         if et in ("opened_bot", "clicked_bot"):
             continue
         arows += f"""<tr><td class="when">{t}</td>
-          <td><div class="biz">{lead.get('business') or ('seq #'+str(e.get('sequence_id')) if e.get('sequence_id') else '—')}</div>
-          <div class="email">{lead.get('email') or ''}</div></td>
-          <td class="subj">{subj}</td><td>{chip(et if et in ('sent','delivered','opened','clicked','bounced','replied') else 'queued', et)}</td></tr>"""
+          <td><div class="biz">{_esc(lead.get('business') or ('seq #'+str(e.get('sequence_id')) if e.get('sequence_id') else '—'))}</div>
+          <div class="email">{_esc(lead.get('email') or '')}</div></td>
+          <td class="subj">{_esc(subj)}</td><td>{chip(et if et in ('sent','delivered','opened','clicked','bounced','replied') else 'queued', et)}</td></tr>"""
     if not arows:
         arows = '<tr><td colspan="4" style="padding:32px;text-align:center;color:var(--ink-mute)">No activity in this window yet.</td></tr>'
 
@@ -1836,7 +1844,7 @@ def campaigns_list():
             badge = chip("paused", "Paused")
             action = '<span class="muted" style="font-size:12px">enriching…</span>' if a["enriching"] else '<span class="muted" style="font-size:12px">no leads</span>'
         rows += f"""<tr>
-          <td><a href="/campaigns/{c['id']}" style="text-decoration:none;color:inherit"><div class="biz">{c['name']}</div><div class="email">{c.get('niche') or ''} · {c.get('region') or ''}</div></a></td>
+          <td><a href="/campaigns/{c['id']}" style="text-decoration:none;color:inherit"><div class="biz">{_esc(c['name'])}</div><div class="email">{_esc(c.get('niche') or '')} · {_esc(c.get('region') or '')}</div></a></td>
           <td>{badge}</td>
           <td class="when">{a['total']}</td>
           <td class="when" style="font-weight:600;color:var(--good)">{ready}</td>
@@ -1912,11 +1920,11 @@ def campaign_detail(cid):
     c = rows[0]
     leads = sb.select("leads", {"select": "*", "campaign_id": f"eq.{cid}", "order": "created_at.desc"}, limit=200)
     runs = sb.select("scrape_runs", {"select": "*", "campaign_id": f"eq.{cid}", "order": "started_at.desc"}, limit=10)
-    lrows = "".join(f"""<tr><td><div class="biz">{l['business']}</div><div class="email">{l.get('email') or 'no email'}</div></td>
+    lrows = "".join(f"""<tr><td><div class="biz">{_esc(l['business'])}</div><div class="email">{_esc(l.get('email') or 'no email')}</div></td>
       <td>{chip(l['enrichment_status'], l['enrichment_status'])}</td>
       <td class="when">{l.get('intent_score') if l.get('intent_score') is not None else '—'}</td>
       <td class="when">{l['created_at'][:10]}</td></tr>""" for l in leads)
-    offer = f'<div class="block"><div class="block-head"><div class="block-title">Offer brief</div></div><div class="block-body"><pre style="font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;color:var(--ink-soft)">{c.get("offer_brief")}</pre></div></div>' if c.get("offer_brief") else ""
+    offer = f'<div class="block"><div class="block-head"><div class="block-title">Offer brief</div></div><div class="block-body"><pre style="font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;color:var(--ink-soft)">{_esc(c.get("offer_brief"))}</pre></div></div>' if c.get("offer_brief") else ""
     runrows = "".join(f'<tr><td class="when">{r["started_at"][:16].replace("T"," ")}</td><td>{chip(r["status"], r["status"])}</td><td class="when">{r["scraped_count"]}/{r.get("target_count") or "—"}</td></tr>' for r in runs)
 
     # ---- Launch panel: show send-readiness + one clear primary action ----
@@ -2007,12 +2015,12 @@ def sequences_page():
     for r in rows:
         l = leadmap.get(r["lead_id"], {})
         trows += f"""<tr onclick="location.href='/sequences/{r['id']}'" style="cursor:pointer">
-          <td><div class="biz">{l.get('business') or '#'+str(r['lead_id'])}</div><div class="email">{l.get('email') or ''}</div></td>
-          <td class="when">{l.get('city') or ''}</td>
+          <td><div class="biz">{_esc(l.get('business') or '#'+str(r['lead_id']))}</div><div class="email">{_esc(l.get('email') or '')}</div></td>
+          <td class="when">{_esc(l.get('city') or '')}</td>
           <td>{dots(r['current_step'])}</td>
           <td>{chip(r['status'], r['status'])}</td>
           <td class="when">{(r.get('next_send_at') or '')[:16].replace('T',' ')}</td>
-          <td class="when">{r.get('paused_reason') or ''}</td></tr>"""
+          <td class="when">{_esc(r.get('paused_reason') or '')}</td></tr>"""
     table = f"""<div class="block"><div class="filter-row">{tabs}</div>
       <table class="act-table"><thead><tr><th>Lead</th><th>City</th><th>Step</th><th>Status</th><th>Next send</th><th>Reason</th></tr></thead>
       <tbody>{trows or '<tr><td colspan=6 style="padding:32px;text-align:center;color:var(--ink-mute)">No sequences. Start outreach on a campaign.</td></tr>'}</tbody></table></div>"""
@@ -2034,8 +2042,8 @@ def sequence_detail(sid):
     thread = ""
     for d in drafts:
         day, name = STEP_META.get(d["step"], ("", ""))
-        thread += f"""<div class="block"><div class="block-head"><div><div class="block-title" style="font-size:15px">{d['subject']}</div><div class="block-sub">Step {d['step']} · {name} · {day} · {d.get('angle') or ''}</div></div></div>
-        <div class="block-body"><pre style="font-family:var(--font-sans);font-size:13px;white-space:pre-wrap;color:var(--ink-soft);line-height:1.6">{d['body']}</pre></div></div>"""
+        thread += f"""<div class="block"><div class="block-head"><div><div class="block-title" style="font-size:15px">{_esc(d['subject'])}</div><div class="block-sub">Step {d['step']} · {name} · {day} · {_esc(d.get('angle') or '')}</div></div></div>
+        <div class="block-body"><pre style="font-family:var(--font-sans);font-size:13px;white-space:pre-wrap;color:var(--ink-soft);line-height:1.6">{_esc(d['body'])}</pre></div></div>"""
     if not thread:
         thread = '<div class="empty">No drafts yet. They appear as the sequencer sends each step.</div>'
     tl = "".join(f'<div class="tl-item {"live" if e["event_type"] in ("opened","clicked","replied") else ""}"><div class="tl-time">{e["ts"][:16].replace("T"," ")}</div><div class="tl-text">{chip(e["event_type"], e["event_type"])} {("step "+str(e["step"])) if e.get("step") else ""}</div></div>' for e in evs) or '<div class="muted" style="font-size:12px">No events yet.</div>'

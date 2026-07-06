@@ -25,6 +25,10 @@ def send_email(to_addr, subject, text_body, html_body, from_addr=None):
     if not sender:
         raise ResendError("RESEND_FROM not set")
 
+    # F02 hard safety net: in test mode, never send to the real address.
+    if os.getenv("LEADGEN_TEST_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        to_addr = os.getenv("LEADGEN_TEST_RECIPIENT", "admin@oltaflock.ai")
+
     params = {
         "from": sender,
         "to": [to_addr],
