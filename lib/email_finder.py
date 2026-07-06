@@ -11,6 +11,8 @@ Pure-ish: find_email(lead) returns {email, email_status, email_source} or {}.
 """
 import os
 import re
+
+from lib import net_guard
 from urllib.parse import urlparse
 
 import requests
@@ -43,8 +45,8 @@ def _domain(url_or_email: str) -> str:
 
 def _fetch(url: str) -> str:
     try:
-        r = requests.get(url, headers={"User-Agent": UA, "Accept": "text/html,*/*"},
-                         timeout=8, allow_redirects=True)
+        r = net_guard.safe_get(url, headers={"User-Agent": UA, "Accept": "text/html,*/*"},
+                               timeout=8)
         ct = (r.headers.get("Content-Type") or "").lower()
         if r.status_code >= 400 or ("html" not in ct and "text" not in ct):
             return ""

@@ -9,6 +9,7 @@ sequence (so we stop emailing someone who answered), and log a 'replied' event.
 Accepts both the Resend inbound shape ({type, data:{from,to,subject,text}}) and a
 generic {from,to,subject} body. Tolerant of "Name <email>" formatting.
 """
+import hmac
 import json
 import os
 import re
@@ -93,11 +94,14 @@ class handler(BaseHTTPRequestHandler):
         self._respond(200, {"ok": True, "service": "inbound-reply-webhook"})
 
     def do_POST(self):
-        # Optional shared-secret gate (?secret= or X-Webhook-Secret header).
+        # Shared-secret gate via the X-Webhook-Secret header (F12). Timing-safe,
+        # no path bypass. Required in production; may be unset only in non-prod.
         if INBOUND_SECRET:
             got = self.headers.get("x-webhook-secret") or ""
-            if got != INBOUND_SECRET and INBOUND_SECRET not in (self.path or ""):
+            if not hmac.compare_digest(got, INBOUND_SECRET):
                 return self._respond(401, {"ok": False, "error": "secret"})
+        elif os.environ.get("VERCEL_ENV") == "production":
+            return self._respond(401, {"ok": False, "error": "INBOUND_WEBHOOK_SECRET not configured"})
 
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length else b"{}"

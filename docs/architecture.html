@@ -574,7 +574,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F06</span>
             <span class="find-title">Legacy engine sends without checking the suppression list</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><code>enqueue_lead</code> (<span class="path">src/web/sequencer.py:536</span>), <code>/api/sequences/add-lead</code>, and the agent <code>schedule_leads</code> tool all enroll with no suppression gate. <code>db.is_suppressed()</code> exists but is <strong>never called</strong> — dead code.</dd>
             <dt>Exploit</dt><dd>A lead that unsubscribed or hard-bounced can be re-enrolled via the dashboard bulk button or agent, and gets all 7 steps. CAN-SPAM + GDPR exposure.</dd>
@@ -585,7 +585,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F07</span>
             <span class="find-title">CAN-SPAM: no unsubscribe link, header, or physical address in any email</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed (set address env)</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd>Signatures in <span class="path">lib/sequence.py:716-722</span> and <span class="path">src/web/email_compose.py</span> carry only name/title/website. No <code>List-Unsubscribe</code> header, no one-click link, no postal address. No <code>/unsubscribe</code> route exists in either app.</dd>
             <dt>Exploit</dt><dd>Every commercial email fails CAN-SPAM's opt-out + physical-address requirements; GDPR Art. 21 for EU recipients. Only opt-out path is a passive Gmail STOP-reply detected 15 min later.</dd>
@@ -596,7 +596,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F08</span>
             <span class="find-title">Fail-open auth: cron, webhook &amp; login default to open when env unset</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">lib/auth.py:7</span> returns <code>True</code> when <code>CRON_SECRET</code> unset · <span class="path">api/webhook/resend.py:35</span> skips Svix verify when secret unset · <span class="path">lib/users.py:131</span> HMAC key falls back to static <code>"dev-secret"</code>.</dd>
             <dt>Exploit</dt><dd>A single missing/typo'd env var silently disables a whole auth layer: anyone can trigger crons, forge webhook events, or (both secrets unset) forge a valid login cookie. Also, cron check uses <code>==</code>, not timing-safe.</dd>
@@ -607,7 +607,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F09</span>
             <span class="find-title">SSRF: lead-controlled website URLs fetched with no host/IP validation</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">lib/enrich.py:39-47</span>, <span class="path">lib/email_finder.py:44-51</span>, <span class="path">src/web/email_finder.py:47-65</span> — all <code>requests.get(url, allow_redirects=True)</code> on a <code>website</code> field harvested from Google Places / DDG. No scheme allowlist, no private-IP block, no per-redirect re-validation.</dd>
             <dt>Exploit</dt><dd>A business listing whose website points at <code>http://169.254.169.254</code> or an internal <code>10.x/localhost</code> address drives the server to fetch it (metadata/recon/limited proxy). Vercel reduces cloud-metadata risk but internal services remain reachable.</dd>
@@ -618,7 +618,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F10</span>
             <span class="find-title">No guard against local scheduler running alongside the production cron</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">src/web/app.py:126-128</span> — <code>LEADGEN_SCHEDULER</code> defaults <strong>on</strong>, auto-starting the SQLite scheduler thread. GitHub Actions hits the Supabase cron every 5 min. Two engines, two DBs, two separate suppression tables, zero mutual awareness.</dd>
             <dt>Exploit</dt><dd>Running the local app while cron is live means two independent systems can email the same leads; a lead opted-out in one is not protected in the other.</dd>
@@ -629,7 +629,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F11</span>
             <span class="find-title">Bounce/complaint webhook never adds address to global suppressions</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">api/webhook/resend.py</span> — on <code>email.bounced</code>/<code>email.complained</code> it only pauses that one <code>sequences</code> row. It does <strong>not</strong> insert into <code>public.suppressions</code>. Only the Gmail STOP-reply path writes suppressions.</dd>
             <dt>Exploit</dt><dd>A hard-bounced or spam-complained address can be re-enrolled in a future campaign — hurts sender reputation and risks blocklisting.</dd>
@@ -640,7 +640,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F12</span>
             <span class="find-title">/webhook/inbound likely runs with no secret — forged replies can pause any sequence</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed (set secret env)</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">api/webhook/inbound.py:22,96-100</span> — <code>INBOUND_WEBHOOK_SECRET</code> is not referenced anywhere in settings/env docs (unlike CRON/RESEND secrets), so it's likely unset → the check is skipped. The check also has a bypass (<code>INBOUND_SECRET not in self.path</code>) and a non-timing-safe <code>!=</code>.</dd>
             <dt>Exploit</dt><dd>The endpoint is internet-reachable and uses the Supabase service-role key to write. Anyone can POST <code>{"from":"lead@company.com"}</code> to pause that lead's active sequence, mark blast recipients replied, or spam <code>sequence_events</code> — a targeted disruption/DoS on the outreach pipeline (guess sequential sequence IDs to pause them all).</dd>
@@ -652,7 +652,7 @@
         <details class="find med" data-sev="med">
           <summary class="find-head"><span class="sev-tag sev-med">Med</span><span class="find-id">F13</span>
             <span class="find-title">No Resend idempotency key — narrow crash-window double-send</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">api/cron/sequencer_tick.py:171</span> &amp; <span class="path">lib/sequence.py:749-773</span> build the Resend payload with no <code>Idempotency-Key</code> header.</dd>
             <dt>Exploit</dt><dd>A crash/timeout between the successful Resend call and the DB advance can, on retry, reissue the same step's email.</dd>
@@ -663,7 +663,7 @@
         <details class="find med" data-sev="med">
           <summary class="find-head"><span class="sev-tag sev-med">Med</span><span class="find-id">F14</span>
             <span class="find-title">LLM agent: bounded rounds but no token/spend cap</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed (max_tokens; daily cap TODO)</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">lib/llm.py:85-144</span> — <code>max_rounds=8</code> exists, but no <code>max_tokens</code> on <code>chat_tools</code> and no per-day OpenAI spend counter. <code>MAX_LEADS_PER_RUN=60</code> bounds lead count only.</dd>
             <dt>Exploit</dt><dd>One confirmed agent turn can fan out to ~60 leads × several LLM + HTTP calls with no daily ceiling — cost-based DoS if <code>/agent</code> is exposed.</dd>
@@ -845,6 +845,7 @@
         <table>
           <thead><tr><th>Date</th><th>Rev</th><th>Change</th></tr></thead>
           <tbody>
+            <tr><td class="mono">2026-07-06</td><td class="mono">v1.2</td><td>Fixed 9 highs/mediums: F08 (fail-closed cron+webhook+cookie auth, timing-safe), F09 (SSRF guard <code>lib/net_guard.py</code> on all 3 lead-URL fetchers), F11 (bounce/complaint → suppressions), F12 (inbound webhook timing-safe, no path bypass), F13 (Resend idempotency key), F06 (legacy suppression enforced at enrol + tick), F10 (local scheduler now opt-in/default-off), F14 (LLM <code>max_tokens</code> cap; daily spend cap still TODO), F07 (CAN-SPAM opt-out line + <code>List-Unsubscribe</code> header + postal address via <code>LEADGEN_POSTAL_ADDRESS</code>). Note: F07/F12 need their env vars set in prod; F08 fails closed only when <code>VERCEL_ENV=production</code>.</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.1</td><td>Fixed the 4 criticals: F01 (cred → env), F02 (<code>_test_guard</code> choke point), F03 (XSS escaping across all sites) — all applied &amp; compile-checked. F04 partial: PII CSVs untracked; history purge + force-push held for explicit go-ahead.</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.0</td><td>Initial full audit + architecture map (8 parallel audit agents). 27 findings logged: 4 critical, 8 high, 9 medium, 6 low. Baseline posture documented. Highest priority: F03 production stored XSS, F04 lead PII in git history, F01 hardcoded MahaRERA credential, F02 no test-send guard.</td></tr>
           </tbody>

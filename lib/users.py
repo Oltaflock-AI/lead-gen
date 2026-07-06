@@ -128,7 +128,17 @@ def set_password(username: str, new_password: str) -> tuple[bool, str]:
 
 
 def _secret() -> bytes:
-    return (os.environ.get("LEADGEN_SECRET") or os.environ.get("DASHBOARD_KEY") or "dev-secret").encode()
+    s = os.environ.get("LEADGEN_SECRET") or os.environ.get("DASHBOARD_KEY")
+    if not s:
+        # Never sign login cookies with a guessable constant in production (F08) —
+        # that would let anyone forge a valid session for a known username.
+        if os.environ.get("VERCEL_ENV") == "production":
+            raise RuntimeError(
+                "LEADGEN_SECRET (or DASHBOARD_KEY) must be set in production — "
+                "refusing to sign auth cookies with a default key."
+            )
+        s = "dev-secret"
+    return s.encode()
 
 
 def sign(username: str) -> str:

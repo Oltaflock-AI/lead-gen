@@ -33,7 +33,8 @@ EVENT_MAP = {
 
 def _verify_svix(body: bytes, headers) -> bool:
     if not RESEND_WEBHOOK_SECRET:
-        return True
+        # Fail closed in production (F08): an unsigned webhook must not be trusted.
+        return os.environ.get("VERCEL_ENV", "development") != "production"
     try:
         from svix.webhooks import Webhook
         wh = Webhook(RESEND_WEBHOOK_SECRET)
@@ -159,6 +160,23 @@ def _update_blast_recipient(resend_id: str | None, event_type: str) -> None:
         sb.update("blast_recipients", {"id": r["id"]}, patch)
 
 
+def _suppress_recipient(data: dict, reason: str) -> None:
+    """F11: a hard bounce or spam complaint must add the address to the global
+    suppressions list so it can never be re-enrolled in a future campaign. The
+    sequence-level pause only protects the current sequence, not future ones."""
+    to = data.get("to")
+    email = to[0] if isinstance(to, list) and to else (to if isinstance(to, str) else None)
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    try:
+        sb.insert("suppressions",
+                  {"email": email, "reason": reason, "source": "resend-webhook"},
+                  on_conflict="email")
+    except Exception:
+        pass
+
+
 def _record(payload: dict) -> dict:
     raw_type = payload.get("type", "")
     event_type = EVENT_MAP.get(raw_type)
@@ -221,8 +239,10 @@ def _record(payload: dict) -> dict:
         _accelerate_on_open(sequence_id)
     elif event_type == "bounced":
         sb.update("sequences", {"id": sequence_id}, {"bounced": True, "status": "paused", "paused_reason": "bounced"})
+        _suppress_recipient(data, "bounced")
     elif event_type == "complained":
         sb.update("sequences", {"id": sequence_id}, {"status": "paused", "paused_reason": "complained"})
+        _suppress_recipient(data, "complained")
 
     return {"recorded": True, "sequence_id": sequence_id, "step": step, "type": event_type}
 

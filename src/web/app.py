@@ -123,8 +123,10 @@ if _orphans:
     )
 
 # Start the email-sequence scheduler in a daemon thread (idempotent).
-# Disable with LEADGEN_SCHEDULER=0 if you want to run ticks manually only.
-if os.getenv("LEADGEN_SCHEDULER", "1") not in ("0", "false", "no"):
+# OPT-IN ONLY (F10): defaults OFF so running this local app can never send
+# alongside the production GitHub Actions cron (separate DBs => double-sends).
+# Set LEADGEN_SCHEDULER=1 explicitly to run the local SQLite scheduler.
+if os.getenv("LEADGEN_SCHEDULER", "0").strip().lower() in ("1", "true", "yes", "on"):
     sequencer.start_scheduler()
 
 # Reconcile any Supabase events that arrived BEFORE a backfill / schema change
@@ -967,6 +969,69 @@ def api_jobs_events(jid):
     Replaces the streaming SSE variant which suffered from Werkzeug
     chunk-buffering when the browser used fetch+ReadableStream.
     """
+    cursor = int(request.args.get("cursor", 0))
+    j = jobs.get(jid)
+    if j is None:
+        return jsonify({"status": "missing", "events": [], "cursor": cursor}), 404
+    new_events = j["events"][cursor:]
+    return jsonify({
+        "status": j["status"],
+        "events": new_events,
+        "cursor": cursor + len(new_events),
+        "result": j.get("result") if j["status"] != "running" else None,
+        "error": j.get("error"),
+    })
+
+
+# ─────────────────────────── agent (chat) ───────────────────────────
+
+
+@app.route("/agent")
+def agent_page():
+    return render_template("agent.html", **_ctx())
+
+
+@app.route("/api/agent/chat", methods=["POST"])
+def api_agent_chat():
+    """Kick off one agent turn as a background job. Returns {job_id}.
+
+    The chat UI polls /api/agent/events/<jid> for streamed progress + the
+    final assistant message. The agent runs the full scrape/enrich/schedule
+    waterfall via lib.llm.chat_tools + agent_tools.
+    """
+    from lib import llm
+    from .agent_tools import build_agent_tools, AGENT_SYSTEM_PROMPT
+
+    if not llm.enabled():
+        return jsonify({"error": "OPENAI_API_KEY not configured"}), 400
+
+    data = request.json or {}
+    msgs = list(data.get("messages") or [])
+    if not msgs or msgs[0].get("role") != "system":
+        msgs = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}] + msgs
+
+    last_user = next((m.get("content", "") for m in reversed(msgs)
+                      if m.get("role") == "user"), "")
+    jid = jobs.create_job("agent_chat", f"Agent · {str(last_user)[:60]}")
+
+    def worker():
+        tools, tool_impls = build_agent_tools()
+        emit = lambda ev: jobs.append(jid, ev)  # noqa: E731
+        try:
+            text = llm.chat_tools(msgs, tools, tool_impls, emit)
+            jobs.finish(jid, result={"text": text})
+        except Exception as e:
+            log.exception("agent turn failed")
+            jobs.append(jid, {"type": "error", "error": f"{type(e).__name__}: {e}"})
+            jobs.fail(jid, e)
+
+    jobs.run_in_thread(jid, worker)
+    return jsonify({"job_id": jid})
+
+
+@app.route("/api/agent/events/<jid>")
+def api_agent_events(jid):
+    """Poll agent-turn events from `cursor` onward (same shape as jobs events)."""
     cursor = int(request.args.get("cursor", 0))
     j = jobs.get(jid)
     if j is None:

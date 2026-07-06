@@ -15,6 +15,7 @@ from urllib.parse import urlparse, urljoin
 import requests
 from ddgs import DDGS
 
+from lib import net_guard as _net_guard
 from src.processors.enrich_leads import JUNK_DOMAINS, verify_mx
 from .email_quality import is_disposable, score_email
 
@@ -47,12 +48,11 @@ PREFERRED_DOMAINS = (
 def _fetch(url):
     """Return text body (≤ MAX_BYTES, decoded) or None on failure."""
     try:
-        r = requests.get(
+        r = _net_guard.safe_get(
             url,
             headers={"User-Agent": UA, "Accept": "text/html,*/*"},
             timeout=FETCH_TIMEOUT,
             stream=True,
-            allow_redirects=True,
         )
         r.raise_for_status()
         ct = (r.headers.get("Content-Type") or "").lower()

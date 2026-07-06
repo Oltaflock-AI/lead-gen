@@ -35,6 +35,9 @@ SENDER_NAME = os.environ.get("SENDER_NAME", "Khush Mutha")
 SENDER_TITLE = os.environ.get("SENDER_TITLE", "Founder, Oltaflock AI")
 BOOKING_LINK = os.environ.get("BOOKING_LINK", "https://cal.com/khush0030/oltaflock-ai-discovery-call")
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "oltaflock.ai")
+# F07 CAN-SPAM: a working opt-out + physical postal address in every email.
+POSTAL_ADDRESS = os.environ.get("LEADGEN_POSTAL_ADDRESS", "")
+UNSUB_MAILTO = os.environ.get("LEADGEN_UNSUB_MAILTO", "unsubscribe@oltaflock.ai")
 
 OPEN_GATE_FROM_STEP = int(os.environ.get("LEADGEN_OPEN_GATE_FROM_STEP", "4"))
 MAX_STEP = 7
@@ -719,7 +722,18 @@ def _signature() -> str:
         lines.append(SENDER_TITLE)
     if WEBSITE_URL:
         lines.append(WEBSITE_URL)
+    # F07 CAN-SPAM footer: opt-out mechanism + physical postal address.
+    lines.append("")
+    lines.append(f"Don't want these emails? Reply STOP or email {UNSUB_MAILTO}.")
+    if POSTAL_ADDRESS:
+        lines.append(POSTAL_ADDRESS)
     return "\n".join(lines)
+
+
+def _unsub_headers() -> dict:
+    """RFC 8058 List-Unsubscribe header so inbox providers surface a native
+    one-click unsubscribe (F07). Mailto-based since we suppress on reply STOP."""
+    return {"List-Unsubscribe": f"<mailto:{UNSUB_MAILTO}?subject=unsubscribe>"}
 
 
 def _html_body(body: str) -> str:
@@ -775,10 +789,17 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
             {"name": "sequence_id", "value": str(seq_id)},
             {"name": "step", "value": str(step)},
         ],
+        "headers": _unsub_headers(),
     }
     r = requests.post(
         "https://api.resend.com/emails",
-        headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+            # F10: dedupe key so a retried HTTP call (crash between send and DB
+            # advance) can never produce a second real email for this step.
+            "Idempotency-Key": f"seq-{seq_id}-step-{step}",
+        },
         json=payload, timeout=30,
     )
     if r.status_code >= 400:
@@ -825,6 +846,7 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
         "text": _md_to_text(text),
         "html": _html_body(text),
         "tags": tags,
+        "headers": _unsub_headers(),
     }
     r = requests.post(
         "https://api.resend.com/emails",

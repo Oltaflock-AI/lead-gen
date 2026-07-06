@@ -542,6 +542,8 @@ def enqueue_lead(lead, csv_name="", sender_name="", start_at=None):
     email = (lead.get("email") or "").strip().lower()
     if not email or "@" not in email:
         return None, "invalid email"
+    if db.is_suppressed(email):
+        return None, "suppressed"  # F06: never enrol an opted-out/bounced address
 
     niche = lead.get("niche", "")
     if not _has_offer_or_brief(lead, niche):
@@ -594,6 +596,9 @@ def enqueue_lead_with_first_send(lead, csv_name="", sender_name="",
     email = (lead.get("email") or "").strip().lower()
     if not email or "@" not in email:
         return {"status": "error", "error": "invalid email",
+                "sequence_id": None, "resend_id": None}
+    if db.is_suppressed(email):  # F06: never enrol an opted-out/bounced address
+        return {"status": "error", "error": "suppressed",
                 "sequence_id": None, "resend_id": None}
 
     # Idempotency: if an active sequence already exists, do not re-enrol.
@@ -744,6 +749,12 @@ def tick():
     quota = db.send_quota_status(daily_cap=daily_cap, monthly_cap=monthly_cap)
 
     for seq in due:
+        # F06: last-line defence — if the address was suppressed after enrolment
+        # (reply STOP / bounce), pause instead of sending the next step.
+        if db.is_suppressed((seq.get("lead_email") or "").strip().lower()):
+            db.update_sequence(seq["id"], status="paused", next_send_at=None,
+                               paused_reason="suppressed")
+            continue
         next_step = seq["current_step"] + 1
         if next_step > NUM_STEPS:
             db.update_sequence(seq["id"], status="done", next_send_at=None)

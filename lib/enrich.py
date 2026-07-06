@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import requests
 
 from lib import llm
+from lib import net_guard
 
 USER_AGENT = os.environ.get(
     "LEADGEN_ENRICH_UA",
@@ -39,11 +40,10 @@ def _fetch_site_text(url: str | None) -> str:
     if not target.startswith(("http://", "https://")):
         target = "https://" + target
     try:
-        r = requests.get(
+        r = net_guard.safe_get(
             target,
             headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"},
             timeout=15,
-            allow_redirects=True,
         )
         if r.status_code >= 400:
             return ""
