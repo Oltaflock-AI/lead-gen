@@ -195,7 +195,7 @@
         <div class="alert-icon">{% if it.severity == 'ok' %}✓{% else %}●{% endif %}</div>
         <div class="alert-body">
           <div class="alert-title">{{ it.title }}</div>
-          <div class="alert-msg">{{ it.body|safe }}</div>
+          <div class="alert-msg">{{ it.body }}</div>
         </div>
       </div>
       {% endfor %}

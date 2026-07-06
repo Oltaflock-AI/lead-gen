@@ -46,6 +46,21 @@ LOG_DIR.mkdir(exist_ok=True)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 
+class _PIIRedactor(logging.Filter):
+    """F21: mask email local-parts in log records so lead PII isn't written to
+    lead-gen.log / stdout in plaintext (b***@domain.com)."""
+    _EMAIL = re.compile(r'([\w.+-])[\w.+-]*(@[\w-]+\.[\w.-]+)')
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        record.msg = self._EMAIL.sub(r'\1***\2', msg)
+        record.args = ()
+        return True
+
+
 def _configure_logging():
     root = logging.getLogger()
     if getattr(root, "_lead_gen_configured", False):
@@ -55,12 +70,15 @@ def _configure_logging():
         "%(asctime)s %(levelname)-7s %(name)s [%(threadName)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    _pii = _PIIRedactor()
     sh = logging.StreamHandler(sys.stderr)
     sh.setFormatter(fmt)
+    sh.addFilter(_pii)
     fh = RotatingFileHandler(
         LOG_DIR / "lead-gen.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8",
     )
     fh.setFormatter(fmt)
+    fh.addFilter(_pii)
     root.handlers = [sh, fh]
     # Tame noisy libs
     logging.getLogger("werkzeug").setLevel(logging.WARNING)

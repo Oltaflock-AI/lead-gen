@@ -562,7 +562,7 @@
         <details class="find high" data-sev="high">
           <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F05</span>
             <span class="find-title">Legacy SQLite sequencer has no claim-lock (double-send race)</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status open">Mitigated (scheduler now opt-in)</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">src/web/sequencer.py</span> — <code>tick()</code> SELECTs due rows then <code>_send_step</code> + plain <code>update_sequence</code>. No compare-and-swap.</dd>
             <dt>Exploit</dt><dd>Two overlapping ticks (daemon thread + a manual <code>/api/sequences/tick</code>, or a second <code>python app.py</code>) both select the same due row and both send — the exact class behind the prior 70-duplicate incident. Still unfixed in this module.</dd>
@@ -696,7 +696,7 @@
         <details class="find med" data-sev="med">
           <summary class="find-head"><span class="sev-tag sev-med">Med</span><span class="find-id">F17</span>
             <span class="find-title">Supabase service-role key used for all access (bypasses RLS)</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed (apply migration 010)</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">lib/supabase.py:12-17</span> — every query uses <code>SUPABASE_SERVICE_KEY</code> as apikey + Bearer.</dd>
             <dt>Exploit</dt><dd>Row-Level Security is bypassed entirely — and RLS is disabled on all 13 Supabase tables with zero policies, so app-layer auth is the <em>only</em> protection. No client-side/anon key is exposed anywhere (verified), so it's not exploitable on its own today, but if the service key leaks (env exposure, logs, F16 exposure) it's full read/write to all lead data.</dd>
@@ -707,7 +707,7 @@
         <details class="find med" data-sev="med">
           <summary class="find-head"><span class="sev-tag sev-med">Med</span><span class="find-id">F18</span>
             <span class="find-title">Reply text interpolated into LLM prompt (draft manipulation)</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">lib/reply_ai.py:77</span> — attacker-controlled <code>in_body</code> is concatenated into the user message, delimited only by triple-quotes.</dd>
             <dt>Exploit</dt><dd>A crafted reply can force <code>intent:"interested"</code> or inject copy into the drafted reply. No tools here, so worst case is a misleading draft a rushed human might send unreviewed.</dd>
@@ -740,7 +740,7 @@
         <details class="find med" data-sev="med">
           <summary class="find-head"><span class="sev-tag sev-med">Med</span><span class="find-id">F21</span>
             <span class="find-title">Lead PII written in plaintext to logs and stdout</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed (logs; CLI prints TODO)</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">logs/lead-gen.log</span> (+ rotated <code>.log.1/.log.2</code>) holds <strong>563 real email addresses</strong> in plaintext. Sources: <span class="path">src/web/sequencer.py:572</span>, <span class="path">src/web/verify.py:76,82</span>, <span class="path">src/web/email_quality.py:117</span> log raw emails at INFO/DEBUG; <span class="path">src/processors/enrich_leads.py:291</span> and <span class="path">scripts/*</span> <code>print()</code> raw email/phone. Logs are <em>not</em> committed (gitignored) but sit unencrypted on disk.</dd>
             <dt>Exploit</dt><dd>Anyone with filesystem/server access, or any future log-shipping tool, gets a plaintext PII dump. Multiple MB retained across rotations.</dd>
@@ -763,7 +763,7 @@
         <details class="find low" data-sev="low">
           <summary class="find-head"><span class="sev-tag sev-low">Low</span><span class="find-id">F23</span>
             <span class="find-title">Unescaped |safe render on dashboard alert body</span>
-            <span class="find-status open">Open</span><span class="caret">▸</span></summary>
+            <span class="find-status fixed">Fixed</span><span class="caret">▸</span></summary>
           <div class="find-body"><dl>
             <dt>Where</dt><dd><span class="path">src/web/templates/dashboard.html:198</span> — <code>{{ it.body|safe }}</code>.</dd>
             <dt>Exploit</dt><dd>Stored XSS if <code>it.body</code> ever carries lead-supplied HTML. Local-only app; confirm the source before dismissing.</dd>
@@ -845,6 +845,7 @@
         <table>
           <thead><tr><th>Date</th><th>Rev</th><th>Change</th></tr></thead>
           <tbody>
+            <tr><td class="mono">2026-07-06</td><td class="mono">v1.4</td><td>Fixed 4 more + 1 mitigated: F23 (dropped <code>|safe</code> on dashboard alert body — was rendering scraped business names raw), F18 (reply text now delimited + marked untrusted, delimiter-breakout neutralised), F21 (logging PII redaction filter masks emails in logs/stdout), F17 (migration 010 enables RLS + force + revoke on all 13 tables — apply it in Supabase). F05 downgraded to Mitigated (legacy scheduler now opt-in per F10, so the racy path can't run alongside cron). Remaining open: F15 (agent injection — real controls in place), F22/F25/F26 (low/accepted/legal).</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.3</td><td>Fixed 5 more: F16 (local app host-guard — loopback free, else requires signed cookie), F20 (dependency major-version ceilings), F19 (per-IP /login rate limit, 8/5min), F24 (LLM model allowlist), F27 (8 MB upload cap on the production app). Remaining: F05, F15, F17, F18, F21, F22, F23, F25, F26 + a few TODO tails (CSRF tokens, lockfile, daily LLM spend cap, generic error copy).</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.2</td><td>Fixed 9 highs/mediums: F08 (fail-closed cron+webhook+cookie auth, timing-safe), F09 (SSRF guard <code>lib/net_guard.py</code> on all 3 lead-URL fetchers), F11 (bounce/complaint → suppressions), F12 (inbound webhook timing-safe, no path bypass), F13 (Resend idempotency key), F06 (legacy suppression enforced at enrol + tick), F10 (local scheduler now opt-in/default-off), F14 (LLM <code>max_tokens</code> cap; daily spend cap still TODO), F07 (CAN-SPAM opt-out line + <code>List-Unsubscribe</code> header + postal address via <code>LEADGEN_POSTAL_ADDRESS</code>). Note: F07/F12 need their env vars set in prod; F08 fails closed only when <code>VERCEL_ENV=production</code>.</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.1</td><td>Fixed the 4 criticals: F01 (cred → env), F02 (<code>_test_guard</code> choke point), F03 (XSS escaping across all sites) — all applied &amp; compile-checked. F04 partial: PII CSVs untracked; history purge + force-push held for explicit go-ahead.</td></tr>
