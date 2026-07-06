@@ -103,6 +103,28 @@ if _flask_debug:
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 
 
+@app.before_request
+def _local_only_guard():
+    """F16: this dev dashboard has no per-route auth. Allow loopback freely so
+    local development is unimpeded, but block every other host unless a valid
+    signed `uid` cookie is present — so an accidental public exposure
+    (flask run --host=0.0.0.0, a tunnel, or a stray deploy) can't serve lead
+    data or trigger sends to anyone who finds the URL."""
+    host = (request.host or "").split(":")[0].lower()
+    if host in ("localhost", "127.0.0.1", "::1", ""):
+        return None
+    if os.getenv("LEADGEN_LOCAL_ALLOW_ALL", "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    try:
+        from lib import users
+        if users.verify(request.cookies.get("uid")):
+            return None
+    except Exception:
+        pass
+    return ("Not authorized — run this dev app on localhost, sign in, or set "
+            "LEADGEN_LOCAL_ALLOW_ALL=1 to override.", 403)
+
+
 @app.after_request
 def _set_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"

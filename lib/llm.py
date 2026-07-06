@@ -17,6 +17,15 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 # F14: bound each tool-loop completion so an unbounded response can't run up cost.
 TOOL_MAX_TOKENS = int(os.environ.get("LEADGEN_TOOL_MAX_TOKENS", "1500"))
+# F24: only allow known models; an unrecognised override falls back to the default.
+ALLOWED_MODELS = {m.strip() for m in os.environ.get(
+    "LEADGEN_ALLOWED_MODELS", "gpt-4o-mini,gpt-4o,gpt-4.1-mini,gpt-4.1,gpt-5,gpt-5-mini"
+).split(",") if m.strip()}
+
+
+def _safe_model(model: str | None) -> str:
+    m = model or OPENAI_MODEL
+    return m if (not ALLOWED_MODELS or m in ALLOWED_MODELS) else OPENAI_MODEL
 
 
 def enabled() -> bool:
@@ -41,7 +50,7 @@ def chat_json(system: str, user: str, *, max_tokens: int = 900,
     '_model' key so callers can surface which engine wrote a draft."""
     if not OPENAI_API_KEY:
         return None
-    mdl = model or OPENAI_MODEL
+    mdl = _safe_model(model)
     try:
         r = requests.post(
             OPENAI_URL,
@@ -96,7 +105,7 @@ def chat_tools(messages, tools, tool_impls, emit, max_rounds=8, model=None):
     """
     if not OPENAI_API_KEY:
         return ""
-    mdl = model or OPENAI_MODEL
+    mdl = _safe_model(model)
 
     def _msg(data):
         return (((data or {}).get("choices") or [{}])[0].get("message") or {})

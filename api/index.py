@@ -22,6 +22,7 @@ from lib import sequence as seq
 from lib import users
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # F27: cap request/upload body at 8 MB
 ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
 PROD_URL = "https://lead-gen-fawn-seven.vercel.app"
 
@@ -97,18 +98,45 @@ def _login_html(err: str = "", nxt: str = "/") -> str:
 </body></html>"""
 
 
+# F19: throttle /login to blunt credential brute-force against the 3 known
+# usernames. In-memory per-IP counter — partially effective under Fluid Compute
+# instance reuse; a Supabase-backed counter would make it fully durable.
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_WINDOW = 300   # seconds
+_LOGIN_MAX = 8        # failures per window before lockout
+
+
+def _client_ip() -> str:
+    return (request.headers.get("X-Forwarded-For", request.remote_addr or "")
+            .split(",")[0].strip() or "?")
+
+
+def _login_blocked(ip: str) -> bool:
+    import time
+    now = time.time()
+    fails = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < _LOGIN_WINDOW]
+    _LOGIN_FAILS[ip] = fails
+    return len(fails) >= _LOGIN_MAX
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
+    import time
     nxt = request.values.get("next") or "/"
     if not nxt.startswith("/"):
         nxt = "/"
     if request.method == "POST":
+        ip = _client_ip()
+        if _login_blocked(ip):
+            return _login_html("Too many attempts. Wait a few minutes and try again.", nxt), 429
         u = (request.form.get("username") or "").strip().lower()
         if users.verify_login(u, request.form.get("password") or ""):
+            _LOGIN_FAILS.pop(ip, None)
             resp = redirect(nxt)
             resp.set_cookie("uid", users.sign(u), max_age=86400 * 30,
                             httponly=True, samesite="Lax", secure=True)
             return resp
+        _LOGIN_FAILS.setdefault(ip, []).append(time.time())
         return _login_html("Wrong username or password", nxt)
     return _login_html("", nxt)
 
