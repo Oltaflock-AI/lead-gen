@@ -41,6 +41,7 @@
         <a href="/" class="nav-link {{ 'active' if request.endpoint == 'dashboard' else '' }}">Dashboard</a>
 
         <div class="nav-section">Pipeline</div>
+        <a href="/agent" class="nav-link {{ 'active' if request.endpoint == 'agent_page' else '' }}">Agent</a>
         <a href="/scrape" class="nav-link {{ 'active' if request.endpoint == 'scrape_page' else '' }}">Scrape</a>
         <a href="/scrapes" class="nav-link {{ 'active' if request.endpoint == 'scrapes_history_page' else '' }}">Scrape history</a>
         <a href="/offers" class="nav-link {{ 'active' if request.endpoint == 'offers_page' else '' }}">Offers</a>

@@ -1,0 +1,249 @@
+{% extends "base.html" %}
+{% block title %}Agent — lead-gen{% endblock %}
+{% block breadcrumb %}workspace / agent{% endblock %}
+{% block heading %}Agent{% endblock %}
+{% block subheading %}Scrape, enrich, and schedule leads by chatting in plain English.{% endblock %}
+
+{% block content %}
+
+<section class="n-card agent-shell" style="padding: 0; overflow: hidden;">
+  <div id="agent-log" class="agent-log">
+    <div class="agent-empty" id="agent-empty">
+      <p style="color: var(--ink-mute); margin: 0 0 14px;">Ask the agent to run a pipeline step. Try one of these:</p>
+      <div class="agent-chips">
+        <button type="button" class="agent-chip">Scrape 50 real estate leads across Pennsylvania</button>
+        <button type="button" class="agent-chip">Enrich and find emails for those leads</button>
+        <button type="button" class="agent-chip">Schedule those leads into a sequence</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="agent-composer">
+    <textarea id="agent-input" class="n-textarea" rows="1" placeholder="Message the agent…  (Enter to send, Shift+Enter for newline)"></textarea>
+    <button type="button" id="agent-send" class="btn btn-primary btn-sm">Send</button>
+  </div>
+</section>
+
+<style>
+  .agent-shell { display: flex; flex-direction: column; height: calc(100vh - 260px); min-height: 420px; }
+  .agent-log { flex: 1; overflow-y: auto; padding: 22px; }
+  .agent-empty { max-width: 560px; }
+  .agent-chips { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .agent-chip {
+    font-family: var(--font-sans); font-size: 13px; color: var(--ink-soft);
+    background: var(--bg-elev); border: 1px solid var(--line); border-radius: 999px;
+    padding: 7px 14px; cursor: pointer; text-align: left; transition: all .12s ease;
+  }
+  .agent-chip:hover { background: var(--bg-sunken); border-color: var(--ink-mute); color: var(--ink); }
+
+  .agent-turn { margin-bottom: 18px; }
+  .agent-turn:last-child { margin-bottom: 0; }
+  .agent-bubble {
+    max-width: 720px; padding: 12px 15px; border-radius: 12px;
+    font-size: 14px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word;
+  }
+  .agent-turn.user { display: flex; justify-content: flex-end; }
+  .agent-turn.user .agent-bubble { background: var(--ink); color: var(--bg); border-bottom-right-radius: 4px; }
+  .agent-turn.assistant .agent-bubble { background: var(--bg-sunken); color: var(--ink); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .agent-turn.error .agent-bubble { background: var(--bg-elev); color: var(--ink); border: 1px solid var(--line); border-left: 3px solid var(--warn, #c0392b); }
+
+  .agent-activity { margin: 0 0 6px; display: flex; flex-direction: column; gap: 3px; }
+  .agent-actline {
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-mute);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .agent-actline.result { color: var(--ink-soft); }
+
+  .agent-composer {
+    display: flex; gap: 10px; align-items: flex-end;
+    padding: 12px 16px; border-top: 1px solid var(--line); background: var(--bg-elev);
+  }
+  .agent-composer .n-textarea { flex: 1; resize: none; max-height: 180px; line-height: 1.5; }
+  .agent-composer .btn { flex-shrink: 0; }
+</style>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  // Client-side transcript; server prepends its own system prompt.
+  let history = [];
+  let streaming = false;
+
+  const logEl = document.getElementById('agent-log');
+  const emptyEl = document.getElementById('agent-empty');
+  const inputEl = document.getElementById('agent-input');
+  const sendBtn = document.getElementById('agent-send');
+
+  function scrollToBottom() { logEl.scrollTop = logEl.scrollHeight; }
+
+  // Minimal markdown-ish: escape, then **bold**. Newlines preserved via CSS white-space.
+  function renderText(text) {
+    let html = escapeHtml(text || '');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return html;
+  }
+
+  function addTurn(role) {
+    if (emptyEl) emptyEl.remove();
+    const turn = document.createElement('div');
+    turn.className = 'agent-turn ' + role;
+    logEl.appendChild(turn);
+    return turn;
+  }
+
+  function addUserBubble(text) {
+    const turn = addTurn('user');
+    const bubble = document.createElement('div');
+    bubble.className = 'agent-bubble';
+    bubble.textContent = text;
+    turn.appendChild(bubble);
+    scrollToBottom();
+  }
+
+  function addErrorBubble(msg) {
+    const turn = addTurn('error');
+    const bubble = document.createElement('div');
+    bubble.className = 'agent-bubble';
+    bubble.textContent = '⚠ ' + msg;
+    turn.appendChild(bubble);
+    scrollToBottom();
+  }
+
+  // One assistant turn holds an activity area (tool lines) + a final bubble.
+  function makeAssistantTurn() {
+    const turn = addTurn('assistant');
+    const activity = document.createElement('div');
+    activity.className = 'agent-activity';
+    turn.appendChild(activity);
+    const progressLines = {}; // name -> element, so progress replaces in place
+    return {
+      toolCall(name, args) {
+        const line = document.createElement('div');
+        line.className = 'agent-actline';
+        let a = '';
+        try { a = args ? JSON.stringify(args) : ''; } catch (e) { a = ''; }
+        line.textContent = '🔧 ' + name + '(' + (a.length > 60 ? a.slice(0, 60) + '…' : a) + ')';
+        activity.appendChild(line);
+        scrollToBottom();
+      },
+      toolProgress(name, text) {
+        let line = progressLines[name];
+        if (!line) {
+          line = document.createElement('div');
+          line.className = 'agent-actline';
+          activity.appendChild(line);
+          progressLines[name] = line;
+        }
+        line.textContent = '   ' + text;
+        scrollToBottom();
+      },
+      toolResult(name, summary) {
+        const line = document.createElement('div');
+        line.className = 'agent-actline result';
+        line.textContent = '✓ ' + name + (summary ? ' — ' + summary : '');
+        activity.appendChild(line);
+        scrollToBottom();
+      },
+      assistant(text) {
+        const bubble = document.createElement('div');
+        bubble.className = 'agent-bubble';
+        bubble.innerHTML = renderText(text);
+        turn.appendChild(bubble);
+        history.push({ role: 'assistant', content: text });
+        scrollToBottom();
+      }
+    };
+  }
+
+  function setStreaming(on) {
+    streaming = on;
+    inputEl.disabled = on;
+    sendBtn.disabled = on;
+  }
+
+  async function send() {
+    const text = inputEl.value.trim();
+    if (!text || streaming) return;
+
+    history.push({ role: 'user', content: text });
+    addUserBubble(text);
+    inputEl.value = '';
+    autoGrow();
+    setStreaming(true);
+
+    let jobId;
+    try {
+      const r = await fetch('/api/agent/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: history })
+      });
+      const data = await r.json();
+      jobId = data.job_id;
+      if (!jobId) throw new Error('no job_id returned');
+    } catch (e) {
+      addErrorBubble('Could not start agent: ' + e.message);
+      setStreaming(false);
+      return;
+    }
+
+    const turn = makeAssistantTurn();
+
+    // Poll the job's event buffer (SSE is unreliable behind Werkzeug/Vercel).
+    let cursor = 0;
+    function dispatch(msg) {
+      switch (msg.type) {
+        case 'tool_call':     turn.toolCall(msg.name, msg.args); break;
+        case 'tool_progress': turn.toolProgress(msg.name, msg.line); break;
+        case 'tool_result':   turn.toolResult(msg.name, msg.summary); break;
+        case 'assistant':     turn.assistant(msg.text); break;
+        case 'error':         addErrorBubble(msg.error || 'Agent error'); break;
+      }
+    }
+    async function poll() {
+      let data;
+      try {
+        const r = await fetch('/api/agent/events/' + jobId + '?cursor=' + cursor);
+        data = await r.json();
+      } catch (e) {
+        addErrorBubble('Connection to agent lost.');
+        setStreaming(false); inputEl.focus();
+        return;
+      }
+      (data.events || []).forEach(dispatch);
+      cursor = data.cursor != null ? data.cursor : cursor;
+      if (data.status && data.status !== 'running') {
+        if (data.status === 'failed' && data.error) addErrorBubble(data.error);
+        setStreaming(false); inputEl.focus();
+        return;
+      }
+      setTimeout(poll, 700);
+    }
+    poll();
+  }
+
+  function autoGrow() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 180) + 'px';
+  }
+
+  // Wire events
+  sendBtn.addEventListener('click', send);
+  inputEl.addEventListener('input', autoGrow);
+  inputEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  document.querySelectorAll('.agent-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      inputEl.value = chip.textContent;
+      autoGrow();
+      inputEl.focus();
+    });
+  });
+
+  inputEl.focus();
+})();
+</script>
+{% endblock %}
