@@ -7,7 +7,10 @@ Order of attack (cheapest first):
      scrape the top hits.
   3. Verify the winner has a valid MX record (best-effort).
 
-Pure-ish: find_email(lead) returns {email, email_status, email_source} or {}.
+Pure-ish: find_email(lead) returns {email, email_status, email_source,
+email_confidence} or {}. email_confidence is honest: "mx_only" here (an MX
+record is NOT a mailbox check) — "verified" is reserved for Prospeo-verified
+direct emails written by lib/enrich.py.
 """
 import os
 import re
@@ -100,13 +103,15 @@ def _best(emails: list[str], domain: str) -> str | None:
     pool = own or emails
 
     def rank(e: str) -> int:
+        # Personal-looking locals first (decision-maker inboxes get replies);
+        # role addresses (info@/contact@) are the fallback, not the winner.
         local = e.split("@")[0]
         if local in ROLE_PREFIX:
-            return 0
-        if any(local.startswith(p) for p in ROLE_PREFIX):
             return 1
-        if "." in local or len(local) > 2:  # looks like a person (first.last)
+        if any(local.startswith(p) for p in ROLE_PREFIX):
             return 2
+        if "." in local or len(local) > 2:  # looks like a person (first.last)
+            return 0
         return 3
     return sorted(pool, key=rank)[0]
 
@@ -183,4 +188,10 @@ def find_email(lead: dict) -> dict:
             return {}
         pick = _best(alt, domain)
 
-    return {"email": pick, "email_status": "valid", "email_source": source}
+    # email_status stays "valid" (existing consumers: import script writes
+    # valid/invalid/unknown, CSV upload writes "provided"; nothing branches on
+    # it today) — honesty lives in email_confidence: an MX pass is "mx_only",
+    # never "verified". "verified"/"unverified" are written by the Prospeo
+    # step in lib/enrich.py.
+    return {"email": pick, "email_status": "valid", "email_source": source,
+            "email_confidence": "mx_only"}

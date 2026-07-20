@@ -166,8 +166,13 @@ def _suppress_recipient(data: dict, reason: str) -> None:
     sequence-level pause only protects the current sequence, not future ones."""
     to = data.get("to")
     email = to[0] if isinstance(to, list) and to else (to if isinstance(to, str) else None)
-    email = (email or "").strip().lower()
-    if not email:
+    # Resend sometimes delivers "Name <addr>" / "addr>" forms; a suppression row
+    # stored with angle brackets never matches the lead's clean email at send
+    # time, silently defeating the suppression (found live 2026-07-20).
+    from email.utils import parseaddr
+    email = parseaddr((email or "").strip())[1] or (email or "")
+    email = email.strip().strip("<>").strip().lower()
+    if not email or "@" not in email:
         return
     try:
         sb.insert("suppressions",

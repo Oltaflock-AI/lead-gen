@@ -67,3 +67,6 @@ logs/
 .mcp.json
 ruvector.db
 .vercel
+
+# Vendored standalone tool (own git repo) — not part of this repo
+agent-reach/

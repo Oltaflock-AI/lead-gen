@@ -7,6 +7,8 @@ Pages:  /  /scrape  /offers  /leads  /sequences  /sequences/<id>  /settings
 Actions: create campaign, scrape now, start outreach, pause/resume, mark replied
 """
 import base64
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -58,7 +60,7 @@ STEP_META = {  # step -> (day label, name)
 WINDOWS = {"today": None, "7d": 168, "30d": 720, "all": 24 * 365 * 5}
 
 
-_PUBLIC_PATHS = {"/healthz", "/login", "/logout"}
+_PUBLIC_PATHS = {"/healthz", "/login", "/logout", "/unsubscribe"}
 
 
 @app.before_request
@@ -530,6 +532,60 @@ def healthz():
     return jsonify({"ok": True, "service": "lead-gen-dashboard"})
 
 
+def _unsub_verify(req) -> str | None:
+    """Decode + HMAC-verify the e/t params of an unsubscribe link. Returns the
+    clean lowercased email, or None on any mismatch (no error detail leaks)."""
+    e = (req.args.get("e") or "").strip()
+    t = (req.args.get("t") or "").strip()
+    if not e or not t:
+        return None
+    try:
+        email = base64.urlsafe_b64decode(e + "=" * (-len(e) % 4)).decode()
+    except Exception:
+        return None
+    email = email.strip().lower()
+    try:
+        if not hmac.compare_digest(seq.unsub_token(email), t):
+            return None
+    except Exception:
+        return None
+    return email
+
+
+@app.route("/unsubscribe", methods=["GET", "POST"])
+def unsubscribe():
+    """Public RFC 8058 endpoint behind a per-address HMAC token (see
+    seq.unsub_url). GET = human click -> tiny confirm page; POST = Gmail/Yahoo
+    One-Click or the confirm button -> suppress immediately, no confirmation."""
+    email = _unsub_verify(request)
+    if not email:
+        return "Invalid unsubscribe link.", 400
+    if request.method == "GET":
+        return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head>
+<body style="font-family:Georgia,serif;max-width:420px;margin:80px auto;text-align:center;color:#222">
+<p>Stop receiving emails at <strong>{_esc(email)}</strong>?</p>
+<form method="post" action="{_esc(request.full_path)}">
+<button type="submit" style="padding:10px 22px;font-size:15px;cursor:pointer">Unsubscribe</button>
+</form></body></html>"""
+    # POST — the suppression insert is the load-bearing action. If it fails we
+    # must NOT return 2xx (providers treat that as success and never retry).
+    try:
+        sb.insert("suppressions",
+                  {"email": email, "reason": "unsubscribe", "source": "one-click"},
+                  on_conflict="email")
+    except Exception:
+        return "Temporary failure, please retry.", 500
+    try:
+        for lead in sb.select("leads", {"select": "id", "email": f"eq.{email}"}, limit=50):
+            for s in sb.select("sequences", {"select": "id", "lead_id": f"eq.{lead['id']}"}, limit=10):
+                sb.update("sequences", {"id": s["id"]},
+                          {"status": "paused", "paused_reason": "unsubscribed", "next_send_at": None})
+    except Exception:
+        pass  # best-effort: the suppression above already blocks every send path
+    return "You're unsubscribed. No further emails will be sent to this address.", 200
+
+
 @app.route("/")
 def home():
     w = request.args.get("w", "today")
@@ -632,6 +688,8 @@ def home():
     senderr = sb.select("sequences", {"select": "id", "paused_reason": "like.send-error*"}, limit=1000)
     if senderr:
         issues += f'<div class="note-bar" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)"><strong>{len(senderr)} sequences paused on send errors.</strong> Check Sequences → paused.</div>'
+    if not os.environ.get("LEADGEN_POSTAL_ADDRESS", "").strip():
+        issues += '<div class="note-bar" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)"><strong>CAN-SPAM: postal address missing.</strong> LEADGEN_POSTAL_ADDRESS is not set, so outbound emails ship without the required physical mailing address. Set it in Vercel env and redeploy.</div>'
     if not issues:
         issues = '<div class="note-bar" style="background:var(--accent-soft);border-color:var(--accent);color:var(--accent)">✓ All clear — no bounce spikes, missing emails, or send errors detected.</div>'
 
@@ -1481,6 +1539,12 @@ def compose_page():
         msg = f'Sent {sent}'
         if failed and failed != "0":
             msg += f' · {failed} failed'
+        capped = request.args.get("capped")
+        if capped and capped != "0":
+            msg += f' · {capped} held back (daily cap reached)'
+        supp = request.args.get("suppressed")
+        if supp and supp != "0":
+            msg += f' · {supp} skipped (unsubscribed/bounced, never emailed again)'
         link = (f' · <a href="/blasts/{_html.escape(blast)}" style="color:var(--good);text-decoration:underline">view tracking →</a>'
                 if blast else '')
         flash = f'<div class="note-bar" style="border-color:var(--good);color:var(--good)">{_html.escape(msg)}{link}</div>'
@@ -1599,9 +1663,29 @@ def compose_send():
     except (ValueError, IndexError, KeyError, TypeError):
         sig_text = sigs[0]["text"] if sigs else None
 
+    # Daily-cap enforcement (same LEADGEN_DAILY_CAP the sequencer honours). The
+    # composer previously bypassed the cap entirely — one POST could blast an
+    # unbounded list. sequence_events covers sequencer + manual-to-campaign
+    # sends; blast_recipients with no lead_id covers "extra email" sends.
+    cap = int(os.environ.get("LEADGEN_DAILY_CAP", "120"))
+    midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    try:
+        ev = sb.select("sequence_events", {"select": "id", "event_type": "eq.sent",
+                                           "ts": f"gte.{midnight}"}, limit=100000)
+        xtra = sb.select("blast_recipients", {"select": "id", "lead_id": "is.null",
+                                              "status": "eq.sent", "created_at": f"gte.{midnight}"}, limit=100000)
+        remaining = max(0, cap - len(ev) - len(xtra))
+    except Exception:
+        remaining = 0  # fail closed: if today's volume can't be counted, don't blast
+
     def _send(to, subj, bdy, sid):
+        # Deterministic per-(blast, recipient) key so a retried POST/HTTP call
+        # cannot double-send (same protection the sequence path has, N6).
+        ik = (f"blast-{blast_id}-{hashlib.sha1(to.strip().lower().encode()).hexdigest()[:12]}"
+              if blast_id else None)
         return seq.send_manual(to, subj, bdy, sid, append_signature=sign,
-                               signature=sig_text, from_email=from_email, from_name=from_name)
+                               signature=sig_text, from_email=from_email, from_name=from_name,
+                               idem_key=ik)
 
     # Every composer send is recorded as a "blast" so it has its own tracking
     # (open/click/reply rate) at /blasts — independent of campaigns. The Resend
@@ -1632,7 +1716,7 @@ def compose_send():
         except Exception:
             pass
 
-    sent = failed = 0
+    sent = failed = capped = suppressed_ct = 0
     if ids:
         in_list = ",".join(str(i) for i in ids)
         leads = sb.select("leads", {"select": "*", "id": f"in.({in_list})"}, limit=5000)
@@ -1641,6 +1725,14 @@ def compose_send():
             if not to:
                 failed += 1
                 continue
+            if seq.is_suppressed(to):
+                # N3: opted-out / bounced / complained — never email again.
+                suppressed_ct += 1
+                _track(to, {"error": "suppressed"})
+                continue
+            if remaining <= 0:
+                capped += 1
+                continue
             sid = _manual_seq_id(l)
             res = _send(to, _merge(subject, l), _merge(body, l), sid or 0)
             _track(to, res, business=l.get("business"), lead_id=l.get("id"))
@@ -1648,6 +1740,7 @@ def compose_send():
                 failed += 1
                 continue
             sent += 1
+            remaining -= 1
             # Campaign leads also flow into the global KPIs via sequence_events.
             if sid:
                 sb.insert("sequence_events", {
@@ -1657,17 +1750,28 @@ def compose_send():
                              "from": from_email, "blast_id": blast_id},
                 })
     for e in extra:
+        if seq.is_suppressed(e):
+            suppressed_ct += 1
+            _track(e, {"error": "suppressed"})
+            continue
+        if remaining <= 0:
+            capped += 1
+            continue
         res = _send(e, _merge(subject, {}), _merge(body, {}), 0)
         _track(e, res)
-        failed += 1 if "error" in res else 0
-        sent += 0 if "error" in res else 1
+        if "error" in res:
+            failed += 1
+        else:
+            sent += 1
+            remaining -= 1
 
     if blast_id:
         try:
             sb.update("blasts", {"id": blast_id}, {"recipients": sent})
         except Exception:
             pass
-    return redirect(f"/compose?sent={sent}&failed={failed}&blast={blast_id or ''}")
+    return redirect(f"/compose?sent={sent}&failed={failed}&capped={capped}"
+                    f"&suppressed={suppressed_ct}&blast={blast_id or ''}")
 
 
 def _blast_stats(recips: list) -> dict:
@@ -2274,6 +2378,7 @@ def replies_send():
         signature=sig_text,
         from_email=from_email,
         from_name=from_name,
+        idem_key=f"reply-{rid}",
     )
 
     if "error" in res:

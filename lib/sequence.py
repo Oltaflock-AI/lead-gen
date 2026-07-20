@@ -10,10 +10,13 @@ Ports the proven logic from the old Flask sequencer:
 
 All state lives in Supabase. No threads, no SQLite, no module-level workers.
 """
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -37,7 +40,12 @@ BOOKING_LINK = os.environ.get("BOOKING_LINK", "https://cal.com/khush0030/oltaflo
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "oltaflock.ai")
 # F07 CAN-SPAM: a working opt-out + physical postal address in every email.
 POSTAL_ADDRESS = os.environ.get("LEADGEN_POSTAL_ADDRESS", "")
-UNSUB_MAILTO = os.environ.get("LEADGEN_UNSUB_MAILTO", "unsubscribe@oltaflock.ai")
+# Unsubscribe mailto removed from outbound (operator, 2026-07-20): reply-STOP is
+# the in-body opt-out (Gmail poller -> suppressions) and the https one-click
+# List-Unsubscribe header covers Gmail/Yahoo bulk-sender rules.
+# Public base URL for the one-click unsubscribe endpoint (Gmail/Yahoo bulk-sender
+# rules require an https List-Unsubscribe with One-Click POST, not just mailto).
+PUBLIC_URL = os.environ.get("LEADGEN_PUBLIC_URL", "https://lead-gen-fawn-seven.vercel.app").rstrip("/")
 
 OPEN_GATE_FROM_STEP = int(os.environ.get("LEADGEN_OPEN_GATE_FROM_STEP", "4"))
 MAX_STEP = 7
@@ -229,9 +237,47 @@ ROLE_INSTRUCTIONS_TRAVEL = {
 # Named instruction sets a campaign can opt into via sequence_config.instruction_set.
 # Missing / unknown name falls back to the default ops-audit copy, so existing
 # campaigns are untouched.
+ROLE_INSTRUCTIONS_D2C = {
+    "first-touch": ("Step 1, first cold email (day 0, 80-120 words). Open with ONE sharp line about THEIR "
+        "brand pulled from the lead facts (what they sell, how established they look). Name the money leak "
+        "for a D2C brand their size: carts abandoned with nobody following up fast, pre-sale questions in "
+        "email and DMs answered hours later after the buying moment passed, and the support inbox eating the "
+        "team's week with where-is-my-order tickets. Frame the fix as the OUTCOME from OFFER/CONTEXT above: "
+        "recovered checkouts, replies in seconds, repeat customers who actually come back, hours returned to "
+        "the team. Mechanism is a brief aside at most. State the risk reversal plainly (measurable results in "
+        "2 to 3 months or they do not pay). One tiny ask to close, like 'worth a quick look?'. No booking link."),
+    "bump": ("Step 2, bump (day 3, 30-55 words). One casual no-guilt line about the earlier note. ONE concrete "
+        "story-style result: a brand answering pre-sale questions in under a minute and watching conversion on "
+        "those chats jump. One low-effort question to close. No re-pitch, no links."),
+    "fomo": ("Step 3, competitor / FOMO angle (day 7, 60-100 words). The brands they compete with for the same "
+        "customer are already replying to every cart and question instantly, around the clock. The customer "
+        "does not wait; they buy from whoever answers. Make the stakes feel current and specific to their "
+        "category. Single specific-question CTA, like 'want the 2-line version of how that works?'."),
+    "value-drop": ("Step 4, value drop (day 11, 70-110 words). Tease ONE concrete thing an audit surfaces for "
+        "a store like theirs, for example how many checkouts started last month and never got a single "
+        "follow-up, or the average first-reply time on their support inbox versus what converts. Offer to "
+        "send the specific number for their store. CTA: reply 'yes' and it is theirs. No attachment, no link."),
+    "recap": ("Step 5, grand-slam recap (day 16, 90-140 words). Lay the math out plainly: what one recovered "
+        "checkout a day is worth over a year, what faster support does to repeat purchase rate, versus a setup "
+        "that only gets paid if it delivers in 2 to 3 months. Ship this line verbatim: 'the only way this "
+        "costs you is if it works and you keep it'. CTA: 15 minutes this week, ask what times work."),
+    "interrupt": ("Step 6, pattern interrupt (day 21, 60-100 words). Drop the polished tone for one email. A "
+        "self-aware line only someone who runs a store would nod at, like knowing the 2am feeling of a support "
+        "queue that refilled overnight. One niche benefit, then a binary low-effort CTA: reply YES for the "
+        "short version or NO and that is the end of it."),
+    "breakup": ("Step 7, breakup (day 28, 35-70 words). Polite last note. Ship the mechanic verbatim: reply "
+        "STOP and they never hear from us, reply CALL and we find 15 minutes, reply LATER and we check back "
+        "next quarter. One stat-free sentence on why answering customers first matters. Nothing else."),
+    "nurture": ("Nurture touch (past the sequence, 50-90 words). Helpful-peer tone. ONE fresh idea for a D2C "
+        "brand they have not heard from us before, for example a way to turn where-is-my-order tickets into "
+        "review requests. Never imply we can see them opening. End verbatim: 'reply STOP and I will close the "
+        "loop for good.'"),
+}
+
 INSTRUCTION_SETS = {
     "default": ROLE_INSTRUCTIONS,
     "travel": ROLE_INSTRUCTIONS_TRAVEL,
+    "d2c": ROLE_INSTRUCTIONS_D2C,
 }
 
 # UI-facing metadata for each role (label + one-line description). Order here is
@@ -445,8 +491,22 @@ def seed_draft(lead: dict, step: int) -> dict | None:
 
 def _facts_block(lead: dict) -> str:
     s = _signals(lead)
+    dm = lead.get("decision_maker")  # jsonb dict, but tolerate a JSON string
+    if isinstance(dm, str):
+        try:
+            dm = json.loads(dm)
+        except Exception:
+            dm = None
+    dm = dm if isinstance(dm, dict) else {}
+    dm_name = dm.get("name")
+    dm_name = dm_name.strip() if isinstance(dm_name, str) else ""
+    dm_title = dm.get("title")
+    dm_title = dm_title.strip() if isinstance(dm_title, str) else ""
     facts = {
-        "contact_first_name": s.get("contact_first_name"),
+        "contact_first_name": s.get("contact_first_name")
+                              or (dm_name.split()[0] if dm_name else None),
+        "decision_maker": (f"{dm_name} ({dm_title})" if dm_title else dm_name)
+                          if dm_name else None,
         "business": lead.get("business"),
         "city": lead.get("city"),
         "country": lead.get("country"),
@@ -724,16 +784,35 @@ def _signature() -> str:
         lines.append(WEBSITE_URL)
     # F07 CAN-SPAM footer: opt-out mechanism + physical postal address.
     lines.append("")
-    lines.append(f"Don't want these emails? Reply STOP or email {UNSUB_MAILTO}.")
+    lines.append("Don't want these emails? Just reply STOP.")
     if POSTAL_ADDRESS:
         lines.append(POSTAL_ADDRESS)
     return "\n".join(lines)
 
 
-def _unsub_headers() -> dict:
-    """RFC 8058 List-Unsubscribe header so inbox providers surface a native
-    one-click unsubscribe (F07). Mailto-based since we suppress on reply STOP."""
-    return {"List-Unsubscribe": f"<mailto:{UNSUB_MAILTO}?subject=unsubscribe>"}
+def unsub_token(email: str) -> str:
+    """HMAC token binding the unsubscribe link to one address, so the public
+    /unsubscribe endpoint cannot be used to suppress arbitrary emails. Signed
+    with the same secret as auth cookies (fails loudly in prod if unset)."""
+    from lib import users
+    msg = b"unsub:" + (email or "").strip().lower().encode()
+    return hmac.new(users._secret(), msg, hashlib.sha256).hexdigest()[:32]
+
+
+def unsub_url(email: str) -> str:
+    e = base64.urlsafe_b64encode((email or "").strip().lower().encode()).decode().rstrip("=")
+    return f"{PUBLIC_URL}/unsubscribe?e={e}&t={unsub_token(email)}"
+
+
+def _unsub_headers(to_email: str) -> dict:
+    """RFC 8058 List-Unsubscribe headers (F07): mailto AND https one-click,
+    which Gmail/Yahoo bulk-sender rules expect. Built from the FINAL recipient
+    (post test-guard), so test-mode links can only ever suppress the sandbox
+    address, never a real lead."""
+    return {
+        "List-Unsubscribe": f"<{unsub_url(to_email)}>",
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    }
 
 
 def _html_body(body: str) -> str:
@@ -769,6 +848,34 @@ def _test_guard(addr: str) -> str:
     return addr
 
 
+_SUPPRESS_CACHE: tuple[float, set[str]] | None = None
+_SUPPRESS_TTL_S = 60
+
+
+def _suppressed_set() -> set[str]:
+    """Lowercased suppression set, cached briefly so a composer loop over many
+    recipients costs one query (serverless instances are reused across requests)."""
+    global _SUPPRESS_CACHE
+    now = time.time()
+    if _SUPPRESS_CACHE and now - _SUPPRESS_CACHE[0] < _SUPPRESS_TTL_S:
+        return _SUPPRESS_CACHE[1]
+    rows = sb.select("suppressions", {"select": "email"}, limit=100000)
+    emails = {(r.get("email") or "").lower() for r in rows if r.get("email")}
+    _SUPPRESS_CACHE = (now, emails)
+    return emails
+
+
+def is_suppressed(email: str) -> bool:
+    """N3: a suppressed (STOP / bounced / complained) address must never be
+    emailed again, on ANY send path. Fails CLOSED: if the suppression table
+    cannot be read, treat the address as suppressed — a wrongly skipped send is
+    recoverable, a send to an opted-out address is not."""
+    try:
+        return (email or "").strip().lower() in _suppressed_set()
+    except Exception:
+        return True
+
+
 def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
     """Send via Resend with correlation tags. Returns {resend_id} or {error}."""
     if not RESEND_API_KEY:
@@ -776,6 +883,10 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
     to = lead.get("email")
     if not to:
         return {"error": "lead has no email"}
+    # N3 second layer: the tick checks the suppression set before calling us,
+    # but no future caller of send_email may skip it.
+    if is_suppressed(to):
+        return {"error": "suppressed: recipient is on the suppression list"}
     to = _test_guard(to)
 
     body = draft["body"] + _signature()
@@ -789,7 +900,7 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
             {"name": "sequence_id", "value": str(seq_id)},
             {"name": "step", "value": str(step)},
         ],
-        "headers": _unsub_headers(),
+        "headers": _unsub_headers(to),
     }
     r = requests.post(
         "https://api.resend.com/emails",
@@ -809,7 +920,8 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
 
 def send_manual(to_email: str, subject: str, body: str, seq_id: int,
                 *, append_signature: bool = True, signature: str | None = None,
-                from_email: str | None = None, from_name: str | None = None) -> dict:
+                from_email: str | None = None, from_name: str | None = None,
+                idem_key: str | None = None) -> dict:
     """One-off composer send (Gmail-style). Same Resend pipe as the sequence so
     opens/clicks/replies still correlate via the sequence_id tag. `seq_id` is a
     real sequence row id used only for tracking — the tick never touches it.
@@ -820,6 +932,10 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
         return {"error": "RESEND_API_KEY missing"}
     if not to_email:
         return {"error": "no recipient"}
+    # N3: the manual path historically skipped suppression — this check is
+    # load-bearing, not defensive. Composer and reply sends both route here.
+    if is_suppressed(to_email):
+        return {"error": "suppressed: recipient is on the suppression list"}
     to_email = _test_guard(to_email)
     if append_signature:
         sig = ("\n\n" + signature.strip()) if signature else _signature()
@@ -846,11 +962,16 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
         "text": _md_to_text(text),
         "html": _html_body(text),
         "tags": tags,
-        "headers": _unsub_headers(),
+        "headers": _unsub_headers(to_email),
     }
+    headers = {"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"}
+    if idem_key:
+        # Same retry protection as the sequence path (N6): a retried HTTP call
+        # for the same logical send cannot produce a second real email.
+        headers["Idempotency-Key"] = idem_key
     r = requests.post(
         "https://api.resend.com/emails",
-        headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+        headers=headers,
         json=payload, timeout=30,
     )
     if r.status_code >= 400:
