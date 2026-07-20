@@ -40,6 +40,9 @@ def daily_scrape():
 
 
 class FakeGetResponse:
+    status_code = 200
+    text = ""
+
     def __init__(self, rows=None, headers=None):
         self._rows = rows or []
         self.headers = headers or {}
@@ -70,6 +73,32 @@ class TestSelectPagination:
         assert pages[1]["range"] == "1000-1999"
         # A stable order is required for disjoint pages.
         assert pages[0]["params"].get("order") == "id.asc"
+
+    def test_idless_table_falls_back_to_unordered(self, monkeypatch):
+        """suppressions has no id column: the auto-injected order=id.asc 400s
+        and the read must retry unordered instead of failing (which blocked
+        every send via fail-closed is_suppressed — found live in Gate 1)."""
+        calls = []
+
+        class Bad400:
+            status_code = 400
+            def raise_for_status(self):
+                raise AssertionError("400 must be handled, not raised")
+            def json(self):
+                return []
+
+        def fake_get(url, *, headers=None, params=None, timeout=None):
+            calls.append(dict(params or {}))
+            if (params or {}).get("order") == "id.asc":
+                return Bad400()
+            resp = FakeGetResponse(rows=[{"email": "x@y.com"}])
+            resp.status_code = 200
+            return resp
+
+        monkeypatch.setattr(sb_mod.requests, "get", fake_get)
+        rows = sb_mod.select("suppressions", {"select": "email"}, limit=100000)
+        assert rows == [{"email": "x@y.com"}]
+        assert "order" not in calls[-1]
 
     def test_single_page_requests_unchanged(self, monkeypatch):
         calls = []

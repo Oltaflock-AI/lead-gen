@@ -35,8 +35,12 @@ def select(table: str, params: dict | None = None, *, limit: int | None = None) 
         r.raise_for_status()
         return r.json()
     # Multi-page read (limit > one page, or "give me everything"). A stable
-    # order keeps pages disjoint while we walk the offset.
-    p.setdefault("order", "id.asc")
+    # order keeps pages disjoint while we walk the offset. Not every table has
+    # an id column (suppressions is keyed by email), so the auto-injected order
+    # falls back to unordered on a 400 rather than failing the whole read.
+    auto_order = "order" not in p
+    if auto_order:
+        p["order"] = "id.asc"
     out: list[dict] = []
     offset = 0
     while True:
@@ -45,6 +49,10 @@ def select(table: str, params: dict | None = None, *, limit: int | None = None) 
             break
         headers = {**_HEADERS, "Range-Unit": "items", "Range": f"{offset}-{offset + want - 1}"}
         r = requests.get(f"{_BASE}/{table}", headers=headers, params=p, timeout=15)
+        if auto_order and r.status_code == 400:
+            p.pop("order", None)
+            auto_order = False
+            continue
         r.raise_for_status()
         page = r.json()
         out.extend(page)
@@ -74,6 +82,13 @@ def insert(table: str, row: dict | list[dict], *, on_conflict: str | None = None
         res = "ignore-duplicates" if ignore_duplicates else "merge-duplicates"
         headers["Prefer"] = f"return=representation,resolution={res}"
     r = requests.post(f"{_BASE}/{table}", headers=headers, params=params, json=row, timeout=15)
+    if (ignore_duplicates and r.status_code == 400
+            and "unique or exclusion constraint" in r.text):
+        # Degraded pre-migration mode: the dedupe index doesn't exist yet, so
+        # ON CONFLICT has no target. Fall back to a plain insert (duplicates
+        # possible but nothing breaks) until the migration is applied.
+        plain = {**_HEADERS, "Prefer": "return=representation"}
+        r = requests.post(f"{_BASE}/{table}", headers=plain, json=row, timeout=15)
     r.raise_for_status()
     return r.json()
 
