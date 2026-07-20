@@ -39,7 +39,7 @@ _STOP_PHRASES = re.compile(
     r"|opt[\s-]out"
     r"|fuck off"
     r")\b"
-    r"|(?<!\w)stop(?!\w)",
+    r"|(?<![\w-])stop(?![\w-])",  # bare "stop", but not "non-stop"/"stop-gap"
     re.IGNORECASE,
 )
 
