@@ -24,6 +24,10 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
 
+# The legacy Flask stack was archived under legacy/ (plan.md Phase 1.7); this
+# preview script still exercises its composer, so resolve imports from there.
+sys.path.insert(0, str(PROJECT_ROOT / "legacy"))
+
 from src.web import db, resend_send, sequencer  # noqa: E402
 from src.web.email_compose import compose as compose_email  # noqa: E402
 

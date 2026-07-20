@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Oltaflock lead-gen — redesign mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&family=Inter:wght@400;450;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#faf9f6;
+  --bg-soft:#f3f1ec;
+  --card:#ffffff;
+  --ink:#1a1a1a;
+  --ink-soft:#4a4a4a;
+  --ink-mute:#8a8a8a;
+  --ink-faint:#b8b8b8;
+  --line:#e8e6e1;
+  --line-soft:#f0eee8;
+  --accent:#2d5a3f;
+  --accent-soft:#e8f0ea;
+  --warn:#c44536;
+  --warn-soft:#fdecea;
+  --warn-line:#f5c6c0;
+  --info:#3b6ea8;
+  --info-soft:#eaf1f9;
+  --good:#3d7a52;
+  --font-serif:'Fraunces',Georgia,serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --font-sans:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+  --radius:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+body{display:flex;min-height:100vh}
+
+/* ─── sidebar ─── */
+.sidebar{width:220px;flex-shrink:0;border-right:1px solid var(--line);padding:24px 20px;display:flex;flex-direction:column;gap:24px;background:var(--bg)}
+.brand{display:flex;align-items:center;gap:10px;padding:0 4px}
+.brand-mark{width:22px;height:22px;color:var(--info)}
+.brand-name{font-family:var(--font-serif);font-size:18px;font-weight:500;color:var(--ink);letter-spacing:-0.01em}
+.brand-sub{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);letter-spacing:0.04em}
+.nav-section{display:flex;flex-direction:column;gap:2px}
+.nav-label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-faint);padding:0 8px;margin-bottom:6px}
+.nav-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;color:var(--ink-soft);font-size:13.5px;cursor:pointer;text-decoration:none;transition:background 0.12s}
+.nav-item:hover{background:var(--bg-soft)}
+.nav-item.active{background:var(--bg-soft);color:var(--ink);font-weight:500}
+.nav-item .badge{margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--card);padding:1px 6px;border-radius:10px;border:1px solid var(--line)}
+.nav-item.warn .badge{color:var(--warn);border-color:var(--warn-line)}
+
+/* ─── main ─── */
+.main{flex:1;padding:36px 56px 80px;max-width:1180px}
+.crumb{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);margin-bottom:6px;letter-spacing:0.04em}
+.h1{font-family:var(--font-serif);font-size:36px;font-weight:500;letter-spacing:-0.02em;color:var(--ink);margin-bottom:6px}
+.sub{color:var(--ink-soft);margin-bottom:28px;font-size:14px}
+
+/* ─── tab switcher (mockup nav) ─── */
+.page{display:none}
+.page.active{display:block}
+
+/* ─── time-window pills (top of dashboard) ─── */
+.window-bar{display:flex;align-items:center;gap:10px;margin-bottom:24px;font-size:12px;color:var(--ink-mute)}
+.window-pills{display:flex;gap:2px;background:var(--bg-soft);padding:3px;border-radius:8px;border:1px solid var(--line)}
+.window-pill{padding:5px 12px;font-size:12px;border-radius:5px;background:transparent;border:none;color:var(--ink-soft);cursor:pointer;font-family:inherit;font-weight:450;transition:background 0.12s}
+.window-pill.active{background:var(--card);color:var(--ink);font-weight:500;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+.window-pill:hover:not(.active){color:var(--ink)}
+
+/* ─── inner-tabs inside one block (Activity / Pipeline / Issues) ─── */
+.inner-tabs{display:flex;gap:0;border-bottom:1px solid var(--line);background:var(--bg)}
+.inner-tab{padding:14px 22px;font-size:13px;color:var(--ink-mute);cursor:pointer;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-1px;font-weight:450;font-family:inherit;display:flex;align-items:center;gap:8px;transition:color 0.12s}
+.inner-tab:hover{color:var(--ink-soft)}
+.inner-tab.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:500}
+.inner-tab .count{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);background:var(--card);padding:1px 6px;border-radius:10px;border:1px solid var(--line);font-weight:500}
+.inner-tab.active .count{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
+.inner-tab.warn .count{color:var(--warn);border-color:var(--warn-line);background:var(--warn-soft)}
+.inner-panel{display:none;padding:0}
+.inner-panel.active{display:block}
+
+/* ─── alert banner ─── */
+.alert{display:flex;gap:14px;padding:14px 18px;border-radius:var(--radius);margin-bottom:24px;align-items:flex-start;border:1px solid}
+.alert.crit{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.alert.warn{background:#fef7ec;border-color:#f0d8a8;color:#8a5a16}
+.alert .alert-icon{font-size:18px;line-height:1.2;flex-shrink:0;margin-top:1px}
+.alert .alert-body{flex:1}
+.alert .alert-title{font-weight:600;margin-bottom:2px;font-size:14px}
+.alert .alert-msg{font-size:13px;color:var(--ink-soft);line-height:1.5}
+.alert.crit .alert-msg{color:#7a2820}
+.alert.warn .alert-msg{color:#7a4d12}
+.alert .alert-actions{display:flex;gap:6px;margin-top:8px}
+.alert-btn{padding:5px 10px;font-size:12px;border-radius:6px;border:1px solid;cursor:pointer;background:white;font-family:inherit;font-weight:500}
+.alert.crit .alert-btn{border-color:var(--warn-line);color:var(--warn)}
+.alert.crit .alert-btn.primary{background:var(--warn);color:white;border-color:var(--warn)}
+.alert.warn .alert-btn{border-color:#f0d8a8;color:#8a5a16}
+
+/* ─── kpi cards ─── */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:32px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.kpi-label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mute);margin-bottom:10px}
+.kpi-num{font-family:var(--font-serif);font-size:32px;font-weight:500;letter-spacing:-0.02em;line-height:1.05;color:var(--ink)}
+.kpi-num .unit{font-size:18px;color:var(--ink-mute);margin-left:1px}
+.kpi-meta{font-size:12px;color:var(--ink-mute);margin-top:6px;display:flex;align-items:center;gap:6px}
+.kpi-meta .delta.up{color:var(--good)}
+.kpi-meta .delta.down{color:var(--warn)}
+.kpi-meta .delta.flat{color:var(--ink-mute)}
+.kpi.alert-kpi{background:var(--warn-soft);border-color:var(--warn-line)}
+.kpi.alert-kpi .kpi-num{color:var(--warn)}
+.kpi.alert-kpi .kpi-label{color:var(--warn)}
+.kpi-spark{margin-top:10px;height:24px}
+
+/* ─── section blocks ─── */
+.block{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:20px;overflow:hidden}
+.block-head{padding:16px 22px;border-bottom:1px solid var(--line-soft);display:flex;align-items:center;justify-content:space-between}
+.block-title{font-family:var(--font-serif);font-size:18px;font-weight:500;color:var(--ink);letter-spacing:-0.01em}
+.block-sub{font-size:12px;color:var(--ink-mute);margin-top:2px}
+.block-body{padding:22px}
+.block-actions{display:flex;gap:6px}
+
+/* ─── funnel ─── */
+.funnel{display:flex;flex-direction:column;gap:8px}
+.funnel-row{display:grid;grid-template-columns:140px 1fr 80px 60px;gap:12px;align-items:center}
+.funnel-label{font-size:13px;color:var(--ink);font-weight:450}
+.funnel-bar-wrap{height:32px;background:var(--bg-soft);border-radius:4px;overflow:hidden;position:relative}
+.funnel-bar{height:100%;background:var(--accent);border-radius:4px;transition:width 0.4s ease}
+.funnel-bar.warn{background:var(--warn)}
+.funnel-bar.ok{background:var(--accent)}
+.funnel-bar.dim{background:var(--ink-faint)}
+.funnel-num{font-family:var(--font-mono);font-size:13px;color:var(--ink);font-weight:500}
+.funnel-pct{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);text-align:right}
+.funnel-pct.warn{color:var(--warn);font-weight:600}
+.funnel-arrow{font-family:var(--font-mono);font-size:10px;color:var(--warn);position:absolute;right:8px;top:50%;transform:translateY(-50%);background:white;padding:2px 6px;border-radius:3px;border:1px solid var(--warn-line)}
+
+/* ─── 7-step pipeline ─── */
+.pipeline{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+.pipe-step{background:var(--bg-soft);border:1px solid var(--line);border-radius:var(--radius);padding:14px 12px;text-align:center;position:relative}
+.pipe-day{font-family:var(--font-mono);font-size:9px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}
+.pipe-name{font-size:11px;color:var(--ink-soft);font-weight:500;margin-bottom:8px}
+.pipe-count{font-family:var(--font-serif);font-size:24px;font-weight:500;color:var(--ink);letter-spacing:-0.02em}
+.pipe-count.zero{color:var(--ink-faint)}
+.pipe-step.active{background:var(--accent-soft);border-color:var(--accent)}
+.pipe-step.active .pipe-count{color:var(--accent)}
+
+/* ─── side-by-side niche cards ─── */
+.niche-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.niche-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.niche-card.empty{background:var(--bg-soft);border-style:dashed;color:var(--ink-mute);display:flex;align-items:center;justify-content:center;min-height:140px;text-align:center;font-size:13px}
+.niche-name{font-family:var(--font-serif);font-size:16px;font-weight:500;margin-bottom:14px;display:flex;justify-content:space-between;align-items:baseline}
+.niche-name .country{font-family:var(--font-mono);font-size:10px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.06em;font-weight:400}
+.niche-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.niche-stat-label{font-family:var(--font-mono);font-size:9px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px}
+.niche-stat-val{font-family:var(--font-serif);font-size:18px;font-weight:500;letter-spacing:-0.01em}
+.niche-stat-val.warn{color:var(--warn)}
+.niche-stat-val.good{color:var(--good)}
+.niche-stat-val.dim{color:var(--ink-faint)}
+
+/* ─── activity table ─── */
+.act-table{width:100%;border-collapse:collapse}
+.act-table thead th{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mute);text-align:left;padding:12px 22px;background:var(--bg-soft);border-bottom:1px solid var(--line)}
+.act-table tbody td{padding:12px 22px;border-bottom:1px solid var(--line-soft);font-size:13px;vertical-align:top}
+.act-table tbody tr:last-child td{border-bottom:none}
+.act-table tbody tr:hover{background:var(--bg-soft)}
+.act-table .when{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);white-space:nowrap}
+.act-table .biz{font-weight:500;color:var(--ink)}
+.act-table .email{font-size:11px;color:var(--ink-mute);font-family:var(--font-mono);margin-top:1px}
+.act-table .subj{color:var(--ink-soft);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip{display:inline-block;padding:2px 8px;font-size:10px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.04em;border-radius:10px;border:1px solid;font-weight:500}
+.chip.failed{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+.chip.sent{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.chip.opened{background:#eaf1f9;border-color:#b8d0e8;color:var(--info)}
+.chip.replied{background:#fff5d8;border-color:#e8d39a;color:#7a5916}
+.chip.queued{background:var(--bg-soft);border-color:var(--line);color:var(--ink-mute)}
+.chip.bounced{background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)}
+
+/* ─── group rows ─── */
+.group-head{background:var(--bg-soft);font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mute);padding:8px 22px;border-top:1px solid var(--line);border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between}
+
+/* ─── filters ─── */
+.filter-row{display:flex;gap:8px;padding:14px 22px;border-bottom:1px solid var(--line-soft);background:var(--bg)}
+.filter-chip{padding:5px 11px;font-size:12px;border-radius:14px;border:1px solid var(--line);color:var(--ink-soft);cursor:pointer;background:var(--card);font-family:inherit}
+.filter-chip.active{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.filter-chip .count{font-family:var(--font-mono);font-size:10px;margin-left:4px;opacity:0.7}
+
+/* ─── timeline ─── */
+.timeline{display:flex;flex-direction:column;gap:0;border-left:1.5px solid var(--line);margin-left:8px;padding-left:24px;position:relative}
+.tl-item{position:relative;padding:10px 0}
+.tl-item::before{content:'';position:absolute;left:-30px;top:14px;width:8px;height:8px;background:var(--card);border:2px solid var(--ink-faint);border-radius:50%}
+.tl-item.live::before{background:var(--accent);border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.tl-item.queued::before{background:var(--card);border-color:var(--ink-faint)}
+.tl-time{font-family:var(--font-mono);font-size:11px;color:var(--ink-mute)}
+.tl-text{font-size:13px;color:var(--ink);margin-top:2px}
+.tl-text strong{font-weight:500}
+
+/* ─── leads csv cards ─── */
+.csv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.csv-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;cursor:pointer;transition:border-color 0.12s,box-shadow 0.12s}
+.csv-card:hover{border-color:var(--ink-faint);box-shadow:0 1px 4px rgba(0,0,0,0.04)}
+.csv-name{font-family:var(--font-mono);font-size:12px;color:var(--ink);font-weight:500;margin-bottom:4px;word-break:break-all}
+.csv-meta{font-size:11px;color:var(--ink-mute);margin-bottom:14px}
+.csv-health{display:flex;align-items:baseline;gap:8px;margin-bottom:12px}
+.csv-health-num{font-family:var(--font-serif);font-size:28px;font-weight:500;letter-spacing:-0.02em}
+.csv-health-num.good{color:var(--good)}
+.csv-health-num.ok{color:#a07820}
+.csv-health-num.bad{color:var(--warn)}
+.csv-health-label{font-family:var(--font-mono);font-size:9px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.08em}
+.csv-bars{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+.csv-bar-label{font-family:var(--font-mono);font-size:9px;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;display:flex;justify-content:space-between}
+.csv-bar-track{height:5px;background:var(--bg-soft);border-radius:3px;overflow:hidden}
+.csv-bar-fill{height:100%;background:var(--accent);border-radius:3px}
+.csv-bar-fill.warn{background:var(--warn)}
+
+/* ─── sequences mini progress ─── */
+.dots{display:inline-flex;gap:3px;align-items:center}
+.dots .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
+.dots .dot.done{background:var(--accent)}
+.dots .dot.current{background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* ─── note callout ─── */
+.note-bar{background:#fffaf0;border:1px solid #f0e0b8;color:#7a5916;padding:10px 14px;border-radius:var(--radius);font-size:12px;margin-bottom:18px;display:flex;gap:10px;align-items:flex-start}
+.note-bar .note-icon{flex-shrink:0;font-size:14px;line-height:1.3}
+.note-bar strong{font-weight:600}
+
+/* ─── small helpers ─── */
+.row-2{display:grid;grid-template-columns:1.4fr 1fr;gap:20px}
+.row-2-tight{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.muted{color:var(--ink-mute)}
+.mono{font-family:var(--font-mono);font-size:12px}
+.divider{height:1px;background:var(--line);margin:24px 0}
+
+/* mockup label */
+.mockup-tag{position:fixed;top:12px;right:14px;background:var(--ink);color:white;font-family:var(--font-mono);font-size:10px;padding:5px 10px;border-radius:12px;letter-spacing:0.06em;text-transform:uppercase;z-index:100}
+</style>
+</head>
+<body>
+
+<div class="mockup-tag">redesign mockup · v1</div>
+
+<!-- ═══════════════════ SIDEBAR (Connections REMOVED) ═══════════════════ -->
+<aside class="sidebar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L4 9 L12 7 L20 9 Z M4 11 L12 9 L20 11 L12 22 Z"/></svg>
+    <div>
+      <div class="brand-name">Oltaflock</div>
+      <div class="brand-sub">lead-gen</div>
+    </div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">Pulse</div>
+    <a class="nav-item active" onclick="showPage('dashboard',this)">Dashboard</a>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">Pipeline</div>
+    <a class="nav-item" onclick="showPage('scrape',this)">Scrape</a>
+    <a class="nav-item" onclick="showPage('history',this)">Scrape history</a>
+    <a class="nav-item" onclick="showPage('offers',this)">Offers</a>
+    <a class="nav-item" onclick="showPage('leads',this)">Leads</a>
+    <a class="nav-item warn" onclick="showPage('outreach',this)">Outreach <span class="badge">18 fail</span></a>
+    <a class="nav-item" onclick="showPage('sequences',this)">Sequences <span class="badge">0</span></a>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-label">System</div>
+    <a class="nav-item" onclick="showPage('settings',this)">Settings</a>
+  </div>
+
+  <!--
+    NOTE: The "CONNECTIONS" section that was here on every page is GONE.
+    All connection status lives only inside the Settings page.
+  -->
+</aside>
+
+<!-- ═══════════════════ MAIN ═══════════════════ -->
+<main class="main">
+
+  <!-- ═══════════ DASHBOARD ═══════════ -->
+  <div class="page active" id="page-dashboard">
+    <div class="crumb">workspace / dashboard</div>
+    <h1 class="h1">Today</h1>
+    <p class="sub">Wednesday, May 6 · last send 2 hours ago</p>
+
+    <!-- Time-window pills (replaces the loose "Showing metrics for" row) -->
+    <div class="window-bar">
+      <span>Window</span>
+      <div class="window-pills">
+        <button class="window-pill active">Today</button>
+        <button class="window-pill">7d</button>
+        <button class="window-pill">30d</button>
+        <button class="window-pill">All</button>
+      </div>
+    </div>
+
+    <!-- 4 KPI tiles (the only ones you said you wanted) -->
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">Total leads</div>
+        <div class="kpi-num">45</div>
+        <div class="kpi-meta">across 3 CSVs</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Sent today</div>
+        <div class="kpi-num">27</div>
+        <div class="kpi-meta">avg 54/day · 7-day window</div>
+        <svg class="kpi-spark" viewBox="0 0 200 24" preserveAspectRatio="none" style="margin-top:10px;height:24px;width:100%">
+          <polyline fill="none" stroke="#2d5a3f" stroke-width="1.5" points="0,18 28,16 56,12 84,14 112,10 140,6 168,8 196,2"/>
+          <polyline fill="rgba(45,90,63,0.08)" stroke="none" points="0,18 28,16 56,12 84,14 112,10 140,6 168,8 196,2 196,24 0,24"/>
+        </svg>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Delivery rate</div>
+        <div class="kpi-num">88.9<span class="unit">%</span></div>
+        <div class="kpi-meta">24 of 27 · <span style="color:var(--warn)">3 bounced</span></div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Open rate</div>
+        <div class="kpi-num">50.0<span class="unit">%</span></div>
+        <div class="kpi-meta">12 of 24 delivered · 1 click</div>
+      </div>
+    </div>
+
+    <!-- ONE main block, three tabs inside it: Activity / Pipeline / Issues -->
+    <div class="block">
+      <div class="inner-tabs">
+        <button class="inner-tab active" onclick="showPanel('activity',this)">
+          Activity <span class="count">30</span>
+        </button>
+        <button class="inner-tab" onclick="showPanel('pipeline',this)">
+          Pipeline <span class="count">24</span>
+        </button>
+        <button class="inner-tab warn" onclick="showPanel('issues',this)">
+          Issues <span class="count">3</span>
+        </button>
+      </div>
+
+      <!-- ────── ACTIVITY PANEL ────── -->
+      <div class="inner-panel active" id="panel-activity">
+        <div class="filter-row">
+          <button class="filter-chip active">All <span class="count">30</span></button>
+          <button class="filter-chip">Opened <span class="count">16</span></button>
+          <button class="filter-chip">Clicked <span class="count">1</span></button>
+          <button class="filter-chip">Sent <span class="count">13</span></button>
+          <button class="filter-chip">Bounced <span class="count">3</span></button>
+          <button class="filter-chip">Replied <span class="count">0</span></button>
+        </div>
+        <table class="act-table">
+          <thead>
+            <tr>
+              <th style="width:140px">When</th>
+              <th>Lead</th>
+              <th>Subject</th>
+              <th style="width:90px">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="when">4:46 PM</td>
+              <td>
+                <div class="biz">Osman Omar — London Ontario</div>
+                <div class="email">osman@askosman.com</div>
+              </td>
+              <td class="subj">116 reviews, no website — how are you cap…</td>
+              <td><span class="chip opened">opened</span></td>
+            </tr>
+            <tr>
+              <td class="when">4:45 PM</td>
+              <td>
+                <div class="biz">The WEIR Team Real Estate</div>
+                <div class="email">scott@theweirteam.ca</div>
+              </td>
+              <td class="subj">still chasing voicemails on Saturday?</td>
+              <td><span class="chip bounced">bounced</span></td>
+            </tr>
+            <tr>
+              <td class="when">4:44 PM</td>
+              <td>
+                <div class="biz">Danielle in the City — Toronto</div>
+                <div class="email">ddemerino@royallepage.ca</div>
+              </td>
+              <td class="subj">94 reviews, no website, why not?</td>
+              <td><span class="chip sent">sent</span></td>
+            </tr>
+            <tr>
+              <td class="when">4:42 PM</td>
+              <td>
+                <div class="biz">Properly Toronto</div>
+                <div class="email">premier@ontario.ca</div>
+              </td>
+              <td class="subj">the after-hours problem at properly toronto</td>
+              <td><span class="chip replied">clicked</span></td>
+            </tr>
+            <tr>
+              <td class="when">4:41 PM</td>
+              <td>
+                <div class="biz">Fivewalls Realty</div>
+                <div class="email">jsmith@fivewalls.com</div>
+              </td>
+              <td class="subj">we tried this on three realty teams in toronto</td>
+              <td><span class="chip bounced">bounced</span></td>
+            </tr>
+            <tr>
+              <td class="when">3:01 PM</td>
+              <td>
+                <div class="biz">Fix It Right Plumbing Melbourne</div>
+                <div class="email">info@fixitrightplumbing.com.au</div>
+              </td>
+              <td class="subj">Fix It Right Plumbing — capturing missed calls</td>
+              <td><span class="chip opened">opened</span></td>
+            </tr>
+            <tr>
+              <td class="when">3:00 PM</td>
+              <td>
+                <div class="biz">Your Local Plumbing &amp; Drainage</div>
+                <div class="email">info@yourlocalplumbing.com.au</div>
+              </td>
+              <td class="subj">Your Local Plumbing missed calls</td>
+              <td><span class="chip opened">opened</span></td>
+            </tr>
+            <tr>
+              <td class="when">2:59 PM</td>
+              <td>
+                <div class="biz">Extra Mile Plumbing</div>
+                <div class="email">admin@extramileplumbing.com.au</div>
+              </td>
+              <td class="subj">Extra Mile Plumbing: capturing missed calls</td>
+              <td><span class="chip opened">opened</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="padding:14px 22px;border-top:1px solid var(--line-soft);text-align:center">
+          <a href="#" style="font-size:12px;color:var(--ink-mute);text-decoration:none">View all 30 →</a>
+        </div>
+      </div>
+
+      <!-- ────── PIPELINE PANEL ────── -->
+      <div class="inner-panel" id="panel-pipeline">
+        <div style="padding:22px">
+          <div style="font-size:12px;color:var(--ink-mute);margin-bottom:14px">Where every active lead currently sits in the 28-day cadence. Click a step to see the leads at that step.</div>
+          <div class="pipeline">
+            <div class="pipe-step">
+              <div class="pipe-day">Day 0</div>
+              <div class="pipe-name">Cold</div>
+              <div class="pipe-count zero">0</div>
+            </div>
+            <div class="pipe-step active">
+              <div class="pipe-day">Day 3</div>
+              <div class="pipe-name">Bump</div>
+              <div class="pipe-count">24</div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-day">Day 7</div>
+              <div class="pipe-name">FOMO</div>
+              <div class="pipe-count zero">0</div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-day">Day 11</div>
+              <div class="pipe-name">Loom</div>
+              <div class="pipe-count zero">0</div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-day">Day 16</div>
+              <div class="pipe-name">Math</div>
+              <div class="pipe-count zero">0</div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-day">Day 21</div>
+              <div class="pipe-name">Quirky</div>
+              <div class="pipe-count zero">0</div>
+            </div>
+            <div class="pipe-step">
+              <div class="pipe-day">Day 28</div>
+              <div class="pipe-name">Pizza</div>
+              <div class="pipe-count zero">0</div>
+            </div>
+          </div>
+          <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--line-soft)">
+            <div style="font-size:12px;color:var(--ink-mute);margin-bottom:12px">Next 24 hours</div>
+            <div class="timeline">
+              <div class="tl-item live">
+                <div class="tl-time">in 2h 04m</div>
+                <div class="tl-text">Step 2 bump → <strong>24 leads</strong> queued</div>
+              </div>
+              <div class="tl-item queued">
+                <div class="tl-time">tomorrow 09:00 IST</div>
+                <div class="tl-text">Daily Resend cap resets · 100 sends</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ────── ISSUES PANEL ────── -->
+      <div class="inner-panel" id="panel-issues">
+        <div style="padding:22px">
+
+          <div style="display:flex;gap:14px;padding:14px 16px;border-radius:var(--radius);background:var(--warn-soft);border:1px solid var(--warn-line);margin-bottom:14px;align-items:flex-start">
+            <div style="font-size:16px;line-height:1.2;flex-shrink:0;color:var(--warn)">●</div>
+            <div style="flex:1">
+              <div style="font-weight:600;color:var(--warn);font-size:13.5px;margin-bottom:3px">Bounce rate at 11.1% — over the 5% threshold</div>
+              <div style="font-size:13px;color:#7a2820;line-height:1.5">3 of 27 sends today bounced. The WEIR Team (scott@theweirteam.ca), Fivewalls Realty (jsmith@fivewalls.com), and Justo Real Estate (jane@justo.ca). Likely role accounts or stale addresses. Bounces above 5% sustained will hurt domain reputation.</div>
+              <div style="display:flex;gap:6px;margin-top:10px">
+                <button class="alert-btn primary" style="border-color:var(--warn);background:var(--warn);color:white">Review bounced leads</button>
+                <button class="alert-btn" style="border-color:var(--warn-line);color:var(--warn)">Suppress addresses</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:14px;padding:14px 16px;border-radius:var(--radius);background:#fef7ec;border:1px solid #f0d8a8;margin-bottom:14px;align-items:flex-start">
+            <div style="font-size:16px;line-height:1.2;flex-shrink:0;color:#8a5a16">●</div>
+            <div style="flex:1">
+              <div style="font-weight:600;color:#8a5a16;font-size:13.5px;margin-bottom:3px">accessibility@ubc.ca isn't a real prospect</div>
+              <div style="font-size:13px;color:#7a4d12;line-height:1.5">Sent at 1:50 PM as part of <em>interactive_real_estate_us.csv</em>. This is a university accessibility line, not a Realtor. Worth scrubbing the CSV before the next batch — likely 2–3 similar misclassifications.</div>
+              <div style="display:flex;gap:6px;margin-top:10px">
+                <button class="alert-btn" style="border-color:#f0d8a8;color:#8a5a16">Open CSV</button>
+                <button class="alert-btn" style="border-color:#f0d8a8;color:#8a5a16">Dismiss</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:14px;padding:14px 16px;border-radius:var(--radius);background:var(--accent-soft);border:1px solid var(--accent);align-items:flex-start;opacity:0.85">
+            <div style="font-size:16px;line-height:1.2;flex-shrink:0;color:var(--accent)">✓</div>
+            <div style="flex:1">
+              <div style="font-weight:500;color:var(--accent);font-size:13.5px;margin-bottom:3px">No duplicate sends in the last 24h</div>
+              <div style="font-size:13px;color:#1f4030;line-height:1.5">The Sterling Real Estate / Sarasota Realty / Calvin Realty triple-send pattern from yesterday hasn't recurred. Auto-enrol guard appears to be holding.</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ OUTREACH ═══════════ -->
+  <div class="page" id="page-outreach">
+    <div class="crumb">workspace / outreach</div>
+    <h1 class="h1">Outreach</h1>
+    <p class="sub">Personalize and send cold emails. Every send auto-enrols the lead in a 7-step sequence.</p>
+
+    <div class="alert crit">
+      <div class="alert-icon">⚠</div>
+      <div class="alert-body">
+        <div class="alert-title">Resend is rejecting Real Estate sends</div>
+        <div class="alert-msg">All 18 Real Estate sends failed. 6 sends to Australian Home Services delivered fine. Likely a per-recipient validation issue (some emails like accessibility@ubc.ca aren't real prospects) or a Resend domain policy. Click any failed row below for the raw error.</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <div>
+          <div class="block-title">Source CSV</div>
+          <div class="block-sub">Pick a scraped CSV to draft + send · all sends auto-enrol</div>
+        </div>
+        <div class="block-actions">
+          <button class="alert-btn">Check replies (Gmail)</button>
+        </div>
+      </div>
+      <div class="block-body" style="padding:16px 22px">
+        <div class="mono muted">— select —</div>
+      </div>
+    </div>
+
+    <div class="row-2-tight">
+      <div class="block">
+        <div class="block-head"><div class="block-title">Funnel</div></div>
+        <div class="block-body">
+          <div class="funnel">
+            <div class="funnel-row"><div class="funnel-label">Sent</div><div class="funnel-bar-wrap"><div class="funnel-bar ok" style="width:100%"></div></div><div class="funnel-num">24</div><div class="funnel-pct">100%</div></div>
+            <div class="funnel-row"><div class="funnel-label">Delivered</div><div class="funnel-bar-wrap"><div class="funnel-bar warn" style="width:25%"></div></div><div class="funnel-num">6</div><div class="funnel-pct warn">25%</div></div>
+            <div class="funnel-row"><div class="funnel-label">Opened</div><div class="funnel-bar-wrap"><div class="funnel-bar ok" style="width:17%"></div></div><div class="funnel-num">4</div><div class="funnel-pct">17%</div></div>
+            <div class="funnel-row"><div class="funnel-label">Replied</div><div class="funnel-bar-wrap"><div class="funnel-bar dim" style="width:0%"></div></div><div class="funnel-num">0</div><div class="funnel-pct">0%</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-head"><div class="block-title">Daily volume</div></div>
+        <div class="block-body">
+          <svg viewBox="0 0 400 120" preserveAspectRatio="none" style="width:100%;height:120px">
+            <line x1="0" y1="100" x2="400" y2="100" stroke="#e8e6e1" stroke-width="1"/>
+            <g fill="#2d5a3f">
+              <rect x="6" y="92" width="20" height="8"/>
+              <rect x="34" y="80" width="20" height="20"/>
+              <rect x="62" y="60" width="20" height="40"/>
+              <rect x="90" y="48" width="20" height="52"/>
+              <rect x="118" y="65" width="20" height="35"/>
+              <rect x="146" y="40" width="20" height="60"/>
+              <rect x="174" y="22" width="20" height="78"/>
+              <rect x="202" y="10" width="20" height="90"/>
+              <rect x="230" y="35" width="20" height="65"/>
+              <rect x="258" y="20" width="20" height="80"/>
+              <rect x="286" y="60" width="20" height="40"/>
+            </g>
+            <rect x="314" y="2" width="20" height="98" fill="#c44536"/>
+            <rect x="342" y="50" width="20" height="50" fill="#2d5a3f"/>
+            <text x="324" y="118" font-family="JetBrains Mono" font-size="9" fill="#c44536" text-anchor="middle">today</text>
+            <text x="6" y="118" font-family="JetBrains Mono" font-size="9" fill="#8a8a8a">14d</text>
+          </svg>
+          <div style="font-size:11px;color:var(--ink-mute);margin-top:8px">Today's bar is the largest — and almost entirely failed. Sends concentrated in single hour.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <div><div class="block-title">Outreach log</div><div class="block-sub">Last 50 · click row to expand body + Resend response</div></div>
+      </div>
+      <div class="filter-row">
+        <button class="filter-chip active">All <span class="count">24</span></button>
+        <button class="filter-chip">Failed <span class="count">18</span></button>
+        <button class="filter-chip">Opened <span class="count">4</span></button>
+        <button class="filter-chip">Sent <span class="count">2</span></button>
+        <button class="filter-chip">Replied <span class="count">0</span></button>
+        <button class="filter-chip">Bounced <span class="count">0</span></button>
+        <div style="flex:1"></div>
+        <button class="filter-chip">Today</button>
+        <button class="filter-chip">7d</button>
+        <button class="filter-chip">30d</button>
+      </div>
+      <table class="act-table">
+        <thead>
+          <tr><th style="width:110px">When</th><th>Lead</th><th>Subject</th><th style="width:80px">Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="when">08:06</td>
+            <td><div class="biz">Sterling Real Estate</div><div class="email">info@sterling-realestate.com</div></td>
+            <td class="subj">56 reviews, no website to capture leads?</td>
+            <td><span class="chip failed">failed</span></td>
+          </tr>
+          <tr style="background:var(--bg-soft)">
+            <td colspan="4" style="padding:6px 22px;font-size:11px;color:var(--ink-mute);font-family:var(--font-mono)">
+              ↳ Same recipient, sent 3× at 08:04, 08:05, 08:06 — duplicate-send bug
+            </td>
+          </tr>
+          <tr>
+            <td class="when">08:06</td>
+            <td><div class="biz">Sarasota Realty</div><div class="email">admin@brightrealtyfl.com</div></td>
+            <td class="subj">86 reviews, no website voicemail?</td>
+            <td><span class="chip failed">failed</span></td>
+          </tr>
+          <tr>
+            <td class="when">08:06</td>
+            <td><div class="biz">Best Edmonton Real Estate Team</div><div class="email">jolene@jolenelangelle.com</div></td>
+            <td class="subj">58 reviews and still missing calls?</td>
+            <td><span class="chip failed">failed</span></td>
+          </tr>
+          <tr>
+            <td class="when">yest 18:21</td>
+            <td><div class="biz">Plumb Medic</div><div class="email">info@plumbmedic.com.au</div></td>
+            <td class="subj">Plumb Medic: capture every call this week</td>
+            <td><span class="chip opened">opened</span></td>
+          </tr>
+          <tr>
+            <td class="when">yest 18:21</td>
+            <td><div class="biz">nGO Plumbing</div><div class="email">jackson@ngoplumbing.com.au</div></td>
+            <td class="subj">188 five-star reviews at nGO Plumbing</td>
+            <td><span class="chip opened">opened</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════ SEQUENCES ═══════════ -->
+  <div class="page" id="page-sequences">
+    <div class="crumb">workspace / sequences</div>
+    <h1 class="h1">Sequences</h1>
+    <p class="sub">7-step nurture over 28 days · cold → bump → FOMO → Loom → math → quirky → pizza breakup</p>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-label">Active</div><div class="kpi-num">0</div><div class="kpi-meta">no leads enrolled yet</div></div>
+      <div class="kpi"><div class="kpi-label">Replies</div><div class="kpi-num">0</div><div class="kpi-meta">auto-pause on reply</div></div>
+      <div class="kpi"><div class="kpi-label">Sent</div><div class="kpi-num">0</div><div class="kpi-meta">via sequencer path</div></div>
+      <div class="kpi"><div class="kpi-label">Open rate</div><div class="kpi-num">—</div><div class="kpi-meta">0 / 0</div></div>
+    </div>
+
+    <div class="block">
+      <div class="block-head">
+        <div><div class="block-title">Cadence</div><div class="block-sub">28-day timeline showing how each step sells "why now"</div></div>
+      </div>
+      <div class="block-body">
+        <svg viewBox="0 0 800 110" style="width:100%;height:110px">
+          <line x1="40" y1="55" x2="780" y2="55" stroke="#e8e6e1" stroke-width="2"/>
+          <g font-family="JetBrains Mono" font-size="10">
+            <g><circle cx="40" cy="55" r="9" fill="#2d5a3f"/><text x="40" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">Cold</text><text x="40" y="94" text-anchor="middle" fill="#8a8a8a">Day 0</text></g>
+            <g><circle cx="160" cy="55" r="9" fill="#2d5a3f"/><text x="160" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">Bump</text><text x="160" y="94" text-anchor="middle" fill="#8a8a8a">Day 3</text></g>
+            <g><circle cx="280" cy="55" r="9" fill="#2d5a3f"/><text x="280" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">FOMO</text><text x="280" y="94" text-anchor="middle" fill="#8a8a8a">Day 7</text></g>
+            <g><circle cx="400" cy="55" r="9" fill="#2d5a3f"/><text x="400" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">Loom</text><text x="400" y="94" text-anchor="middle" fill="#8a8a8a">Day 11</text></g>
+            <g><circle cx="520" cy="55" r="9" fill="#2d5a3f"/><text x="520" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">Math</text><text x="520" y="94" text-anchor="middle" fill="#8a8a8a">Day 16</text></g>
+            <g><circle cx="640" cy="55" r="9" fill="#a05a3f"/><text x="640" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">Quirky</text><text x="640" y="94" text-anchor="middle" fill="#8a8a8a">Day 21</text></g>
+            <g><circle cx="780" cy="55" r="9" fill="#c44536"/><text x="780" y="80" text-anchor="middle" fill="#1a1a1a" font-weight="500">Pizza</text><text x="780" y="94" text-anchor="middle" fill="#8a8a8a">Day 28</text></g>
+            <text x="40" y="38" text-anchor="middle" font-size="9" fill="#8a8a8a">Sells problem</text>
+            <text x="280" y="38" text-anchor="middle" font-size="9" fill="#8a8a8a">Sells loss</text>
+            <text x="520" y="38" text-anchor="middle" font-size="9" fill="#8a8a8a">Sells math</text>
+            <text x="780" y="38" text-anchor="middle" font-size="9" fill="#8a8a8a">Sells closure</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><div><div class="block-title">Step distribution</div><div class="block-sub">Where every active lead currently sits</div></div></div>
+      <div class="block-body">
+        <div class="pipeline">
+          <div class="pipe-step"><div class="pipe-day">Step 1</div><div class="pipe-name">Cold</div><div class="pipe-count zero">0</div></div>
+          <div class="pipe-step"><div class="pipe-day">Step 2</div><div class="pipe-name">Bump</div><div class="pipe-count zero">0</div></div>
+          <div class="pipe-step"><div class="pipe-day">Step 3</div><div class="pipe-name">FOMO</div><div class="pipe-count zero">0</div></div>
+          <div class="pipe-step"><div class="pipe-day">Step 4</div><div class="pipe-name">Loom</div><div class="pipe-count zero">0</div></div>
+          <div class="pipe-step"><div class="pipe-day">Step 5</div><div class="pipe-name">Math</div><div class="pipe-count zero">0</div></div>
+          <div class="pipe-step"><div class="pipe-day">Step 6</div><div class="pipe-name">Quirky</div><div class="pipe-count zero">0</div></div>
+          <div class="pipe-step"><div class="pipe-day">Step 7</div><div class="pipe-name">Pizza</div><div class="pipe-count zero">0</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><div><div class="block-title">Sequence list</div><div class="block-sub">Step shown as 7-dot progress · click row for full timeline</div></div></div>
+      <div class="filter-row">
+        <button class="filter-chip active">All <span class="count">0</span></button>
+        <button class="filter-chip">Active</button>
+        <button class="filter-chip">Paused</button>
+        <button class="filter-chip">Done</button>
+        <button class="filter-chip">Cancelled</button>
+      </div>
+      <table class="act-table">
+        <thead>
+          <tr><th>Lead</th><th>Niche</th><th>City</th><th style="width:100px">Step</th><th style="width:80px">Status</th><th>Next send</th></tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="6" style="text-align:center;padding:48px 22px;color:var(--ink-mute);font-size:13px">
+            <div style="font-family:var(--font-serif);font-size:18px;color:var(--ink);margin-bottom:6px">No active sequences</div>
+            <div>Send an email from Outreach to enrol the first lead.</div>
+          </td></tr>
+          <!-- example of populated row design -->
+          <tr style="opacity:0.45">
+            <td><div class="biz">Plumb Medic</div><div class="email">info@plumbmedic.com.au</div></td>
+            <td>Home Services</td>
+            <td>Melbourne</td>
+            <td><span class="dots"><span class="dot done"></span><span class="dot current"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="dot"></span></span></td>
+            <td><span class="chip sent">active</span></td>
+            <td class="when">in 3 days</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════ LEADS ═══════════ -->
+  <div class="page" id="page-leads">
+    <div class="crumb">workspace / leads</div>
+    <h1 class="h1">Leads</h1>
+    <p class="sub">CSV library · every scrape and import · health score combines coverage + score + freshness</p>
+
+    <div class="csv-grid">
+      <div class="csv-card">
+        <div class="csv-name">interactive_home_services_australia.csv</div>
+        <div class="csv-meta">Scraped · 13 rows · 2 days ago</div>
+        <div class="csv-health">
+          <div class="csv-health-num good">92</div>
+          <div class="csv-health-label">health score<br>excellent</div>
+        </div>
+        <div class="csv-bars">
+          <div>
+            <div class="csv-bar-label"><span>w/ email</span><span>13/13</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>w/ phone</span><span>12/13</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:92%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>avg score</span><span>94.7</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:94%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>qualified</span><span>13/13</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft);font-size:11px;color:var(--ink-mute)">
+          <span style="color:var(--good)">●</span> 6 sent · 4 opened · 0 replied
+        </div>
+      </div>
+
+      <div class="csv-card">
+        <div class="csv-name">interactive_real_estate_canada.csv</div>
+        <div class="csv-meta">Scraped · 6 rows · today</div>
+        <div class="csv-health">
+          <div class="csv-health-num ok">74</div>
+          <div class="csv-health-label">health score<br>fine</div>
+        </div>
+        <div class="csv-bars">
+          <div>
+            <div class="csv-bar-label"><span>w/ email</span><span>6/6</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>w/ phone</span><span>6/6</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>avg score</span><span>89.3</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:89%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>qualified</span><span>6/6</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft);font-size:11px;color:var(--warn)">
+          <span style="color:var(--warn)">●</span> 6 sent · 6 failed · check Resend
+        </div>
+      </div>
+
+      <div class="csv-card">
+        <div class="csv-name">interactive_real_estate_us.csv</div>
+        <div class="csv-meta">Scraped · 11 rows · today</div>
+        <div class="csv-health">
+          <div class="csv-health-num bad">58</div>
+          <div class="csv-health-label">health score<br>email gap</div>
+        </div>
+        <div class="csv-bars">
+          <div>
+            <div class="csv-bar-label"><span>w/ email</span><span>7/11</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill warn" style="width:64%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>w/ phone</span><span>11/11</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>avg score</span><span>89.0</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:89%"></div></div>
+          </div>
+          <div>
+            <div class="csv-bar-label"><span>qualified</span><span>11/11</span></div>
+            <div class="csv-bar-track"><div class="csv-bar-fill" style="width:100%"></div></div>
+          </div>
+        </div>
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-soft);font-size:11px;color:var(--warn)">
+          <span style="color:var(--warn)">●</span> 12 sent · 12 failed · accessibility@ubc.ca looks fake
+        </div>
+      </div>
+    </div>
+
+    <div class="note-bar" style="margin-top:18px">
+      <div class="note-icon">💡</div>
+      <div><strong>Health score formula:</strong> 40% email coverage + 25% phone coverage + 25% avg lead score + 10% freshness. Below 70 means review the CSV before sending — that's where Real Estate US is right now (4 of 11 leads have no email, and one address is a university accessibility line).</div>
+    </div>
+  </div>
+
+  <!-- ═══════════ SETTINGS (only place Connections lives now) ═══════════ -->
+  <div class="page" id="page-settings">
+    <div class="crumb">workspace / settings</div>
+    <h1 class="h1">Settings</h1>
+    <p class="sub">Identity, connections, and environment plumbing — the only page where you'll see this.</p>
+
+    <div class="block">
+      <div class="block-head"><div><div class="block-title">Identity</div><div class="block-sub">Used in the email signature appended to every outbound message</div></div></div>
+      <div class="block-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div><div class="kpi-label" style="margin-bottom:6px">Your name</div><div class="mono">Khush Mutha</div></div>
+          <div><div class="kpi-label" style="margin-bottom:6px">Title</div><div class="mono">Founder</div></div>
+          <div><div class="kpi-label" style="margin-bottom:6px">Company</div><div class="mono">OltaFlock AI</div></div>
+          <div><div class="kpi-label" style="margin-bottom:6px">Website</div><div class="mono">https://oltaflock.ai</div></div>
+          <div style="grid-column:span 2"><div class="kpi-label" style="margin-bottom:6px">Booking link</div><div class="mono">https://cal.com/khush0030/oltaflock-ai-demo</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><div><div class="block-title">Connections</div><div class="block-sub">Integration status — moved here from the sidebar</div></div></div>
+      <div class="block-body">
+        <div style="display:flex;flex-direction:column;gap:0">
+          <div style="padding:14px 0;border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between;align-items:center">
+            <div><div style="font-weight:500">Google</div><div class="muted" style="font-size:12px">Sheets + Gmail send enabled</div></div>
+            <span class="chip sent">on</span>
+          </div>
+          <div style="padding:14px 0;border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between;align-items:center">
+            <div><div style="font-weight:500">Claude</div><div class="muted" style="font-size:12px">AI personalization & lead scoring enabled</div></div>
+            <span class="chip sent">on</span>
+          </div>
+          <div style="padding:14px 0;border-bottom:1px solid var(--line-soft);display:flex;justify-content:space-between;align-items:center">
+            <div><div style="font-weight:500">Resend</div><div class="muted" style="font-size:12px;color:var(--warn)">Outbound email + webhooks · 18 failures in last 24h, investigate</div></div>
+            <span class="chip failed">degraded</span>
+          </div>
+          <div style="padding:14px 0;display:flex;justify-content:space-between;align-items:center">
+            <div><div style="font-weight:500">Asana</div><div class="muted" style="font-size:12px">Loading projects + users…</div></div>
+            <span class="chip sent">on</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><div><div class="block-title">Environment variables</div><div class="block-sub">Set in .env at project root · restart after changing</div></div></div>
+      <div class="block-body" style="font-family:var(--font-mono);font-size:12px;color:var(--good);line-height:2">
+        ✓ GOOGLE_PLACES_API_KEY &nbsp; ✓ GOOGLE_CLIENT_ID &nbsp; ✓ GOOGLE_CLIENT_SECRET<br>
+        ✓ ANTHROPIC_API_KEY &nbsp; ✓ RESEND_API_KEY &nbsp; ✓ RESEND_FROM
+      </div>
+    </div>
+  </div>
+
+  <!-- placeholder fall-throughs -->
+  <div class="page" id="page-scrape"><div class="crumb">workspace / scrape</div><h1 class="h1">Scrape</h1><p class="sub muted">Existing scrape page — no redesign in this round.</p></div>
+  <div class="page" id="page-history"><div class="crumb">workspace / scrape history</div><h1 class="h1">Scrape history</h1><p class="sub muted">Existing history page — no redesign in this round.</p></div>
+  <div class="page" id="page-offers"><div class="crumb">workspace / offers</div><h1 class="h1">Offers</h1><p class="sub muted">Existing offers page · one bug to fix: the Real Estate card description currently says "scrape Home Services leads" — should reference Real Estate.</p></div>
+
+</main>
+
+<script>
+function showPage(id, btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  const target = document.getElementById('page-'+id);
+  if (target) target.classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  window.scrollTo({top:0,behavior:'instant'});
+}
+function showPanel(id, btn){
+  document.querySelectorAll('.inner-panel').forEach(p=>p.classList.remove('active'));
+  const target = document.getElementById('panel-'+id);
+  if (target) target.classList.add('active');
+  document.querySelectorAll('.inner-tab').forEach(t=>t.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+</script>
+</body>
+</html>
