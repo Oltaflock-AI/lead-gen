@@ -865,6 +865,16 @@ def _suppressed_set() -> set[str]:
     return emails
 
 
+def _postal_guard() -> str | None:
+    """H5 CAN-SPAM: refuse LIVE sends when no physical postal address is
+    configured. Test mode is exempt (sends only reach the sandbox address)."""
+    if os.environ.get("LEADGEN_POSTAL_ADDRESS", POSTAL_ADDRESS).strip():
+        return None
+    if os.environ.get("LEADGEN_TEST_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        return None
+    return "LEADGEN_POSTAL_ADDRESS not set: live sending disabled (CAN-SPAM physical address required)"
+
+
 def is_suppressed(email: str) -> bool:
     """N3: a suppressed (STOP / bounced / complained) address must never be
     emailed again, on ANY send path. Fails CLOSED: if the suppression table
@@ -887,6 +897,9 @@ def send_email(lead: dict, draft: dict, seq_id: int, step: int) -> dict:
     # but no future caller of send_email may skip it.
     if is_suppressed(to):
         return {"error": "suppressed: recipient is on the suppression list"}
+    postal_err = _postal_guard()
+    if postal_err:
+        return {"error": postal_err}
     to = _test_guard(to)
 
     body = draft["body"] + _signature()
@@ -936,6 +949,9 @@ def send_manual(to_email: str, subject: str, body: str, seq_id: int,
     # load-bearing, not defensive. Composer and reply sends both route here.
     if is_suppressed(to_email):
         return {"error": "suppressed: recipient is on the suppression list"}
+    postal_err = _postal_guard()
+    if postal_err:
+        return {"error": postal_err}
     to_email = _test_guard(to_email)
     if append_signature:
         sig = ("\n\n" + signature.strip()) if signature else _signature()

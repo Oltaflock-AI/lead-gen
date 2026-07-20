@@ -25,8 +25,14 @@ from lib import users
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # F27: cap request/upload body at 8 MB
-ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
-PROD_URL = "https://lead-gen-fawn-seven.vercel.app"
+# Base URL for self-calls (cron pokes): explicit override, else the Vercel-provided
+# production host, else the historical default.
+PROD_URL = (
+    os.environ.get("LEADGEN_BASE_URL")
+    or (f"https://{os.environ['VERCEL_PROJECT_PRODUCTION_URL']}"
+        if os.environ.get("VERCEL_PROJECT_PRODUCTION_URL") else "")
+    or "https://lead-gen-fawn-seven.vercel.app"
+).rstrip("/")
 
 
 def _esc(v) -> str:
@@ -914,7 +920,9 @@ def upload_csv():
                 seen.add(lead["business"].lower())
                 rows.append(lead)
         if rows:
-            sb.insert("leads", rows, on_conflict="campaign_id,business")
+            # C3: insert-only — a re-upload must never reset enrichment on rows
+            # that already exist for this campaign.
+            sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)
         return redirect(f"/campaigns/{camp['id']}")
 
     err = request.args.get("err")
@@ -1325,7 +1333,8 @@ def build_create():
 
     rows, _, _ = _parse_csv_leads(f, camp["id"])
     if rows:
-        sb.insert("leads", rows, on_conflict="campaign_id,business")
+        # C3: insert-only — never clobber enrichment on existing rows.
+        sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)
     return jsonify({"redirect": f"/campaigns/{camp['id']}", "note": cfg_note, "leads": len(rows)})
 
 
@@ -2009,7 +2018,7 @@ def create_and_scrape():
     run = sb.insert("scrape_runs", {"campaign_id": c["id"], "target_count": c["daily_scrape_target"], "status": "running"})[0]
     try:
         rows = list(scrape.scrape_for_campaign(c, target=c["daily_scrape_target"]))
-        n = len(sb.insert("leads", rows, on_conflict="campaign_id,business")) if rows else 0
+        n = len(sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)) if rows else 0
         sb.update("scrape_runs", {"id": run["id"]}, {"status": "completed", "scraped_count": n, "finished_at": datetime.now(timezone.utc).isoformat()})
     except Exception as e:
         sb.update("scrape_runs", {"id": run["id"]}, {"status": "failed", "error": str(e)[:400], "finished_at": datetime.now(timezone.utc).isoformat()})
@@ -2017,11 +2026,16 @@ def create_and_scrape():
 
 
 def _fire(path, **params):
+    """Fire-and-forget poke of a cron endpoint. Failures are logged, not swallowed
+    silently — a dead poke used to be invisible."""
     import requests as _r
     try:
-        _r.get(f"{PROD_URL}{path}", params=params, headers={"Authorization": f"Bearer {os.environ.get('CRON_SECRET','')}"}, timeout=4)
-    except Exception:
-        pass
+        r = _r.get(f"{PROD_URL}{path}", params=params,
+                   headers={"Authorization": f"Bearer {os.environ.get('CRON_SECRET','')}"}, timeout=4)
+        if r.status_code >= 400:
+            print(f"[_fire] {path} -> {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[_fire] {path} failed: {e}")
 
 
 @app.route("/campaigns/<int:cid>/scrape", methods=["POST"])

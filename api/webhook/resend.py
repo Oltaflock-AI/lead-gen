@@ -202,6 +202,12 @@ def _record(payload: dict) -> dict:
 
     sequence_id, step = _find_sequence_step(resend_id, tags) if resend_id else (None, None)
 
+    # B12/H7: a bounce or complaint must suppress the recipient EVEN IF we can't
+    # resolve a sequence (manual blasts, typed-in addresses, orphan events). This
+    # runs before any early return below.
+    if event_type in ("bounced", "complained"):
+        _suppress_recipient(data, event_type)
+
     row = {
         "sequence_id": sequence_id,
         "step": step,
@@ -243,11 +249,10 @@ def _record(payload: dict) -> dict:
         sb.rpc("increment_sequence_counter", {"seq_id": sequence_id, "field": "clicks"})
         _accelerate_on_open(sequence_id)
     elif event_type == "bounced":
+        # (suppression already applied above, before the orphan early-return)
         sb.update("sequences", {"id": sequence_id}, {"bounced": True, "status": "paused", "paused_reason": "bounced"})
-        _suppress_recipient(data, "bounced")
     elif event_type == "complained":
         sb.update("sequences", {"id": sequence_id}, {"status": "paused", "paused_reason": "complained"})
-        _suppress_recipient(data, "complained")
 
     return {"recorded": True, "sequence_id": sequence_id, "step": step, "type": event_type}
 
