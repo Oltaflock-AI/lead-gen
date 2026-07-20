@@ -194,10 +194,12 @@ def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict
         return {"seq": s["id"], "error": result["error"]}
 
     rid = result.get("resend_id")
+    # H1: insert-ignore — a crash-retry of this step reuses the Resend
+    # Idempotency-Key, gets the same resend_id back, and must not log 'sent' twice.
     sb.insert("sequence_events", {
         "sequence_id": s["id"], "step": next_step, "event_type": "sent",
         "resend_id": rid, "meta": {"subject": draft["subject"], "angle": draft.get("angle")},
-    })
+    }, on_conflict="resend_id,event_type", ignore_duplicates=True)
     nxt = seq.next_send_at(next_step, s.get("opens", 0) or 0, region, config=config)
     sb.update("sequences", {"id": s["id"]}, {
         "current_step": next_step,

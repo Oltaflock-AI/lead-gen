@@ -218,28 +218,34 @@ def _record(payload: dict) -> dict:
     if sequence_id is None:
         # Don't insert orphans into sequence_events (FK NOT NULL).
         # Buffer into existing email_events_raw for reconciliation.
+        # H1: insert-ignore on the (resend_id, event_type) dedupe key so a
+        # redelivered webhook can't double-buffer.
         sb.insert("email_events_raw", {
             "resend_id": resend_id,
             "event_type": event_type,
             "payload": payload,
             "source": "vercel-webhook",
-        })
+        }, on_conflict="resend_id,event_type", ignore_duplicates=True)
         return {"buffered": True, "resend_id": resend_id, "type": event_type}
 
     # Filter bot opens before they pollute counters or trigger acceleration.
     if event_type == "opened" and _is_bot_open(sequence_id, resend_id):
         row["event_type"] = "opened_bot"
-        sb.insert("sequence_events", row)
+        sb.insert("sequence_events", row, on_conflict="resend_id,event_type", ignore_duplicates=True)
         return {"filtered": "bot-open", "sequence_id": sequence_id}
 
     # Same for clicks: link-prefetch scanners (CloudFront, SafeLinks, Mimecast)
     # hit every link within seconds of delivery. Don't count them as real clicks.
     if event_type == "clicked" and _is_bot_open(sequence_id, resend_id):
         row["event_type"] = "clicked_bot"
-        sb.insert("sequence_events", row)
+        sb.insert("sequence_events", row, on_conflict="resend_id,event_type", ignore_duplicates=True)
         return {"filtered": "bot-click", "sequence_id": sequence_id}
 
-    sb.insert("sequence_events", row)
+    # H1: a redelivered webhook must not double-count. insert-ignore returns []
+    # for a duplicate, and counters/reactions only run on a genuine first insert.
+    inserted = sb.insert("sequence_events", row, on_conflict="resend_id,event_type", ignore_duplicates=True)
+    if not inserted:
+        return {"duplicate": True, "sequence_id": sequence_id, "type": event_type}
 
     # Increment counters + react.
     if event_type == "opened":
