@@ -930,7 +930,7 @@ def upload_csv():
           <div class="field"><label>List name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="name" placeholder="defaults to file name"></div>
           <div class="field"><label>Region <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="region" placeholder="United States"></div>
         </div>
-        <div class="field"><label>Email sequence style <span style="text-transform:none;color:var(--ink-faint)">(drives the copy for steps 2-7)</span></label><select name="instruction_set"><option value="default">Default (AI ops audit)</option><option value="travel">Travel agencies (AI itinerary generator)</option></select></div>
+        <div class="field"><label>Email sequence style <span style="text-transform:none;color:var(--ink-faint)">(drives the copy for steps 2-7)</span></label><select name="instruction_set"><option value="default">Default (AI ops audit)</option><option value="travel">Travel agencies (AI itinerary generator)</option><option value="d2c">D2C brands (cart recovery + support speed)</option></select></div>
         <div class="field"><label>Offer brief <span style="text-transform:none;color:var(--ink-faint)">(what you pitch — used to write the emails)</span></label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0-12l-4 4m4-4l4 4M5 21h14"/></svg> Import CSV</button>
