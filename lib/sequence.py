@@ -761,6 +761,15 @@ def draft_one(lead: dict, seq: dict, step: int, offer_brief: str | None, config=
         if subject and body:
             return {"subject": subject, "body": body, "angle": angle_name,
                     "model": raw.get("_model", "llm")}
+    if llm.enabled():
+        # C6: the LLM was configured but its output was unusable — canned copy
+        # going out silently is how quality regressions hide. Rate-limited email.
+        try:
+            from lib import ops
+            ops.alert("llm-fallback",
+                      f"draft_one fell back to canned copy for lead {lead.get('id')} step {step}")
+        except Exception:
+            pass
     return _fallback_draft(lead, step, angle_name, config)
 
 

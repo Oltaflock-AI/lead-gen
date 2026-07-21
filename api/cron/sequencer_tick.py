@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+from lib import ops
 from lib import sequence as seq
 from lib import supabase as sb
 from lib.auth import is_cron_authorized
@@ -115,13 +116,58 @@ def _suppressed_for(emails: set[str]) -> set[str]:
 
 
 def _due(active_ids: set[int]) -> list[dict]:
-    rows = sb.select(
+    # B8: the active-campaign filter lives in the query, so paused campaigns'
+    # rows can never occupy (starve) the batch.
+    if not active_ids:
+        return []
+    cids = ",".join(str(c) for c in active_ids)
+    return sb.select(
         "sequences",
-        {"select": "*", "status": "eq.active", "next_send_at": f"lte.{_iso(_now())}",
-         "order": "next_send_at.asc"},
-        limit=BATCH * 2,
+        {"select": "*", "status": "eq.active", "campaign_id": f"in.({cids})",
+         "next_send_at": f"lte.{_iso(_now())}", "order": "next_send_at.asc"},
+        limit=BATCH,
     )
-    return [r for r in rows if r["campaign_id"] in active_ids][:BATCH]
+
+
+def _claim_slot() -> bool:
+    """B7: claim-then-count — atomically take one slot from today's cap via the
+    claim_send_slot RPC. Pre-migration-013 fallback: allow, the per-tick
+    snapshot cap in _run still governs."""
+    try:
+        return bool(sb.rpc("claim_send_slot", {"p_cap": DAILY_CAP}))
+    except Exception:
+        return True
+
+
+def _revive_errored() -> dict:
+    """2.3: auto-retry error-paused sequences (max 3 attempts via retry_count,
+    then leave paused + alert). Bounded by retry_count rather than a 48h window
+    — sequences has no paused_at timestamp to filter on."""
+    try:
+        rows = sb.select("sequences", {
+            "select": "id,retry_count", "status": "eq.paused",
+            "paused_reason": "like.send-error*", "retry_count": "lt.3",
+        }, limit=20)
+    except Exception:
+        return {"revived": 0}  # retry_count column absent pre-migration-013
+    revived = 0
+    for r in rows:
+        sb.update("sequences", {"id": r["id"]}, {
+            "status": "active", "paused_reason": None,
+            "retry_count": (r.get("retry_count") or 0) + 1,
+            "next_send_at": _iso(_now()),
+        })
+        revived += 1
+    try:
+        stuck = sb.count("sequences", {"status": "eq.paused",
+                                       "paused_reason": "like.send-error*",
+                                       "retry_count": "gte.3"})
+        if stuck:
+            ops.alert("sequencer-retries-exhausted",
+                      f"{stuck} sequence(s) still failing after 3 send retries — left paused")
+    except Exception:
+        pass
+    return {"revived": revived}
 
 
 def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict:
@@ -136,6 +182,11 @@ def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict
         )
         if not claimed:
             return {"seq": s["id"], "skipped": "claimed-by-other"}
+
+    # B7: atomic cap check AFTER the claim — a racing tick can't both pass a
+    # stale snapshot. Cap reached: leave the claim's +1h push in place.
+    if not _claim_slot():
+        return {"seq": s["id"], "skipped": "daily-cap-atomic"}
 
     leads = sb.select("leads", {"select": "*", "id": f"eq.{s['lead_id']}"}, limit=1)
     if not leads:
@@ -213,6 +264,7 @@ def _run() -> dict:
     started = time.monotonic()
     active = _active_campaigns()
     created = _autocreate(active)
+    revived = _revive_errored()
 
     sent_today = _sent_today()
     remaining = max(0, DAILY_CAP - sent_today)
@@ -241,9 +293,9 @@ def _run() -> dict:
             results.append(_process_one(s, active, suppressed))
         except Exception as e:
             # C7: one failing item must never abort the whole tick. Pause just
-            # this sequence and keep going. (system_events logging lands in
-            # Phase 2 — print goes to Vercel function logs for now.)
-            print(f"[sequencer_tick] item failed seq={s['id']}: {e}")
+            # this sequence and keep going.
+            ops.log_event("error", "sequencer_tick", f"item failed seq={s['id']}: {e}")
+            ops.alert("sequencer-send-failure", f"send failed for sequence {s['id']}: {str(e)[:200]}")
             try:
                 sb.update("sequences", {"id": s["id"]},
                           {"status": "paused", "paused_reason": f"send-error: {str(e)[:80]}", "next_send_at": None})
@@ -251,7 +303,8 @@ def _run() -> dict:
                 print(f"[sequencer_tick] could not pause seq={s['id']}: {e2}")
             results.append({"seq": s["id"], "error": str(e)[:200]})
     sent = sum(1 for r in results if "sent_step" in r)
-    return {"ok": True, "created": created, "due": len(due), "sent": sent,
+    return {"ok": True, "created": created, "revived": revived.get("revived", 0),
+            "due": len(due), "sent": sent,
             "sent_today_after": sent_today + sent, "cap": DAILY_CAP, "results": results}
 
 
@@ -263,6 +316,8 @@ class handler(BaseHTTPRequestHandler):
             body = _run(); status = 200
         except Exception as e:
             body = {"ok": False, "error": str(e)}; status = 500
+        ops.heartbeat("sequencer_tick", "ok" if status == 200 else f"error: {str(body.get('error', ''))[:100]}",
+                      json.dumps(body, default=str)[:400])
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

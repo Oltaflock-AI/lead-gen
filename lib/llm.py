@@ -25,7 +25,22 @@ ALLOWED_MODELS = {m.strip() for m in os.environ.get(
 
 def _safe_model(model: str | None) -> str:
     m = model or OPENAI_MODEL
-    return m if (not ALLOWED_MODELS or m in ALLOWED_MODELS) else OPENAI_MODEL
+    if ALLOWED_MODELS and m not in ALLOWED_MODELS:
+        # B13: a silently-swapped model is a foot-gun — surface it (rate-limited).
+        try:
+            from lib import ops
+            ops.alert("llm-model", f"requested model '{m}' not in LEADGEN_ALLOWED_MODELS; using '{OPENAI_MODEL}'")
+        except Exception:
+            pass
+        return OPENAI_MODEL
+    return m
+
+
+def _token_field(model: str) -> str:
+    """B13: newer models (gpt-5*, o-series) reject max_tokens and require
+    max_completion_tokens; older chat models still take max_tokens."""
+    return ("max_completion_tokens"
+            if model.startswith(("gpt-5", "o1", "o3", "o4")) else "max_tokens")
 
 
 def enabled() -> bool:
@@ -57,7 +72,7 @@ def chat_json(system: str, user: str, *, max_tokens: int = 900,
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
             json={
                 "model": mdl,
-                "max_tokens": max_tokens,
+                _token_field(mdl): max_tokens,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system},
@@ -67,6 +82,7 @@ def chat_json(system: str, user: str, *, max_tokens: int = 900,
             timeout=60,
         )
         if r.status_code != 200:
+            _log_llm_failure(f"openai {r.status_code}", r.text[:300])
             return None
         text = (((r.json() or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
         d = _extract_json(text)
@@ -75,6 +91,15 @@ def chat_json(system: str, user: str, *, max_tokens: int = 900,
         return d
     except Exception:
         return None
+
+
+def _log_llm_failure(what: str, detail: str = "") -> None:
+    """2.2: an LLM failure must be visible in system_events, not silent (C6)."""
+    try:
+        from lib import ops
+        ops.log_event("error", "llm", what, {"detail": detail[:300]})
+    except Exception:
+        print(f"[llm] {what}: {detail[:200]}")
 
 
 def _post_chat(payload: dict) -> dict | None:
@@ -87,9 +112,11 @@ def _post_chat(payload: dict) -> dict | None:
             timeout=120,
         )
         if r.status_code != 200:
+            _log_llm_failure(f"openai {r.status_code}", r.text[:300])
             return None
         return r.json()
-    except Exception:
+    except Exception as e:
+        _log_llm_failure("openai request exception", str(e))
         return None
 
 

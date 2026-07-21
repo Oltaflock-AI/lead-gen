@@ -4,6 +4,7 @@ Vercel functions are short-lived, so a tiny requests wrapper beats pulling in
 the full supabase-py SDK and its httpx dependency.
 """
 import os
+import time
 from typing import Any
 
 import requests
@@ -25,13 +26,37 @@ _HEADERS = {
 # or dedup sets caused missed suppressions and resurrected sequences).
 _PAGE = 1000
 
+# 2.3: reads are idempotent, so transient 5xx/connection failures retry with
+# backoff. Writes (POST/PATCH) are NOT retried here — only the claim-lock CAS
+# is safely retryable and it has its own semantics.
+_RETRY_DELAYS = (0.5, 2, 8)
+
+
+def _get(url: str, *, headers: dict, params: dict | None):
+    last: Exception | None = None
+    for attempt in range(1 + len(_RETRY_DELAYS)):
+        if attempt:
+            time.sleep(_RETRY_DELAYS[attempt - 1])
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=15)
+            if r.status_code < 500:
+                return r
+            last = None
+            resp = r
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last = e
+            resp = None
+    if last:
+        raise last
+    return resp
+
 
 def select(table: str, params: dict | None = None, *, limit: int | None = None) -> list[dict]:
     p = dict(params or {})
     if limit is not None and limit <= _PAGE:
         # Single page — same request shape as before.
         p["limit"] = str(limit)
-        r = requests.get(f"{_BASE}/{table}", headers=_HEADERS, params=p, timeout=15)
+        r = _get(f"{_BASE}/{table}", headers=_HEADERS, params=p)
         r.raise_for_status()
         return r.json()
     # Multi-page read (limit > one page, or "give me everything"). A stable
@@ -48,7 +73,7 @@ def select(table: str, params: dict | None = None, *, limit: int | None = None) 
         if want <= 0:
             break
         headers = {**_HEADERS, "Range-Unit": "items", "Range": f"{offset}-{offset + want - 1}"}
-        r = requests.get(f"{_BASE}/{table}", headers=headers, params=p, timeout=15)
+        r = _get(f"{_BASE}/{table}", headers=headers, params=p)
         if auto_order and r.status_code == 400:
             p.pop("order", None)
             auto_order = False
@@ -65,7 +90,7 @@ def select(table: str, params: dict | None = None, *, limit: int | None = None) 
 def count(table: str, params: dict | None = None) -> int:
     """Exact row count via a head-style request — no row transfer, no 1000-row cap."""
     headers = {**_HEADERS, "Prefer": "count=exact", "Range-Unit": "items", "Range": "0-0"}
-    r = requests.get(f"{_BASE}/{table}", headers=headers, params=params or {}, timeout=15)
+    r = _get(f"{_BASE}/{table}", headers=headers, params=params or {})
     r.raise_for_status()
     total = r.headers.get("Content-Range", "").split("/")[-1]
     return int(total) if total.isdigit() else 0

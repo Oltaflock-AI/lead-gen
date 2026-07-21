@@ -26,6 +26,7 @@ from lib import email_verify
 from lib import enrich
 from lib import prospeo
 from lib import supabase as sb
+from lib import ops
 from lib.auth import is_cron_authorized
 
 ENRICH_BATCH = int(os.environ.get("LEADGEN_ENRICH_BATCH", "10"))
@@ -88,6 +89,7 @@ def _run() -> dict:
             results.append(_process_one(lead, camps.get(lead.get("campaign_id"))))
         except Exception as e:
             # Don't let one bad lead kill the batch — mark it failed and move on.
+            ops.log_event("error", "enrich_tick", f"lead {lead.get('id')}: {e}")
             try:
                 sb.update("leads", {"id": lead["id"]}, {
                     "enrichment_status": "failed",
@@ -109,6 +111,7 @@ class handler(BaseHTTPRequestHandler):
             body = _run(); status = 200
         except Exception as e:
             body = {"ok": False, "error": str(e)}; status = 500
+        ops.heartbeat("enrich_tick", "ok" if status == 200 else f"error: {str(body.get('error', ''))[:100]}", json.dumps(body, default=str)[:400])
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

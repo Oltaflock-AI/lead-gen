@@ -131,6 +131,11 @@ class handler(BaseHTTPRequestHandler):
         if INBOUND_SECRET:
             got = self.headers.get("x-webhook-secret") or ""
             if not hmac.compare_digest(got, INBOUND_SECRET):
+                try:
+                    from lib import ops
+                    ops.log_event("warn", "inbound-webhook", "rejected: bad shared secret")
+                except Exception:
+                    pass
                 return self._respond(401, {"ok": False, "error": "secret"})
         elif os.environ.get("VERCEL_ENV") == "production":
             return self._respond(401, {"ok": False, "error": "INBOUND_WEBHOOK_SECRET not configured"})

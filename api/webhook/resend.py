@@ -283,6 +283,12 @@ class handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
 
         if not _verify_svix(body, self.headers):
+            try:
+                from lib import ops
+                ops.alert("resend-webhook-signature",
+                          "resend webhook rejected: svix signature verification failed")
+            except Exception:
+                pass
             return self._respond(401, {"ok": False, "error": "signature"})
 
         try:
