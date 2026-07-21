@@ -70,3 +70,6 @@ ruvector.db
 
 # Vendored standalone tool (own git repo) — not part of this repo
 agent-reach/
+
+# Registry bulk data: PII + >100MB, never in git (F01/F04)
+data/registry/
