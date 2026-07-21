@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from lib import scrape, supabase as sb
+from lib import ops
 from lib.auth import is_cron_authorized
 
 
@@ -53,8 +54,11 @@ def _finish_run(run_id: int, scraped: int, status: str = "completed", err: str |
 def _upsert_leads(rows: list[dict]) -> int:
     if not rows:
         return 0
-    # on_conflict on (campaign_id, business) — schema has UNIQUE constraint
-    out = sb.insert("leads", rows, on_conflict="campaign_id,business")
+    # C3: insert-only on (campaign_id, business). A re-found business must NEVER
+    # overwrite an existing row — the old merge upsert reset enrichment_status
+    # to 'pending' and clobbered email/signals every day. ignore-duplicates also
+    # makes the return value the TRUE insert count, fixing scraped_count.
+    out = sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)
     return len(out)
 
 
@@ -109,6 +113,7 @@ class handler(BaseHTTPRequestHandler):
             body = {"ok": False, "error": str(e)}
             status = 500
 
+        ops.heartbeat("daily_scrape", "ok" if status == 200 else f"error: {str(body.get('error', ''))[:100]}", json.dumps(body, default=str)[:400])
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

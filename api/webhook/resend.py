@@ -166,8 +166,13 @@ def _suppress_recipient(data: dict, reason: str) -> None:
     sequence-level pause only protects the current sequence, not future ones."""
     to = data.get("to")
     email = to[0] if isinstance(to, list) and to else (to if isinstance(to, str) else None)
-    email = (email or "").strip().lower()
-    if not email:
+    # Resend sometimes delivers "Name <addr>" / "addr>" forms; a suppression row
+    # stored with angle brackets never matches the lead's clean email at send
+    # time, silently defeating the suppression (found live 2026-07-20).
+    from email.utils import parseaddr
+    email = parseaddr((email or "").strip())[1] or (email or "")
+    email = email.strip().strip("<>").strip().lower()
+    if not email or "@" not in email:
         return
     try:
         sb.insert("suppressions",
@@ -197,6 +202,12 @@ def _record(payload: dict) -> dict:
 
     sequence_id, step = _find_sequence_step(resend_id, tags) if resend_id else (None, None)
 
+    # B12/H7: a bounce or complaint must suppress the recipient EVEN IF we can't
+    # resolve a sequence (manual blasts, typed-in addresses, orphan events). This
+    # runs before any early return below.
+    if event_type in ("bounced", "complained"):
+        _suppress_recipient(data, event_type)
+
     row = {
         "sequence_id": sequence_id,
         "step": step,
@@ -207,28 +218,34 @@ def _record(payload: dict) -> dict:
     if sequence_id is None:
         # Don't insert orphans into sequence_events (FK NOT NULL).
         # Buffer into existing email_events_raw for reconciliation.
+        # H1: insert-ignore on the (resend_id, event_type) dedupe key so a
+        # redelivered webhook can't double-buffer.
         sb.insert("email_events_raw", {
             "resend_id": resend_id,
             "event_type": event_type,
             "payload": payload,
             "source": "vercel-webhook",
-        })
+        }, on_conflict="resend_id,event_type", ignore_duplicates=True)
         return {"buffered": True, "resend_id": resend_id, "type": event_type}
 
     # Filter bot opens before they pollute counters or trigger acceleration.
     if event_type == "opened" and _is_bot_open(sequence_id, resend_id):
         row["event_type"] = "opened_bot"
-        sb.insert("sequence_events", row)
+        sb.insert("sequence_events", row, on_conflict="resend_id,event_type", ignore_duplicates=True)
         return {"filtered": "bot-open", "sequence_id": sequence_id}
 
     # Same for clicks: link-prefetch scanners (CloudFront, SafeLinks, Mimecast)
     # hit every link within seconds of delivery. Don't count them as real clicks.
     if event_type == "clicked" and _is_bot_open(sequence_id, resend_id):
         row["event_type"] = "clicked_bot"
-        sb.insert("sequence_events", row)
+        sb.insert("sequence_events", row, on_conflict="resend_id,event_type", ignore_duplicates=True)
         return {"filtered": "bot-click", "sequence_id": sequence_id}
 
-    sb.insert("sequence_events", row)
+    # H1: a redelivered webhook must not double-count. insert-ignore returns []
+    # for a duplicate, and counters/reactions only run on a genuine first insert.
+    inserted = sb.insert("sequence_events", row, on_conflict="resend_id,event_type", ignore_duplicates=True)
+    if not inserted:
+        return {"duplicate": True, "sequence_id": sequence_id, "type": event_type}
 
     # Increment counters + react.
     if event_type == "opened":
@@ -238,11 +255,10 @@ def _record(payload: dict) -> dict:
         sb.rpc("increment_sequence_counter", {"seq_id": sequence_id, "field": "clicks"})
         _accelerate_on_open(sequence_id)
     elif event_type == "bounced":
+        # (suppression already applied above, before the orphan early-return)
         sb.update("sequences", {"id": sequence_id}, {"bounced": True, "status": "paused", "paused_reason": "bounced"})
-        _suppress_recipient(data, "bounced")
     elif event_type == "complained":
         sb.update("sequences", {"id": sequence_id}, {"status": "paused", "paused_reason": "complained"})
-        _suppress_recipient(data, "complained")
 
     return {"recorded": True, "sequence_id": sequence_id, "step": step, "type": event_type}
 
@@ -267,6 +283,12 @@ class handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
 
         if not _verify_svix(body, self.headers):
+            try:
+                from lib import ops
+                ops.alert("resend-webhook-signature",
+                          "resend webhook rejected: svix signature verification failed")
+            except Exception:
+                pass
             return self._respond(401, {"ok": False, "error": "signature"})
 
         try:

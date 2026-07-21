@@ -23,6 +23,32 @@ from lib import supabase as sb
 INBOUND_SECRET = os.environ.get("INBOUND_WEBHOOK_SECRET", "")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
+# Same stop-intent patterns as lib/gmail_replies.py (C4): a STOP reply through
+# THIS channel must also land in `suppressions`, not just pause the sequence.
+_STOP_PHRASES = re.compile(
+    r"\b(?:"
+    r"unsubscribe"
+    r"|stop emailing"
+    r"|remove me"
+    r"|take me off"
+    r"|do not contact"
+    r"|don'?t contact"
+    r"|not interested"
+    r"|no thanks"
+    r"|leave me alone"
+    r"|opt[\s-]out"
+    r"|fuck off"
+    r")\b"
+    r"|(?<![\w-])stop(?![\w-])",  # bare "stop", but not "non-stop"/"stop-gap"
+    re.IGNORECASE,
+)
+
+
+def _is_stop(payload: dict) -> bool:
+    data = payload.get("data") or payload
+    text = " ".join(str(data.get(k) or "") for k in ("text", "subject", "html"))
+    return bool(_STOP_PHRASES.search(text))
+
 
 def _extract_email(value) -> str | None:
     """Pull a bare address out of 'Name <a@b.com>' or a list/dict form."""
@@ -54,11 +80,17 @@ def _mark_blast_replied(email: str) -> None:
         pass
 
 
-def _pause_for_reply(email: str) -> dict:
+def _pause_for_reply(email: str, *, stop: bool = False) -> dict:
+    if stop:
+        # C4: STOP intent is a hard opt-out — suppress the address globally, not
+        # just pause its sequences. Insert-only so an existing row is untouched.
+        sb.insert("suppressions",
+                  {"email": email, "reason": "stop-request", "source": "inbound-webhook"},
+                  on_conflict="email", ignore_duplicates=True)
     _mark_blast_replied(email)
     leads = sb.select("leads", {"select": "id", "email": f"eq.{email}"}, limit=50)
     if not leads:
-        return {"matched": False, "email": email}
+        return {"matched": False, "email": email, "suppressed": stop}
 
     paused = []
     for lead in leads:
@@ -71,7 +103,7 @@ def _pause_for_reply(email: str) -> dict:
             sb.update("sequences", {"id": s["id"]}, {
                 "replied": True,
                 "status": "paused",
-                "paused_reason": "replied",
+                "paused_reason": "stop-request" if stop else "replied",
                 "next_send_at": None,
             })
             sb.insert("sequence_events", {
@@ -99,6 +131,11 @@ class handler(BaseHTTPRequestHandler):
         if INBOUND_SECRET:
             got = self.headers.get("x-webhook-secret") or ""
             if not hmac.compare_digest(got, INBOUND_SECRET):
+                try:
+                    from lib import ops
+                    ops.log_event("warn", "inbound-webhook", "rejected: bad shared secret")
+                except Exception:
+                    pass
                 return self._respond(401, {"ok": False, "error": "secret"})
         elif os.environ.get("VERCEL_ENV") == "production":
             return self._respond(401, {"ok": False, "error": "INBOUND_WEBHOOK_SECRET not configured"})
@@ -115,7 +152,7 @@ class handler(BaseHTTPRequestHandler):
             return self._respond(200, {"ok": True, "result": {"matched": False, "reason": "no sender"}})
 
         try:
-            result = _pause_for_reply(email)
+            result = _pause_for_reply(email, stop=_is_stop(payload))
             return self._respond(200, {"ok": True, "result": result})
         except Exception as e:
             return self._respond(500, {"ok": False, "error": str(e)})

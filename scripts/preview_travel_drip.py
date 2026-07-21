@@ -24,7 +24,7 @@ except Exception:
 
 from lib import sequence as seq  # noqa: E402
 
-CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "travel_agencies_personalized_emails.csv"
+CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "outputs" / "travel_agencies_personalized_emails.csv"
 TRAVEL_CONFIG = {"instruction_set": "travel"}
 OFFER = (
     "Oltaflock sets up AI itinerary generators for travel agencies. Custom, client-ready "

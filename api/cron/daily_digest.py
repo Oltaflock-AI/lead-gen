@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from lib import supabase as sb
+from lib import ops
 from lib.auth import is_cron_authorized
 
 DIGEST_TO = os.environ.get("DIGEST_TO", "admin@oltaflock.ai")
@@ -160,6 +161,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             body = {"ok": False, "error": str(e)}
 
+        ops.heartbeat("daily_digest", "ok" if body.get("ok") else f"error: {str(body.get('error', ''))[:100]}", json.dumps(body, default=str)[:400])
         self.send_response(200 if body.get("ok") else 500)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

@@ -109,7 +109,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--districts", default="519,518,521,517",
                     help="comma list of district ids")
-    ap.add_argument("--out", default="data/maharera_agents.csv")
+    ap.add_argument("--out", default="data/outputs/maharera_agents.csv")
     ap.add_argument("--sleep", type=float, default=0.35)
     ap.add_argument("--all-status", action="store_true",
                     help="include expired/lapsed registrations")

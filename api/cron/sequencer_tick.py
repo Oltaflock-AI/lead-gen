@@ -12,11 +12,13 @@ Stateless. Bounded per tick (BATCH) so it never approaches the 300s limit.
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+from lib import ops
 from lib import sequence as seq
 from lib import supabase as sb
 from lib.auth import is_cron_authorized
@@ -24,6 +26,9 @@ from lib.auth import is_cron_authorized
 BATCH = int(os.environ.get("LEADGEN_TICK_BATCH", "25"))
 DAILY_CAP = int(os.environ.get("LEADGEN_DAILY_CAP", "120"))
 CREATE_PER_TICK = int(os.environ.get("LEADGEN_CREATE_PER_TICK", "50"))
+# Stop claiming new items after this long so Vercel's 300s maxDuration can
+# never kill the function mid-send (B23).
+DEADLINE_S = int(os.environ.get("LEADGEN_TICK_DEADLINE_S", "240"))
 
 
 def _now() -> datetime:
@@ -51,58 +56,118 @@ def _active_campaigns() -> dict[int, dict]:
 
 def _sent_today() -> int:
     midnight = _now().replace(hour=0, minute=0, second=0, microsecond=0)
-    rows = sb.select("sequence_events", {"select": "id", "event_type": "eq.sent", "ts": f"gte.{_iso(midnight)}"}, limit=20000)
-    return len(rows)
+    return sb.count("sequence_events", {"event_type": "eq.sent", "ts": f"gte.{_iso(midnight)}"})
 
 
 def _autocreate(active: dict[int, dict]) -> int:
-    """Create sequences for enriched leads in active campaigns lacking one."""
+    """Enroll enriched, emailed, unsuppressed leads that have no sequence yet.
+
+    Insert-only (C1a): the anti-join finds leads WITHOUT a sequence row in SQL,
+    and ignore-duplicates means a concurrent/racing insert can never modify an
+    existing row — a done/replied/paused sequence stays exactly as it is."""
     if not active:
         return 0
     cids = ",".join(str(c) for c in active)
     leads = sb.select(
         "leads",
-        {"select": "id,campaign_id", "enrichment_status": "eq.enriched", "campaign_id": f"in.({cids})"},
-        limit=100000,
+        {"select": "id,campaign_id,email,country,sequences!left(id)",
+         "sequences": "is.null",
+         "enrichment_status": "eq.enriched",
+         "email": "not.is.null",
+         "campaign_id": f"in.({cids})"},
+        limit=CREATE_PER_TICK,
     )
+    leads = [l for l in leads if (l.get("email") or "").strip()]
     if not leads:
         return 0
-    existing = sb.select("sequences", {"select": "lead_id"}, limit=100000)
-    have = {s["lead_id"] for s in existing}
-    todo = [l for l in leads if l["id"] not in have][:CREATE_PER_TICK]
+    suppressed = _suppressed_for({l["email"].strip().lower() for l in leads})
+    todo = [l for l in leads if l["email"].strip().lower() not in suppressed]
     if not todo:
         return 0
-    now = _iso(_now())
-    rows = [{
-        "lead_id": l["id"],
-        "campaign_id": l["campaign_id"],
-        "status": "active",
-        "current_step": 0,
-        "next_send_at": now,
-    } for l in todo]
-    sb.insert("sequences", rows, on_conflict="lead_id")
-    return len(rows)
+    rows = []
+    for l in todo:
+        camp = active.get(l["campaign_id"]) or {}
+        first = seq.next_send_at(0, 0, l.get("country") or camp.get("region"),
+                                 config=camp.get("sequence_config"))
+        rows.append({
+            "lead_id": l["id"],
+            "campaign_id": l["campaign_id"],
+            "status": "active",
+            "current_step": 0,
+            # B9c: first send respects the same send window as steps 2+, never bare now().
+            "next_send_at": _iso(first),
+        })
+    inserted = sb.insert("sequences", rows, on_conflict="lead_id", ignore_duplicates=True)
+    return len(inserted)
 
 
-def _suppressed() -> set[str]:
-    """Hard opt-out set (replied STOP / unsubscribe). Loaded once per tick and
-    enforced at send time so a suppressed address never receives another email,
-    across any campaign or sequence."""
+def _suppressed_for(emails: set[str]) -> set[str]:
+    """Suppression subset for one batch of addresses (C1: never load the whole
+    table). Fails CLOSED: if the table can't be read, treat the whole batch as
+    suppressed — a skipped send is recoverable, emailing an opted-out lead is not."""
+    if not emails:
+        return set()
+    lst = ",".join(f'"{e}"' for e in sorted(emails) if '"' not in e and "," not in e)
     try:
-        rows = sb.select("suppressions", {"select": "email"}, limit=100000)
+        rows = sb.select("suppressions", {"select": "email", "email": f"in.({lst})"}, limit=len(emails))
     except Exception:
-        rows = []
+        return set(emails)
     return {(r.get("email") or "").lower() for r in rows if r.get("email")}
 
 
 def _due(active_ids: set[int]) -> list[dict]:
-    rows = sb.select(
+    # B8: the active-campaign filter lives in the query, so paused campaigns'
+    # rows can never occupy (starve) the batch.
+    if not active_ids:
+        return []
+    cids = ",".join(str(c) for c in active_ids)
+    return sb.select(
         "sequences",
-        {"select": "*", "status": "eq.active", "next_send_at": f"lte.{_iso(_now())}",
-         "order": "next_send_at.asc"},
-        limit=BATCH * 2,
+        {"select": "*", "status": "eq.active", "campaign_id": f"in.({cids})",
+         "next_send_at": f"lte.{_iso(_now())}", "order": "next_send_at.asc"},
+        limit=BATCH,
     )
-    return [r for r in rows if r["campaign_id"] in active_ids][:BATCH]
+
+
+def _claim_slot() -> bool:
+    """B7: claim-then-count — atomically take one slot from today's cap via the
+    claim_send_slot RPC. Pre-migration-013 fallback: allow, the per-tick
+    snapshot cap in _run still governs."""
+    try:
+        return bool(sb.rpc("claim_send_slot", {"p_cap": DAILY_CAP}))
+    except Exception:
+        return True
+
+
+def _revive_errored() -> dict:
+    """2.3: auto-retry error-paused sequences (max 3 attempts via retry_count,
+    then leave paused + alert). Bounded by retry_count rather than a 48h window
+    — sequences has no paused_at timestamp to filter on."""
+    try:
+        rows = sb.select("sequences", {
+            "select": "id,retry_count", "status": "eq.paused",
+            "paused_reason": "like.send-error*", "retry_count": "lt.3",
+        }, limit=20)
+    except Exception:
+        return {"revived": 0}  # retry_count column absent pre-migration-013
+    revived = 0
+    for r in rows:
+        sb.update("sequences", {"id": r["id"]}, {
+            "status": "active", "paused_reason": None,
+            "retry_count": (r.get("retry_count") or 0) + 1,
+            "next_send_at": _iso(_now()),
+        })
+        revived += 1
+    try:
+        stuck = sb.count("sequences", {"status": "eq.paused",
+                                       "paused_reason": "like.send-error*",
+                                       "retry_count": "gte.3"})
+        if stuck:
+            ops.alert("sequencer-retries-exhausted",
+                      f"{stuck} sequence(s) still failing after 3 send retries — left paused")
+    except Exception:
+        pass
+    return {"revived": revived}
 
 
 def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict:
@@ -117,6 +182,11 @@ def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict
         )
         if not claimed:
             return {"seq": s["id"], "skipped": "claimed-by-other"}
+
+    # B7: atomic cap check AFTER the claim — a racing tick can't both pass a
+    # stale snapshot. Cap reached: leave the claim's +1h push in place.
+    if not _claim_slot():
+        return {"seq": s["id"], "skipped": "daily-cap-atomic"}
 
     leads = sb.select("leads", {"select": "*", "id": f"eq.{s['lead_id']}"}, limit=1)
     if not leads:
@@ -175,10 +245,12 @@ def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict
         return {"seq": s["id"], "error": result["error"]}
 
     rid = result.get("resend_id")
+    # H1: insert-ignore — a crash-retry of this step reuses the Resend
+    # Idempotency-Key, gets the same resend_id back, and must not log 'sent' twice.
     sb.insert("sequence_events", {
         "sequence_id": s["id"], "step": next_step, "event_type": "sent",
         "resend_id": rid, "meta": {"subject": draft["subject"], "angle": draft.get("angle")},
-    })
+    }, on_conflict="resend_id,event_type", ignore_duplicates=True)
     nxt = seq.next_send_at(next_step, s.get("opens", 0) or 0, region, config=config)
     sb.update("sequences", {"id": s["id"]}, {
         "current_step": next_step,
@@ -189,19 +261,50 @@ def _process_one(s: dict, active: dict[int, dict], suppressed: set[str]) -> dict
 
 
 def _run() -> dict:
+    started = time.monotonic()
     active = _active_campaigns()
     created = _autocreate(active)
+    revived = _revive_errored()
 
     sent_today = _sent_today()
     remaining = max(0, DAILY_CAP - sent_today)
     if remaining <= 0:
         return {"ok": True, "created": created, "sent": 0, "reason": "daily-cap-reached", "cap": DAILY_CAP}
 
-    suppressed = _suppressed()
     due = _due(set(active))[:remaining]
-    results = [_process_one(s, active, suppressed) for s in due]
+    # Batch suppression check for exactly the due leads (C1: no full-table load).
+    # send_email's own is_suppressed() remains the authoritative last-line check.
+    lead_ids = ",".join(str(s["lead_id"]) for s in due)
+    batch_emails: set[str] = set()
+    if due:
+        for l in sb.select("leads", {"select": "id,email", "id": f"in.({lead_ids})"}, limit=len(due)):
+            if l.get("email"):
+                batch_emails.add(l["email"].strip().lower())
+    suppressed = _suppressed_for(batch_emails)
+
+    results = []
+    for s in due:
+        if time.monotonic() - started > DEADLINE_S:
+            # B23: leave the rest for the next tick rather than risk the
+            # platform killing us mid-send.
+            results.append({"skipped": "tick-deadline", "left": len(due) - len(results)})
+            break
+        try:
+            results.append(_process_one(s, active, suppressed))
+        except Exception as e:
+            # C7: one failing item must never abort the whole tick. Pause just
+            # this sequence and keep going.
+            ops.log_event("error", "sequencer_tick", f"item failed seq={s['id']}: {e}")
+            ops.alert("sequencer-send-failure", f"send failed for sequence {s['id']}: {str(e)[:200]}")
+            try:
+                sb.update("sequences", {"id": s["id"]},
+                          {"status": "paused", "paused_reason": f"send-error: {str(e)[:80]}", "next_send_at": None})
+            except Exception as e2:
+                print(f"[sequencer_tick] could not pause seq={s['id']}: {e2}")
+            results.append({"seq": s["id"], "error": str(e)[:200]})
     sent = sum(1 for r in results if "sent_step" in r)
-    return {"ok": True, "created": created, "due": len(due), "sent": sent,
+    return {"ok": True, "created": created, "revived": revived.get("revived", 0),
+            "due": len(due), "sent": sent,
             "sent_today_after": sent_today + sent, "cap": DAILY_CAP, "results": results}
 
 
@@ -213,6 +316,8 @@ class handler(BaseHTTPRequestHandler):
             body = _run(); status = 200
         except Exception as e:
             body = {"ok": False, "error": str(e)}; status = 500
+        ops.heartbeat("sequencer_tick", "ok" if status == 200 else f"error: {str(body.get('error', ''))[:100]}",
+                      json.dumps(body, default=str)[:400])
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

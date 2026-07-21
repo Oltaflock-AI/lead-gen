@@ -7,6 +7,8 @@ Pages:  /  /scrape  /offers  /leads  /sequences  /sequences/<id>  /settings
 Actions: create campaign, scrape now, start outreach, pause/resume, mark replied
 """
 import base64
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -23,8 +25,14 @@ from lib import users
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # F27: cap request/upload body at 8 MB
-ADMIN_KEY = os.environ.get("DASHBOARD_KEY", "")
-PROD_URL = "https://lead-gen-fawn-seven.vercel.app"
+# Base URL for self-calls (cron pokes): explicit override, else the Vercel-provided
+# production host, else the historical default.
+PROD_URL = (
+    os.environ.get("LEADGEN_BASE_URL")
+    or (f"https://{os.environ['VERCEL_PROJECT_PRODUCTION_URL']}"
+        if os.environ.get("VERCEL_PROJECT_PRODUCTION_URL") else "")
+    or "https://lead-gen-fawn-seven.vercel.app"
+).rstrip("/")
 
 
 def _esc(v) -> str:
@@ -58,7 +66,7 @@ STEP_META = {  # step -> (day label, name)
 WINDOWS = {"today": None, "7d": 168, "30d": 720, "all": 24 * 365 * 5}
 
 
-_PUBLIC_PATHS = {"/healthz", "/login", "/logout"}
+_PUBLIC_PATHS = {"/healthz", "/login", "/logout", "/unsubscribe"}
 
 
 @app.before_request
@@ -530,6 +538,60 @@ def healthz():
     return jsonify({"ok": True, "service": "lead-gen-dashboard"})
 
 
+def _unsub_verify(req) -> str | None:
+    """Decode + HMAC-verify the e/t params of an unsubscribe link. Returns the
+    clean lowercased email, or None on any mismatch (no error detail leaks)."""
+    e = (req.args.get("e") or "").strip()
+    t = (req.args.get("t") or "").strip()
+    if not e or not t:
+        return None
+    try:
+        email = base64.urlsafe_b64decode(e + "=" * (-len(e) % 4)).decode()
+    except Exception:
+        return None
+    email = email.strip().lower()
+    try:
+        if not hmac.compare_digest(seq.unsub_token(email), t):
+            return None
+    except Exception:
+        return None
+    return email
+
+
+@app.route("/unsubscribe", methods=["GET", "POST"])
+def unsubscribe():
+    """Public RFC 8058 endpoint behind a per-address HMAC token (see
+    seq.unsub_url). GET = human click -> tiny confirm page; POST = Gmail/Yahoo
+    One-Click or the confirm button -> suppress immediately, no confirmation."""
+    email = _unsub_verify(request)
+    if not email:
+        return "Invalid unsubscribe link.", 400
+    if request.method == "GET":
+        return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head>
+<body style="font-family:Georgia,serif;max-width:420px;margin:80px auto;text-align:center;color:#222">
+<p>Stop receiving emails at <strong>{_esc(email)}</strong>?</p>
+<form method="post" action="{_esc(request.full_path)}">
+<button type="submit" style="padding:10px 22px;font-size:15px;cursor:pointer">Unsubscribe</button>
+</form></body></html>"""
+    # POST — the suppression insert is the load-bearing action. If it fails we
+    # must NOT return 2xx (providers treat that as success and never retry).
+    try:
+        sb.insert("suppressions",
+                  {"email": email, "reason": "unsubscribe", "source": "one-click"},
+                  on_conflict="email")
+    except Exception:
+        return "Temporary failure, please retry.", 500
+    try:
+        for lead in sb.select("leads", {"select": "id", "email": f"eq.{email}"}, limit=50):
+            for s in sb.select("sequences", {"select": "id", "lead_id": f"eq.{lead['id']}"}, limit=10):
+                sb.update("sequences", {"id": s["id"]},
+                          {"status": "paused", "paused_reason": "unsubscribed", "next_send_at": None})
+    except Exception:
+        pass  # best-effort: the suppression above already blocks every send path
+    return "You're unsubscribed. No further emails will be sent to this address.", 200
+
+
 @app.route("/")
 def home():
     w = request.args.get("w", "today")
@@ -632,6 +694,8 @@ def home():
     senderr = sb.select("sequences", {"select": "id", "paused_reason": "like.send-error*"}, limit=1000)
     if senderr:
         issues += f'<div class="note-bar" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)"><strong>{len(senderr)} sequences paused on send errors.</strong> Check Sequences → paused.</div>'
+    if not os.environ.get("LEADGEN_POSTAL_ADDRESS", "").strip():
+        issues += '<div class="note-bar" style="background:var(--warn-soft);border-color:var(--warn-line);color:var(--warn)"><strong>CAN-SPAM: postal address missing.</strong> LEADGEN_POSTAL_ADDRESS is not set, so outbound emails ship without the required physical mailing address. Set it in Vercel env and redeploy.</div>'
     if not issues:
         issues = '<div class="note-bar" style="background:var(--accent-soft);border-color:var(--accent);color:var(--accent)">✓ All clear — no bounce spikes, missing emails, or send errors detected.</div>'
 
@@ -856,7 +920,9 @@ def upload_csv():
                 seen.add(lead["business"].lower())
                 rows.append(lead)
         if rows:
-            sb.insert("leads", rows, on_conflict="campaign_id,business")
+            # C3: insert-only — a re-upload must never reset enrichment on rows
+            # that already exist for this campaign.
+            sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)
         return redirect(f"/campaigns/{camp['id']}")
 
     err = request.args.get("err")
@@ -872,7 +938,7 @@ def upload_csv():
           <div class="field"><label>List name <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="name" placeholder="defaults to file name"></div>
           <div class="field"><label>Region <span style="text-transform:none;color:var(--ink-faint)">(optional)</span></label><input name="region" placeholder="United States"></div>
         </div>
-        <div class="field"><label>Email sequence style <span style="text-transform:none;color:var(--ink-faint)">(drives the copy for steps 2-7)</span></label><select name="instruction_set"><option value="default">Default (AI ops audit)</option><option value="travel">Travel agencies (AI itinerary generator)</option></select></div>
+        <div class="field"><label>Email sequence style <span style="text-transform:none;color:var(--ink-faint)">(drives the copy for steps 2-7)</span></label><select name="instruction_set"><option value="default">Default (AI ops audit)</option><option value="travel">Travel agencies (AI itinerary generator)</option><option value="d2c">D2C brands (cart recovery + support speed)</option></select></div>
         <div class="field"><label>Offer brief <span style="text-transform:none;color:var(--ink-faint)">(what you pitch — used to write the emails)</span></label><textarea name="offer_brief" rows="5" placeholder="Who, what pain, what outcome — then the offer."></textarea></div>
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn primary" type="submit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0-12l-4 4m4-4l4 4M5 21h14"/></svg> Import CSV</button>
@@ -1267,7 +1333,8 @@ def build_create():
 
     rows, _, _ = _parse_csv_leads(f, camp["id"])
     if rows:
-        sb.insert("leads", rows, on_conflict="campaign_id,business")
+        # C3: insert-only — never clobber enrichment on existing rows.
+        sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)
     return jsonify({"redirect": f"/campaigns/{camp['id']}", "note": cfg_note, "leads": len(rows)})
 
 
@@ -1481,6 +1548,12 @@ def compose_page():
         msg = f'Sent {sent}'
         if failed and failed != "0":
             msg += f' · {failed} failed'
+        capped = request.args.get("capped")
+        if capped and capped != "0":
+            msg += f' · {capped} held back (daily cap reached)'
+        supp = request.args.get("suppressed")
+        if supp and supp != "0":
+            msg += f' · {supp} skipped (unsubscribed/bounced, never emailed again)'
         link = (f' · <a href="/blasts/{_html.escape(blast)}" style="color:var(--good);text-decoration:underline">view tracking →</a>'
                 if blast else '')
         flash = f'<div class="note-bar" style="border-color:var(--good);color:var(--good)">{_html.escape(msg)}{link}</div>'
@@ -1599,9 +1672,29 @@ def compose_send():
     except (ValueError, IndexError, KeyError, TypeError):
         sig_text = sigs[0]["text"] if sigs else None
 
+    # Daily-cap enforcement (same LEADGEN_DAILY_CAP the sequencer honours). The
+    # composer previously bypassed the cap entirely — one POST could blast an
+    # unbounded list. sequence_events covers sequencer + manual-to-campaign
+    # sends; blast_recipients with no lead_id covers "extra email" sends.
+    cap = int(os.environ.get("LEADGEN_DAILY_CAP", "120"))
+    midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    try:
+        ev = sb.select("sequence_events", {"select": "id", "event_type": "eq.sent",
+                                           "ts": f"gte.{midnight}"}, limit=100000)
+        xtra = sb.select("blast_recipients", {"select": "id", "lead_id": "is.null",
+                                              "status": "eq.sent", "created_at": f"gte.{midnight}"}, limit=100000)
+        remaining = max(0, cap - len(ev) - len(xtra))
+    except Exception:
+        remaining = 0  # fail closed: if today's volume can't be counted, don't blast
+
     def _send(to, subj, bdy, sid):
+        # Deterministic per-(blast, recipient) key so a retried POST/HTTP call
+        # cannot double-send (same protection the sequence path has, N6).
+        ik = (f"blast-{blast_id}-{hashlib.sha1(to.strip().lower().encode()).hexdigest()[:12]}"
+              if blast_id else None)
         return seq.send_manual(to, subj, bdy, sid, append_signature=sign,
-                               signature=sig_text, from_email=from_email, from_name=from_name)
+                               signature=sig_text, from_email=from_email, from_name=from_name,
+                               idem_key=ik)
 
     # Every composer send is recorded as a "blast" so it has its own tracking
     # (open/click/reply rate) at /blasts — independent of campaigns. The Resend
@@ -1632,7 +1725,7 @@ def compose_send():
         except Exception:
             pass
 
-    sent = failed = 0
+    sent = failed = capped = suppressed_ct = 0
     if ids:
         in_list = ",".join(str(i) for i in ids)
         leads = sb.select("leads", {"select": "*", "id": f"in.({in_list})"}, limit=5000)
@@ -1641,6 +1734,14 @@ def compose_send():
             if not to:
                 failed += 1
                 continue
+            if seq.is_suppressed(to):
+                # N3: opted-out / bounced / complained — never email again.
+                suppressed_ct += 1
+                _track(to, {"error": "suppressed"})
+                continue
+            if remaining <= 0:
+                capped += 1
+                continue
             sid = _manual_seq_id(l)
             res = _send(to, _merge(subject, l), _merge(body, l), sid or 0)
             _track(to, res, business=l.get("business"), lead_id=l.get("id"))
@@ -1648,6 +1749,7 @@ def compose_send():
                 failed += 1
                 continue
             sent += 1
+            remaining -= 1
             # Campaign leads also flow into the global KPIs via sequence_events.
             if sid:
                 sb.insert("sequence_events", {
@@ -1657,17 +1759,28 @@ def compose_send():
                              "from": from_email, "blast_id": blast_id},
                 })
     for e in extra:
+        if seq.is_suppressed(e):
+            suppressed_ct += 1
+            _track(e, {"error": "suppressed"})
+            continue
+        if remaining <= 0:
+            capped += 1
+            continue
         res = _send(e, _merge(subject, {}), _merge(body, {}), 0)
         _track(e, res)
-        failed += 1 if "error" in res else 0
-        sent += 0 if "error" in res else 1
+        if "error" in res:
+            failed += 1
+        else:
+            sent += 1
+            remaining -= 1
 
     if blast_id:
         try:
             sb.update("blasts", {"id": blast_id}, {"recipients": sent})
         except Exception:
             pass
-    return redirect(f"/compose?sent={sent}&failed={failed}&blast={blast_id or ''}")
+    return redirect(f"/compose?sent={sent}&failed={failed}&capped={capped}"
+                    f"&suppressed={suppressed_ct}&blast={blast_id or ''}")
 
 
 def _blast_stats(recips: list) -> dict:
@@ -1905,7 +2018,7 @@ def create_and_scrape():
     run = sb.insert("scrape_runs", {"campaign_id": c["id"], "target_count": c["daily_scrape_target"], "status": "running"})[0]
     try:
         rows = list(scrape.scrape_for_campaign(c, target=c["daily_scrape_target"]))
-        n = len(sb.insert("leads", rows, on_conflict="campaign_id,business")) if rows else 0
+        n = len(sb.insert("leads", rows, on_conflict="campaign_id,business", ignore_duplicates=True)) if rows else 0
         sb.update("scrape_runs", {"id": run["id"]}, {"status": "completed", "scraped_count": n, "finished_at": datetime.now(timezone.utc).isoformat()})
     except Exception as e:
         sb.update("scrape_runs", {"id": run["id"]}, {"status": "failed", "error": str(e)[:400], "finished_at": datetime.now(timezone.utc).isoformat()})
@@ -1913,11 +2026,16 @@ def create_and_scrape():
 
 
 def _fire(path, **params):
+    """Fire-and-forget poke of a cron endpoint. Failures are logged, not swallowed
+    silently — a dead poke used to be invisible."""
     import requests as _r
     try:
-        _r.get(f"{PROD_URL}{path}", params=params, headers={"Authorization": f"Bearer {os.environ.get('CRON_SECRET','')}"}, timeout=4)
-    except Exception:
-        pass
+        r = _r.get(f"{PROD_URL}{path}", params=params,
+                   headers={"Authorization": f"Bearer {os.environ.get('CRON_SECRET','')}"}, timeout=4)
+        if r.status_code >= 400:
+            print(f"[_fire] {path} -> {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[_fire] {path} failed: {e}")
 
 
 @app.route("/campaigns/<int:cid>/scrape", methods=["POST"])
@@ -2274,6 +2392,7 @@ def replies_send():
         signature=sig_text,
         from_email=from_email,
         from_name=from_name,
+        idem_key=f"reply-{rid}",
     )
 
     if "error" in res:

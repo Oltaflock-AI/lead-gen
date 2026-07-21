@@ -1,0 +1,23 @@
+name: watchdog-fallback
+
+# Second leg of the dead-man's switch (plan.md 2.2): pg_cron runs the watchdog
+# every 6h, but if pg_cron itself dies this daily GitHub Actions curl still
+# fires it. This is the ONLY workflow that survives the poke.yml retirement.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: curl watchdog
+        env:
+          BASE_URL: ${{ vars.VERCEL_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 290 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/watchdog" | head -200

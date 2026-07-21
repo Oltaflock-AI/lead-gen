@@ -14,7 +14,10 @@ Rules for any agent (human or AI) editing this repo. Read before adding or movin
 - `data/outreach.db` — SQLite owned by `src/web/` (outreach log + settings + Gmail token). Gitignored. Created on first dashboard launch.
 - `tests/` — test and dev scaffolding. Not production code.
 - `.env` — secrets. Project root only. Gitignored. See `.env.example` for the full list.
-- `.claude/`, `.gitignore`, `README.md`, `AGENTS.md`, `requirements.txt` — repo metadata.
+- `.claude/`, `.gitignore`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `requirements.txt`, `vercel.json` — repo metadata.
+- `<niche>-offer.md` (e.g. `home-services-offer.md`, `real-estate-offer.md`) — offer briefs. Project root only; `src/web/niche_briefs.py` resolves them there at runtime. Not junk — do not move or delete.
+- `OF_FAVICON.png` — project root only; bundled by `vercel.json` includeFiles and read by `api/index.py`.
+- `scripts/cleanup_junk.sh` — junk auto-cleanup (caches, `.DS_Store`, old `.bak`/rotated logs). Runs on every Claude Code session start via `.claude/settings.json` SessionStart hook.
 
 ## Naming
 

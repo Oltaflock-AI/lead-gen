@@ -501,9 +501,9 @@
 
       <div class="filters" role="group" aria-label="Filter findings by severity">
         <span class="lbl">Filter</span>
-        <button class="fbtn" data-f="all" aria-pressed="true">All (27)</button>
+        <button class="fbtn" data-f="all" aria-pressed="true">All (28)</button>
         <button class="fbtn" data-f="crit" aria-pressed="false"><span class="sev-dot" style="background:var(--crit)"></span>Critical (4)</button>
-        <button class="fbtn" data-f="high" aria-pressed="false"><span class="sev-dot" style="background:var(--high)"></span>High (8)</button>
+        <button class="fbtn" data-f="high" aria-pressed="false"><span class="sev-dot" style="background:var(--high)"></span>High (9)</button>
         <button class="fbtn" data-f="med" aria-pressed="false"><span class="sev-dot" style="background:var(--med)"></span>Medium (9)</button>
         <button class="fbtn" data-f="low" aria-pressed="false"><span class="sev-dot" style="background:var(--low)"></span>Low (6)</button>
       </div>
@@ -816,6 +816,17 @@
           </dl></div>
         </details>
 
+        <details class="find high" data-sev="high">
+          <summary class="find-head"><span class="sev-tag sev-high">High</span><span class="find-id">F28</span>
+            <span class="find-title">Manual send path bypassed suppression, daily cap, and idempotency</span>
+            <span class="find-status fixed">Fixed (2026-07-20)</span><span class="caret">▸</span></summary>
+          <div class="find-body"><dl>
+            <dt>Where</dt><dd><span class="path">api/index.py</span> <code>compose_send</code> / <code>replies_send</code> → <span class="path">lib/sequence.py</span> <code>send_manual</code>. Suppression was enforced only in <span class="path">api/cron/sequencer_tick.py</span>; the composer looped recipients with no cap and no <code>Idempotency-Key</code>.</dd>
+            <dt>Exploit</dt><dd>A bounced / complained / STOP-ed address could be re-emailed by hand (CAN-SPAM + reputation); one POST could blast an unbounded list past <code>LEADGEN_DAILY_CAP</code>; a retried POST could double-send every recipient.</dd>
+            <dt>Fix</dt><dd><code>is_suppressed()</code> (fail-closed: unreadable suppression table blocks the send) enforced inside <code>send_manual</code> and <code>send_email</code>; composer counts today's sequencer + manual + extra-address sends against the same <code>LEADGEN_DAILY_CAP</code> (fail-closed if uncountable) and reports held-back/suppressed counts; deterministic <code>Idempotency-Key</code> per blast+recipient and <code>reply-{id}</code>. Related hardening: migration <span class="path">011_campaigns_paused_default.sql</span> makes <code>campaigns.active</code> default <code>false</code> at the schema level (N1 was app-code-only) — <strong>apply in Supabase</strong>. Dashboard now warns when <code>LEADGEN_POSTAL_ADDRESS</code> is unset.</dd>
+          </dl></div>
+        </details>
+
       </div>
       <p style="color:var(--ink-4);font-size:12px;margin-top:14px" id="noresults" hidden>No findings at this severity.</p>
     </section>
@@ -828,7 +839,7 @@
         <ul class="tight">
           <li><strong>Production auth</strong> — global <code>before_request</code> gate, PBKDF2 passwords, HMAC cookies (<code>httponly · secure · SameSite=Lax</code>), timing-safe compares.</li>
           <li><strong>Production sequencer</strong> — atomic compare-and-swap claim-lock; the 70-dup incident's failure mode is closed on the cron path.</li>
-          <li><strong>Production suppression</strong> — gated before every send; closed-loop Gmail STOP → <code>suppressions</code> → read each tick.</li>
+          <li><strong>Production suppression</strong> — gated before every send; closed-loop Gmail STOP → <code>suppressions</code> → read each tick. Since v1.6 also enforced fail-closed inside <code>send_manual</code>/<code>send_email</code>, so manual composer/reply sends can never bypass it (F28).</li>
           <li><strong>Secrets hygiene</strong> — <code>.env</code> properly gitignored, never committed; no AWS keys; no <code>verify=False</code> anywhere.</li>
           <li><strong>Security headers</strong> — <code>X-Frame-Options: DENY</code>, <code>nosniff</code>, XSS-protection, referrer policy set globally.</li>
           <li><strong>Least privilege</strong> — Gmail scope is <code>readonly</code>; LLM tool registry exposes <strong>no</strong> email-send tool.</li>
@@ -846,6 +857,7 @@
         <table>
           <thead><tr><th>Date</th><th>Rev</th><th>Change</th></tr></thead>
           <tbody>
+            <tr><td class="mono">2026-07-20</td><td class="mono">v1.6</td><td>New finding F28 (High, fixed same day): manual composer/reply sends bypassed suppression, the daily cap, and idempotency — closed at the <code>send_manual</code>/<code>send_email</code> choke points (fail-closed suppression), composer now shares <code>LEADGEN_DAILY_CAP</code> with the sequencer, deterministic Idempotency-Keys on all manual sends. Migration <code>011_campaigns_paused_default.sql</code> added — <code>campaigns.active</code> schema default flips to <code>false</code> (N1 hardening) — <strong>pending apply in Supabase</strong>. Dashboard Issues panel warns on missing <code>LEADGEN_POSTAL_ADDRESS</code> (CAN-SPAM). First pytest suite for send-path invariants landing alongside. Phase 1 (person-level enrichment: Prospeo waterfall, personal-over-role email ranking, MahaRERA import) in progress.</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.4</td><td>Fixed 4 more + 1 mitigated: F23 (dropped <code>|safe</code> on dashboard alert body — was rendering scraped business names raw), F18 (reply text now delimited + marked untrusted, delimiter-breakout neutralised), F21 (logging PII redaction filter masks emails in logs/stdout), F17 (migration 010 enables RLS + force + revoke on all 13 tables — apply it in Supabase). F05 downgraded to Mitigated (legacy scheduler now opt-in per F10, so the racy path can't run alongside cron). Remaining open: F15 (agent injection — real controls in place), F22/F25/F26 (low/accepted/legal).</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.3</td><td>Fixed 5 more: F16 (local app host-guard — loopback free, else requires signed cookie), F20 (dependency major-version ceilings), F19 (per-IP /login rate limit, 8/5min), F24 (LLM model allowlist), F27 (8 MB upload cap on the production app). Remaining: F05, F15, F17, F18, F21, F22, F23, F25, F26 + a few TODO tails (CSRF tokens, lockfile, daily LLM spend cap, generic error copy).</td></tr>
             <tr><td class="mono">2026-07-06</td><td class="mono">v1.2</td><td>Fixed 9 highs/mediums: F08 (fail-closed cron+webhook+cookie auth, timing-safe), F09 (SSRF guard <code>lib/net_guard.py</code> on all 3 lead-URL fetchers), F11 (bounce/complaint → suppressions), F12 (inbound webhook timing-safe, no path bypass), F13 (Resend idempotency key), F06 (legacy suppression enforced at enrol + tick), F10 (local scheduler now opt-in/default-off), F14 (LLM <code>max_tokens</code> cap; daily spend cap still TODO), F07 (CAN-SPAM opt-out line + <code>List-Unsubscribe</code> header + postal address via <code>LEADGEN_POSTAL_ADDRESS</code>). Note: F07/F12 need their env vars set in prod; F08 fails closed only when <code>VERCEL_ENV=production</code>.</td></tr>

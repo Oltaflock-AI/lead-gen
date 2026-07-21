@@ -94,7 +94,7 @@ _STOP_PHRASES = re.compile(
     r"|opt[\s-]out"
     r"|fuck off"
     r")\b"
-    r"|(?<!\w)stop(?!\w)",  # bare "stop" not preceded or followed by a word char
+    r"|(?<![\w-])stop(?![\w-])",  # bare "stop", but not "non-stop"/"stop-gap"
     re.IGNORECASE,
 )
 
